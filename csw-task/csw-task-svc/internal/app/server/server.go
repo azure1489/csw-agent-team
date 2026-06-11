@@ -1,0 +1,73 @@
+// Package server 装配运行面 gin 路由与 handlers（§6 运行面 API）。
+package server
+
+import (
+	"errors"
+	"log/slog"
+
+	"github.com/gin-gonic/gin"
+
+	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/config"
+	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/domain"
+	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/engine"
+	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/files"
+	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/middleware"
+	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/store/sqlite"
+)
+
+// Server 运行面服务依赖。
+type Server struct {
+	store *sqlite.Store
+	eng   *engine.Engine
+	blobs files.BlobStore
+	cfg   config.Config
+	log   *slog.Logger
+}
+
+// New 构造 Server。
+func New(store *sqlite.Store, eng *engine.Engine, blobs files.BlobStore, cfg config.Config, log *slog.Logger) *Server {
+	return &Server{store: store, eng: eng, blobs: blobs, cfg: cfg, log: log}
+}
+
+// Router 装配 gin 引擎。
+func (s *Server) Router() *gin.Engine {
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(middleware.RequestID(), middleware.Logger(s.log), middleware.Recovery(s.log))
+
+	r.GET("/healthz", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
+
+	v1 := r.Group("/api/v1")
+	v1.Use(middleware.AgentAuth(s.store), middleware.Idempotency(s.store))
+	{
+		// Agent 自助
+		v1.GET("/me/tasks", s.handleMyTasks)
+		v1.GET("/tasks/:id", s.handleTaskDetail)
+		v1.GET("/runs/:id", s.handleRunDetail)
+		v1.GET("/runs/:id/timeline", s.handleTimeline)
+		v1.POST("/files", s.handleUpload)
+		v1.GET("/files/:id", s.handleDownload)
+		v1.POST("/tasks/:id/deliverables", s.handleSubmit)
+
+		// 触发
+		v1.GET("/workflows", s.handleListWorkflows)
+		v1.POST("/workflows/:key/runs", s.handleTrigger)
+
+		// 中枢
+		v1.GET("/me/inbox", s.handleInbox)
+		v1.POST("/tasks/:id/dispatch", s.handleDispatch)
+		v1.POST("/deliverables/:id/reviews", s.handleReview)
+	}
+	return r
+}
+
+// renderErr 把业务错误翻译为统一 {code,message} + HTTP 码。
+func (s *Server) renderErr(c *gin.Context, err error) {
+	var de *domain.Error
+	if errors.As(err, &de) {
+		c.JSON(de.HTTP, gin.H{"code": de.Code, "message": de.Message})
+		return
+	}
+	s.log.Error("handler error", "err", err, "path", c.Request.URL.Path)
+	c.JSON(500, gin.H{"code": "internal", "message": "服务内部错误"})
+}

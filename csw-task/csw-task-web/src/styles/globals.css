@@ -1,0 +1,104 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   Design tokens — Linear-style light console
+   迁自设计稿 csw-admin/styles.css（权威源）；修正源中两处 typo：
+   --blue-bd 取 #cfddfb、--yellow-bd 取 #ecdfa8
+   ============================================================ */
+:root {
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --surface-2: #f6f6f7;
+  --surface-3: #f1f1f3;
+  --sidebar: #fbfbfc;
+  --border: #ececef;
+  --border-2: #e2e2e7;
+  --border-strong: #d6d6dd;
+  --text: #1b1b1f;
+  --text-2: #6a6a74;
+  --text-3: #9b9ba4;
+  --accent: #5b5bd6;
+  --accent-hover: #4f4fc7;
+  --accent-press: #4646b5;
+  --accent-weak: #eeeefb;
+  --accent-weak-2: #e3e3fa;
+  --accent-text: #4a4ac0;
+
+  --green: #1f9d57; --green-bg: #e7f5ed; --green-bd: #c6e8d4;
+  --blue: #3667d6;  --blue-bg: #e9f0fd;  --blue-bd: #cfddfb;
+  --amber: #b5730a; --amber-bg: #fbf1df; --amber-bd: #f0ddb9;
+  --red: #d63b3b;   --red-bg: #fbe9e9;   --red-bd: #f3cccc;
+  --gray: #71717a;  --gray-bg: #f1f1f3;  --gray-bd: #e2e2e7;
+  --yellow: #a98a00;--yellow-bg: #f9f2d6;--yellow-bd: #ecdfa8;
+
+  --r-sm: 5px; --r: 7px; --r-md: 9px; --r-lg: 12px;
+  --shadow-sm: 0 1px 2px rgba(22,22,32,.05);
+  --shadow: 0 2px 4px rgba(22,22,32,.04), 0 6px 18px -6px rgba(22,22,40,.12);
+  --shadow-pop: 0 10px 38px -8px rgba(20,20,45,.28), 0 2px 8px rgba(0,0,0,.08);
+  --font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", "Segoe UI", sans-serif;
+  --mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+
+  --nav-w: 224px;
+  --top-h: 56px;
+}
+
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+#root { height: 100vh; }
+::selection { background: var(--accent-weak-2); }
+
+button { font-family: inherit; cursor: pointer; }
+input, textarea, select { font-family: inherit; }
+a { color: inherit; text-decoration: none; }
+
+/* scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #d8d8de; border-radius: 8px; border: 3px solid var(--bg); }
+::-webkit-scrollbar-thumb:hover { background: #c4c4cc; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ============================================================
+   Utility classes（迁自设计稿；置于 @tailwind utilities 之后以覆盖同名）
+   ============================================================ */
+.row { display: flex; align-items: center; }
+.col { display: flex; flex-direction: column; }
+.gap4 { gap: 4px; } .gap6 { gap: 6px; } .gap8 { gap: 8px; }
+.gap12 { gap: 12px; } .gap16 { gap: 16px; } .gap20 { gap: 20px; } .gap24 { gap: 24px; }
+.between { justify-content: space-between; }
+.center { justify-content: center; }
+.wrap { flex-wrap: wrap; }
+.grow { flex: 1; }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.t2 { color: var(--text-2); }
+.t3 { color: var(--text-3); }
+.sm { font-size: 12.5px; }
+.xs { font-size: 11.5px; }
+.b { font-weight: 600; }
+.tnum { font-variant-numeric: tabular-nums; }
+.muted-line { color: var(--text-3); }
+
+.hover-row { transition: background .12s; }
+.hover-row:hover { background: var(--surface-2); }
+
+.md-body code { white-space: pre-wrap; }
+.md-body ul { margin: 5px 0; }
+
+/* ============================================================
+   Animations
+   ============================================================ */
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes popIn { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes slideIn { from { transform: translateX(100%); } to { transform: none; } }
+@keyframes toastIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+@keyframes skel { 0% { background-position: -200px 0; } 100% { background-position: calc(200px + 100%) 0; } }
+@keyframes dashFlow { to { stroke-dashoffset: -16; } }

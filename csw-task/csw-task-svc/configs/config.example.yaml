@@ -1,0 +1,84 @@
+# ============================================================
+# 任务流转服务 · 配置说明
+#
+# 后端按【env > config.yaml > 内置默认】加载配置。把本文件复制为
+#    ./config.yaml（或用 CSW_CONFIG 指定路径）即生效；同名环境变量
+#    优先级更高（便于部署期覆盖 jwt_secret 等敏感项）。下方 YAML 键
+#    即真实配置结构，行内注释给出对应环境变量名与默认值。
+# ============================================================
+
+# ── 通用（cmd/server 与 cmd/adminsrv 共享同一 sqlite）──
+data_dir: ./data                    # CSW_DATA_DIR             运行时数据根目录（默认 ./data）
+db_path: ""                         # CSW_DB_PATH              sqlite 路径（留空=默认 ${data_dir}/csw-task.db）
+blob_dir: ""                        # CSW_BLOB_DIR             托管文件根目录（留空=默认 ${data_dir}/blobs）
+
+# ── 运行面 cmd/server（agent bearer token，默认 :8080）──
+server:
+  addr: ":8080"                     # CSW_ADDR
+  base_url: http://localhost:8080   # CSW_BASE_URL             拼 download_url 用
+  max_upload_bytes: 67108864        # CSW_MAX_UPLOAD_BYTES     默认 64 MiB
+  allowed_content_types:            # CSW_ALLOWED_CONTENT_TYPES（逗号分隔）
+    - application/zip
+    - application/x-zip-compressed
+    - application/octet-stream
+
+# ── 管理后台 cmd/adminsrv（人类 JWT + CORS，默认 :8081）──
+admin:
+  addr: ":8081"                     # CSW_ADMIN_ADDR
+  jwt_secret: ""                    # CSW_JWT_SECRET           access JWT HS256 密钥；留空启动随机生成（重启失效，生产必设）
+  jwt_access_ttl: 15m               # CSW_JWT_ACCESS_TTL       Go duration，默认 15m
+  jwt_refresh_ttl: 168h             # CSW_JWT_REFRESH_TTL      默认 168h（7d）
+  cors_origins:                     # CSW_ADMIN_CORS_ORIGIN（逗号分隔，前端 origin）
+    - http://localhost:5173
+  cookie_secure: false              # CSW_COOKIE_SECURE        refresh cookie Secure 标志（生产 https 置 true）
+
+# ── 文件存储后端（运行面上传，默认 local）──
+storage:
+  backend: local                    # CSW_BLOB_BACKEND          local | oss
+  oss:                              # backend=oss 时必填（凭证勿提交，放 config.yaml[已 gitignore] 或 env）
+    endpoint: ""                    # CSW_OSS_ENDPOINT          如 https://oss-cn-guangzhou.aliyuncs.com
+    bucket: ""                      # CSW_OSS_BUCKET
+    access_key_id: ""               # CSW_OSS_ACCESS_KEY_ID
+    access_key_secret: ""           # CSW_OSS_ACCESS_KEY_SECRET
+    prefix: blobs                   # CSW_OSS_PREFIX            对象 key 前缀（key = <prefix>/<sha 分片>）
+
+# 说明：对象以 public-read 上传，download_url 直接为永久公共 URL
+#       （https://<bucket>.<endpoint-host>/<key>，无需签名，前端 / agent 均可直接下载）；
+#       本地后端则 download_url=/files/:id，由服务端代理流式下载 + Range。
+#       bucket 须开启公共读（对象 ACL 已随上传设为 public-read）。
+
+# ============================================================
+# 等价环境变量示例
+#
+# 开发（dev，对应 csw-task-web 默认连 :8081）：
+#   export CSW_DATA_DIR=./data
+#   export CSW_JWT_SECRET=devsecret
+#   export CSW_ADMIN_CORS_ORIGIN=http://localhost:5173
+#   ./bin/adminctl migrate up
+#   ./bin/adminctl user create admin --role superadmin --password '***'
+#   ./bin/adminsrv      # :8081（管理后台 API，JWT）
+#   ./bin/server        # :8080（运行面，bearer token）
+#
+# 生产（prod，https）：
+#   export CSW_DATA_DIR=/var/lib/csw-task
+#   export CSW_BASE_URL=https://task.example.com
+#   export CSW_JWT_SECRET=$(openssl rand -hex 32)        # 必设，否则重启后 token 全失效
+#   export CSW_JWT_ACCESS_TTL=15m CSW_JWT_REFRESH_TTL=168h
+#   export CSW_ADMIN_CORS_ORIGIN=https://admin.example.com
+#   export CSW_COOKIE_SECURE=true                        # https 下 refresh cookie 必须 Secure
+#   ./bin/adminsrv && ./bin/server
+#
+# docker-compose（两进程共享同一卷/sqlite，分凭证）：
+#   services:
+#     csw-server:    { image: csw-task-svc, command: ["/app/server"],
+#                      ports: ["8080:8080"], volumes: ["csw-data:/data"],
+#                      environment: { CSW_DATA_DIR: /data, CSW_BASE_URL: https://task.example.com } }
+#     csw-adminsrv:  { image: csw-task-svc, command: ["/app/adminsrv"],
+#                      ports: ["8081:8081"], volumes: ["csw-data:/data"],
+#                      environment: { CSW_DATA_DIR: /data, CSW_JWT_SECRET: ${CSW_JWT_SECRET},
+#                                     CSW_ADMIN_CORS_ORIGIN: https://admin.example.com, CSW_COOKIE_SECURE: "true" } }
+#   volumes: { csw-data: {} }
+#
+# 注意：两进程必须指向同一 CSW_DATA_DIR/sqlite（共享定义层+实例层），
+#       但分凭证（server=bearer token，adminsrv=JWT）。sqlite WAL + SetMaxOpenConns(1) 串行写。
+# ============================================================

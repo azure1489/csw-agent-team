@@ -1,0 +1,11 @@
+# 编译产物
+/bin/
+
+# 运行时数据（sqlite + 托管文件），不进仓库
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# 本地实际配置（可能含 jwt_secret 等），仅提交 configs/config.example.yaml
+/config.yaml

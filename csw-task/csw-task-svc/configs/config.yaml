@@ -1,0 +1,25 @@
+# 任务流转服务 · 运行面配置（实际通过环境变量加载，本文件仅作说明）
+#
+# CSW_ADDR                  HTTP 监听地址                    默认 :8080
+# CSW_DATA_DIR              运行时数据根目录                 默认 ./data
+# CSW_DB_PATH               sqlite 文件路径                  默认 $CSW_DATA_DIR/csw-task.db
+# CSW_BLOB_DIR              托管文件根目录                   默认 $CSW_DATA_DIR/blobs
+# CSW_BASE_URL              拼 download_url 用               默认 http://localhost:8080
+# CSW_MAX_UPLOAD_BYTES      上传大小上限（字节）             默认 67108864（64MiB）
+# CSW_ALLOWED_CONTENT_TYPES content-type 白名单（逗号分隔）  默认 application/zip,application/x-zip-compressed,application/octet-stream
+#
+# ── 管理后台 cmd/adminsrv（JWT + CORS）──
+# CSW_ADMIN_ADDR            后台监听地址                     默认 :8081
+# CSW_JWT_SECRET            access JWT HS256 密钥            未设则启动随机生成（重启失效，生产必设）
+# CSW_JWT_ACCESS_TTL        access 有效期（Go duration）      默认 15m
+# CSW_JWT_REFRESH_TTL       refresh 有效期                   默认 168h（7d）
+# CSW_ADMIN_CORS_ORIGIN     允许的前端 origin（逗号分隔）    默认 http://localhost:5173
+# CSW_COOKIE_SECURE         refresh cookie Secure 标志       默认 false（生产 https 置 true）
+#
+# 示例：
+#   export CSW_DATA_DIR=/var/lib/csw-task
+#   export CSW_BASE_URL=https://task.example.com
+#   ./bin/server                                              # 运行面
+#   export CSW_JWT_SECRET=$(openssl rand -hex 32) CSW_COOKIE_SECURE=true
+#   export CSW_ADMIN_CORS_ORIGIN=https://admin.example.com
+#   ./bin/adminsrv                                            # 管理后台
