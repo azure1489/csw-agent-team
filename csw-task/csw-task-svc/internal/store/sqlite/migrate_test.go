@@ -88,4 +88,25 @@ func TestSeedDailyNews(t *testing.T) {
 	if gates != 2 {
 		t.Fatalf("want 2 default gates, got %d", gates)
 	}
+
+	// 0007 · CAMPsomeWHERE 业务规范已同步进定义（抽查关键词，防文案迁移回归）。
+	for _, tc := range []struct{ code, col, want string }{
+		{"topic", "instructions", "传播潜力"},
+		{"topic", "self_check_criteria", "S/A/B"},
+		{"wx_content", "instructions", "三段式"},
+		{"wx_content", "instructions", "推文标题方案"},
+		{"wx_content", "acceptance", "无公关稿语言"},
+		{"wx_visual", "instructions", "图片使用原则"},
+		{"wx_visual", "acceptance", "禁止重绘装备主体"},
+		{"xhs_text", "instructions", "户外内容平台 CAMPsomeWHERE"},
+		{"xhs_text", "acceptance", "18 字以内"},
+		{"xhs_visual", "instructions", "杂志感"},
+		{"xhs_visual", "acceptance", "禁止 AI 生成不存在的产品"},
+	} {
+		var n int
+		q := `SELECT count(*) FROM workflow_stages WHERE workflow_id=? AND code=? AND instr(` + tc.col + `, ?) > 0`
+		if err := db.QueryRow(q, wfID, tc.code, tc.want).Scan(&n); err != nil || n != 1 {
+			t.Fatalf("0007 规范缺失：%s.%s 应含 %q (n=%d err=%v)", tc.code, tc.col, tc.want, n, err)
+		}
+	}
 }
