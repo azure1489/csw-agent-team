@@ -14,7 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```
 CLAUDE.md
 docs/                         流程规范 + 服务设计蓝图（详见下「文件结构与权威性」）
-skill/SKILL.md                agent 调用运行面的 csw-task skill 草案
+skill/                        csw-task skill（SKILL.md 定稿）+ roster.json 花名册 + bootstraps/ 六角色部署模板
 csw-task/                     配套服务 Monorepo
   csw-task-svc/               Go + SQLite 后端（运行面 + 管理后台 + 运维 CLI）
   csw-task-web/               React + Vite 管理后台前端

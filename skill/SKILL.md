@@ -68,7 +68,7 @@ curl -fsS -X POST "$BASE/api/v1/tasks/$TASK_ID/deliverables" \
   -F "upstreams=[{\"label\":\"选题\",\"url\":\"https://…\"}]"   # 可选；不传则只有派工单记上游
 ```
 
-服务端自动完成：版本=当前版本+1；责任方=角色名（合流阶段=产出类型「成品」）；文件名 `{工作流}_{责任方}_{日期}_r{run}_v{n}.zip`；存储路径 `{工作流}/{subject}/r{run}/{阶段名}/{文件名}`；`doc_type` 缺省=阶段产出类型。响应回 `deliverable.download_url / filename / version`。**你不拼路径、不算版本、不起文件名。**
+服务端自动完成：版本=当前版本+1；责任方=角色名（合流阶段=产出类型「成品」）；文件名 `{工作流}_{责任方}_{日期}_r{run}_v{n}.zip`；存储路径 `{工作流}/{subject}/r{run}/{阶段名}/{文件名}`（OSS 上还会挂服务端配置的存储前缀，部署设 `CSW_OSS_PREFIX=csw` 即得规范的 `csw/资讯日更/…`）；`doc_type` 缺省=阶段产出类型。响应回 `deliverable.download_url / filename / version`。**你不拼路径、不算版本、不起文件名。**
 
 （兼容两步式：`POST /files` 拿 `file_id` 再 JSON 提交——仅特殊场景用，常规一律一步式。）
 
@@ -99,7 +99,8 @@ Van（人类）在群里把当日任务交给主编 → 主编：
 ```bash
 # ① 触发实例（subject=日期；inputs 仅作 run 事件留痕）
 curl … -X POST "$BASE/api/v1/workflows/daily_news/runs" -d '{"subject":"2026-06-12","inputs":{"采集要求":"…"}}'
-# ② 串联首单：响应里找 seq=1 的 ready 任务，立即派工，当日采集要求写进 editor_note
+#    响应是扁平结构：{"run_id":17,"subject":"…","status":"active","tasks":[{id,seq,stage_name,status,…}]}
+# ② 串联首单：tasks 里找 seq=1 且 status=ready 的任务，立即派工，当日采集要求写进 editor_note
 curl … -X POST "$BASE/api/v1/tasks/<首任务id>/dispatch" -d '{"editor_note":"今天采集：…（范围/对象/平台/指定链接）"}'
 # ③ 群播报 @情报收集员（§5.2 派工模板）
 ```
