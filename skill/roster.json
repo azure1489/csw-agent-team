@@ -1,0 +1,23 @@
+{
+  "_comment": "CSW编辑部 花名册（csw-task skill §5 群协作播报用）。key=引擎 role_code，name=引擎角色名，bot=实际承担的群内 bot 显示名，open_id 用于 @（填到 <at user_id=\"<open_id>\">name</at>）。人类副本与映射现状见 docs/CSW编辑部_通讯录.md。",
+  "chat_id": "oc_c7484358fbf366ba1c806e9d65db3103",
+  "roster": {
+    "editor":     { "open_id": "ou_e8b7e1e4076dbfbaf88c55078794b5eb", "name": "主编",       "bot": "主编" },
+    "researcher": { "open_id": "ou_7d2e525dff82f92ab89741f92613353c", "name": "选题研究员", "bot": "选题研究员" },
+    "writer":     { "open_id": "ou_98ef567d4e26d4d2ef9279da5304a758", "name": "文案",       "bot": "深度内容创作者" },
+    "designer":   { "open_id": "ou_0d21381c313e0fa02be7e68d45c6f96e", "name": "设计师",     "bot": "视觉设计师" },
+    "publisher":  { "open_id": "ou_2a362b7337a9a96717ef3c1f4ecd51fe", "name": "发布员",     "bot": "发布运营员" },
+    "van":        { "open_id": "ou_1fca25427af132224142dd3abdda906d", "name": "Van", "user_id": "ag83acf1", "human": true },
+
+    "collector":  null
+  },
+  "_pending": {
+    "collector": "情报收集员（01-采集）——承接 bot 待用户补充；补齐前 01-采集 无人，相关播报 @ 不到人"
+  },
+  "reserved_bots": {
+    "_note": "群内已有但暂不接入资讯日更工作流（预留）",
+    "小红书图文作者": "ou_003deac0bece81514fca9cd9ba081139",
+    "合规版权审查员": "ou_5e4a9f33f31701a5dd674db4c9daa2dc",
+    "数据复盘师": "ou_7b9ba1d4d09cfbee3ba3f89005db434f"
+  }
+}

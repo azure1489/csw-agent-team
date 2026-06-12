@@ -14,6 +14,7 @@ type taskDTO struct {
 	StageCode  string `json:"stage_code"`
 	StageName  string `json:"stage_name"`
 	RoleCode   string `json:"role_code"`
+	OutputType string `json:"output_type"`
 	Status     string `json:"status"`
 	AssigneeID *int64 `json:"assignee_id"`
 	ID         int64  `json:"id"`
@@ -26,9 +27,19 @@ type taskDTO struct {
 func toTaskDTO(t domain.Task) taskDTO {
 	return taskDTO{
 		ID: t.ID, RunID: t.RunID, StageCode: t.StageCode, StageName: t.StageName,
-		Seq: t.Seq, RoleCode: t.RoleCode, IsMerge: t.IsMerge, Status: string(t.Status),
+		Seq: t.Seq, RoleCode: t.RoleCode, OutputType: t.OutputType, IsMerge: t.IsMerge, Status: string(t.Status),
 		CurVersion: t.CurVersion, AssigneeID: t.AssigneeID,
 	}
+}
+
+// reviewDTO 一条审核记录（task 详情随交付物带出最新一条，返工不再依赖群消息原文）。
+type reviewDTO struct {
+	Verdict         string `json:"verdict"`
+	Comment         string `json:"comment,omitempty"`
+	ReturnDirection string `json:"return_direction,omitempty"`
+	ReturnLocation  string `json:"return_location,omitempty"`
+	GateName        string `json:"gate_name,omitempty"`
+	GateOrder       int    `json:"gate_order"`
 }
 
 type upstreamDTO struct {
@@ -47,6 +58,7 @@ type deliverableDTO struct {
 	EditorNote     string        `json:"editor_note"`
 	Status         string        `json:"status"`
 	Upstreams      []upstreamDTO `json:"upstreams,omitempty"`
+	LatestReview   *reviewDTO    `json:"latest_review,omitempty"`
 	ReturnedAtGate *int          `json:"returned_at_gate"`
 	FileID         *int64        `json:"file_id"`
 	ID             int64         `json:"id"`

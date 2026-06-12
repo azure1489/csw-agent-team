@@ -57,10 +57,10 @@ func (q *Queries) SetRunStatus(ctx context.Context, id int64, status domain.RunS
 func (q *Queries) InsertTask(ctx context.Context, t domain.Task) (int64, error) {
 	res, err := q.ex.ExecContext(ctx, `
 		INSERT INTO tasks
-		  (run_id, stage_code, stage_name, seq, role_code, is_merge,
+		  (run_id, stage_code, stage_name, seq, role_code, is_merge, output_type,
 		   instructions, self_check_criteria, acceptance, assignee_id, status, cur_version)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		t.RunID, t.StageCode, t.StageName, t.Seq, t.RoleCode, b2i(t.IsMerge),
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		t.RunID, t.StageCode, t.StageName, t.Seq, t.RoleCode, b2i(t.IsMerge), t.OutputType,
 		t.Instructions, t.SelfCheckCriteria, t.Acceptance, nullI64(t.AssigneeID), string(t.Status), t.CurVersion)
 	if err != nil {
 		return 0, err
@@ -68,22 +68,23 @@ func (q *Queries) InsertTask(ctx context.Context, t domain.Task) (int64, error) 
 	return res.LastInsertId()
 }
 
-const taskCols = `id, run_id, stage_code, stage_name, seq, role_code, is_merge,
+const taskCols = `id, run_id, stage_code, stage_name, seq, role_code, is_merge, output_type,
 	instructions, self_check_criteria, acceptance, assignee_id, status, cur_version`
 
 // 带表别名 t. 的列，用于含 JOIN 的查询（避免 id 等与 runs 列歧义）。
-const taskColsT = `t.id, t.run_id, t.stage_code, t.stage_name, t.seq, t.role_code, t.is_merge,
+const taskColsT = `t.id, t.run_id, t.stage_code, t.stage_name, t.seq, t.role_code, t.is_merge, t.output_type,
 	t.instructions, t.self_check_criteria, t.acceptance, t.assignee_id, t.status, t.cur_version`
 
 func scanTask(s interface{ Scan(...any) error }) (domain.Task, error) {
 	var t domain.Task
 	var merge int
-	var ins, sc, ac sql.NullString
+	var outType, ins, sc, ac sql.NullString
 	var assignee sql.NullInt64
 	var status string
-	err := s.Scan(&t.ID, &t.RunID, &t.StageCode, &t.StageName, &t.Seq, &t.RoleCode, &merge,
+	err := s.Scan(&t.ID, &t.RunID, &t.StageCode, &t.StageName, &t.Seq, &t.RoleCode, &merge, &outType,
 		&ins, &sc, &ac, &assignee, &status, &t.CurVersion)
 	t.IsMerge = merge == 1
+	t.OutputType = outType.String
 	t.Instructions, t.SelfCheckCriteria, t.Acceptance = ins.String, sc.String, ac.String
 	t.AssigneeID = ptrI64(assignee)
 	t.Status = domain.TaskStatus(status)

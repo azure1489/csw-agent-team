@@ -138,6 +138,7 @@ func (e *Engine) Trigger(ctx context.Context, actor domain.Agent, role domain.Ro
 				Seq:               st.Seq,
 				RoleCode:          st.RoleCode,
 				IsMerge:           st.IsMerge,
+				OutputType:        st.OutputType,
 				Instructions:      combine(wf.CommonInstructions, st.Instructions),
 				SelfCheckCriteria: st.SelfCheckCriteria,
 				Acceptance:        combine(wf.CommonAcceptance, st.Acceptance),

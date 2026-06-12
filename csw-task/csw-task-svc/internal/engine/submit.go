@@ -43,6 +43,14 @@ func (e *Engine) Submit(ctx context.Context, agent domain.Agent, taskID int64, i
 			return domain.Conflict("cannot_submit", "任务当前状态不可提交："+string(task.Status))
 		}
 
+		// doc_type 缺省取阶段产出类型（快照列）；两者皆空才报错。
+		if in.DocType == "" {
+			in.DocType = task.OutputType
+		}
+		if in.DocType == "" {
+			return domain.BadRequest("doc_type_required", "doc_type 缺失且该阶段未定义产出类型")
+		}
+
 		ver, err := q.MaxDeliverableVersion(ctx, taskID, false)
 		if err != nil {
 			return err

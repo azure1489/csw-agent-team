@@ -67,7 +67,7 @@ CSW_JWT_SECRET=*** CSW_ADMIN_ADDR=:8081 ./bin/adminsrv             # 管理后�
 - 通用：`CSW_DATA_DIR` `CSW_DB_PATH` `CSW_BLOB_DIR`
 - 运行面：`CSW_ADDR` `CSW_BASE_URL` `CSW_MAX_UPLOAD_BYTES` `CSW_ALLOWED_CONTENT_TYPES`
 - 后台：`CSW_ADMIN_ADDR` `CSW_JWT_SECRET`（未设则启动生成临时密钥+warn）`CSW_JWT_ACCESS_TTL`(15m) `CSW_JWT_REFRESH_TTL`(168h) `CSW_ADMIN_CORS_ORIGIN`(默认 http://localhost:5173) `CSW_COOKIE_SECURE`(生产 true)
-- 文件存储：`CSW_BLOB_BACKEND`(local|oss，默认 local)；oss 时 `CSW_OSS_ENDPOINT` `CSW_OSS_BUCKET` `CSW_OSS_ACCESS_KEY_ID` `CSW_OSS_ACCESS_KEY_SECRET` `CSW_OSS_PREFIX`(默认 blobs)。两后端均内容寻址（key=`<prefix>/<sha 分片>`、同内容去重）；OSS 对象以 public-read 上传，`download_url` 直接是永久公共 URL（无需签名，前端 / agent 均可直接下载），本地后端则 `download_url=/files/:id` 服务端代理 + Range。上传支持可选 `object_key`（multipart 字段）：调用方按交付规范拼语义路径（如 `csw/资讯日更/{日期}/{阶段序号-阶段}/资讯日更_责任方_日期_版本.zip`）即按该路径存、每个交付物独立留底；留空则内容寻址去重。引擎保持通用，规范路径由调用方（agent/skill）落实。
+- 文件存储：`CSW_BLOB_BACKEND`(local|oss，默认 local)；oss 时 `CSW_OSS_ENDPOINT` `CSW_OSS_BUCKET` `CSW_OSS_ACCESS_KEY_ID` `CSW_OSS_ACCESS_KEY_SECRET` `CSW_OSS_PREFIX`(默认 blobs；prefix=本服务在 bucket 内的根目录，语义路径与内容寻址都落它之下——设 `csw` 即得 `csw/资讯日更/…`)。OSS 对象以 public-read 上传，`download_url` 直接是永久公共 URL（无需签名，前端 / agent 均可直接下载），本地后端则 `download_url=/files/:id` 服务端代理 + Range。**语义路径由服务端派生**（见下「提交产出」）：`{工作流名}/{subject}/r{run_id}/{阶段名}/{工作流名}_{责任方}_{subject 压缩}_r{run_id}_v{n}.zip`，每版独立留底；`POST /files` 的可选 `object_key` 字段保留作通用/兼容用途，留空则内容寻址（`<prefix>/<sha 分片>`，同内容去重）。命名模板只用引擎自身数据（工作流名/subject/run/阶段/角色/版本），引擎保持通用。
 
 运行时数据落 `CSW_DATA_DIR`（sqlite；local 后端 blob 落 `blobs/`，oss 后端进对象存储），已 `.gitignore`。
 
@@ -76,10 +76,10 @@ CSW_JWT_SECRET=*** CSW_ADMIN_ADDR=:8081 ./bin/adminsrv             # 管理后�
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | GET | `/me/tasks?status=open\|all` | 我的任务 |
-| GET | `/tasks/:id` | 任务详情：作业手册+自检+验收+派工单+各版本产出+闸 |
-| GET | `/runs/:id` · `/runs/:id/timeline` | 流程进度 / 事件流水 |
-| POST | `/files`（multipart `file` [+ `object_key`]）· GET `/files/:id` | 上传（内容寻址去重 / 或按 `object_key` 语义路径）/ 下载 |
-| POST | `/tasks/:id/deliverables` | 提交产出（version+1） |
+| GET | `/tasks/:id` | 任务详情：作业手册+自检+验收+派工单+各版本产出（含 `latest_review`：最新审核的 verdict/方向/位置/comment——被退回后自助读原因，不依赖通知原文）+闸；task 带 `output_type` |
+| GET | `/runs/:id` · `/runs/:id/timeline` | 流程进度 / 事件流水（`gate_passed`/`gate_returned` 事件 detail 含审核意见与退回方向/位置） |
+| POST | `/files`（multipart `file` [+ `object_key`]）· GET `/files/:id` | 通用上传（内容寻址去重 / 或按 `object_key` 语义路径）/ 下载。交付物提交不必再走这里——用下行一步式 |
+| POST | `/tasks/:id/deliverables` | 提交产出（version 服务端自增）。**multipart 一步式（推荐）**：`file` + `self_check`/`title`/`summary`/`meta_json`/`upstreams`(JSON)，文件名与存储路径由服务端按 工作流/subject/run/阶段/版本/责任方 派生（合流阶段责任方=产出类型「成品」），agent 不拼路径不算版本；`doc_type` 可省（缺省=阶段 `output_type`）。JSON 两步式（先 `/files` 拿 `file_id`）仍兼容 |
 | GET | `/workflows` · POST `/workflows/:key/runs` | 列 active / 触发实例 |
 | GET | `/me/inbox` | 中枢：派工队列+审核队列+我的合流任务 |
 | POST | `/tasks/:id/dispatch` | 中枢派工（上游自动预填，可覆盖） |

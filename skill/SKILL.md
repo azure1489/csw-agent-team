@@ -1,106 +1,196 @@
 ---
 name: csw-task
-description: 营事编集室「任务流转服务」客户端（草稿）。当 agent 需要在工作流里干活时使用：触发工作流实例、查询自己的任务与进度、下载上游交付物、上传并提交产出；以及（中枢/主编）派工、审核、退回、看派工/审核队列。封装服务的 HTTP API + 每 agent 鉴权 + 文件上传/下载，agent 不必直接拼 HTTP。触发词：触发流程、开批次、我的任务、提交产出、派工、审核、退回、任务进度、CSW 任务流转。
+description: 营事编集室「任务流转服务」客户端 + 编辑部协作协议。当 agent 需要在工作流里干活时使用：被群消息 @ 唤醒后查任务、下载上游交付物、干活并一步提交产出；（主编）触发实例、派工、审核、退回、代录 Van 审，并按协议在飞书编辑部群播报。封装运行面 HTTP API（bearer 鉴权 / 幂等 / 一步式上传提交），agent 不自己拼 HTTP。触发词：触发流程、开批次、我的任务、提交产出、派工、审核、退回、任务进度、编辑部群、CSW 任务流转。
 ---
 
-# csw-task · 任务流转服务客户端（草稿）
+# csw-task · 任务流转服务客户端 + 编辑部协作协议
 
-> 状态：**设计草稿**，待服务（`csw-task-svc`）实现后定稿。命令契约依据《任务流转服务 · 设计文档》§6 / §6.2。
-> 本 skill 是 agent 与任务流转服务之间的唯一通道——和 `lark-im`、`opencli`、`mp-helper` 同性质，封装底层 API。**不要自己拼 HTTP / curl 调服务**，统一用本 skill。
+> 服务端 `csw-task-svc` 已实现（运行面 `/api/v1/*`），本文档按真实 API 定稿。
+> **两层架构**：**引擎是权威**（状态/文件/版本/闸都在引擎里），**飞书编辑部群是可见层**（人类 Van 全程旁观、随时插话；agent 之间靠群消息 @ 唤醒）。每个流转动作 = 引擎调用 + 群播报，缺一不可。
+> 本 skill 是 agent 与引擎之间的唯一通道（同 `lark-im`/`opencli`/`mp-helper` 性质）。**不要绕开本文档的模板自己拼 HTTP**。群消息收发用 `lark-im` / `lark-event` skill，本文档只定协议（§5）。
 
-## 1. 它解决什么
+## 0. 标准从哪里来（最重要的一条）
 
-工作流的状态、文件、流转都在「任务流转服务」里。agent 通过本 skill：
-- 查到「我现在该干什么」（我的任务 + 派工单 + 上游链接）；
-- 下载上游交付物、上传自己的产出、提交回服务；
-- 中枢（主编）额外：触发实例、派工、审核、退回。
+**你这阶段「做什么、自检什么、按什么验收」不在本 skill 里，在引擎里**——`task <id>` 返回作业手册（instructions）、自检标准（self_check_criteria）、验收标准（acceptance），它们随工作流定义 seed/热改，永远以引擎返回为准。本 skill 只管：怎么调用引擎、怎么交东西、怎么在群里说话。作业手册点名的专业工具（`generate-images` / `mp-helper` / `opencli xiaohongshu` / csw MCP …）按它说的去用对应 skill。
 
-**三条数据通道**：状态走 JSON、文件走上传/下载、**Agent 之间只传 `download_url`（链接）**（链接放在派工单 `upstreams` 里）。
+## 1. 前置配置（每个 agent 各一份）
 
-## 2. 前置配置
+| 环境变量 | 含义 |
+|---|---|
+| `CSW_TASK_BASE_URL` | 服务地址，如 `http://localhost:8080`（下文 `$BASE`） |
+| `CSW_TASK_TOKEN` | 本 agent 的 bearer token（**token 即角色与权限**，不要外泄；下文 `$TOKEN`） |
+| `CSW_TASK_ROSTER` | 花名册 JSON 路径（§5.1），群播报查 user_id 用 |
 
-环境变量（每个 agent 各自一份）：
-- `CSW_TASK_BASE_URL`：服务地址，如 `https://csw-task.internal`
-- `CSW_TASK_TOKEN`：本 agent 的 bearer token（决定你的角色与权限；不要外泄）
+通用调用头：`-H "Authorization: Bearer $TOKEN"`。写操作必须带确定性幂等键（§6）。错误统一 `{code,message}`（§7）。
 
-skill 自动处理：`Authorization: Bearer`、`Idempotency-Key`（每个写命令自动生成、可 `--idem` 指定）、multipart 上传、流式下载、JSON 解析、5xx 重试。
+## 2. 命令 ↔ 端点（按真实 API）
 
-输出：默认人类可读；加 `--json` 输出原始 JSON 供脚本/agent 解析。
-
-## 3. 命令总览（命令 ↔ 端点）
-
-| 命令 | 谁用 | 端点 |
+| 动作 | 谁用 | 端点 |
 |---|---|---|
-| `csw-task trigger <wf> --subject <s> [--inputs <json/文本>]` | 中枢/调度器 | POST `/workflows/{wf}/runs` |
-| `csw-task workflows` | 中枢/调度器 | GET `/workflows`（列已激活类型） |
-| `csw-task inbox` | 中枢 | GET `/me/inbox` |
-| `csw-task dispatch <task> --note <s> [--upstream label=url ...]` | 中枢 | POST `/tasks/{id}/dispatch` |
-| `csw-task review <deliverable> --pass` / `--reject --direction <s> --location <s>` | 中枢 | POST `/deliverables/{id}/reviews` |
-| `csw-task my-tasks [--status open]` | 各 agent | GET `/me/tasks` |
-| `csw-task task <id>` | 各 agent | GET `/tasks/{id}` |
-| `csw-task fetch <download_url | file_id> [-o <path>]` | 各 agent | GET `/files/{id}` |
-| `csw-task upload <path>` | 各 agent | POST `/files` |
-| `csw-task submit <task> --type <类型> --file <file_id> [--meta <json>] [--self-check <s>] [--upstream label=url ...]` | 各 agent | POST `/tasks/{id}/deliverables` |
-| `csw-task run <id>` · `csw-task timeline <id>` | 各 agent | GET `/runs/{id}`[`/timeline`] |
+| trigger | 主编/调度器 | `POST /api/v1/workflows/{key}/runs` `{subject,title?,inputs?}` |
+| workflows | 主编/调度器 | `GET /api/v1/workflows` |
+| inbox | 主编 | `GET /api/v1/me/inbox` → `{dispatch_queue, review_queue, my_tasks}` |
+| dispatch | 主编 | `POST /api/v1/tasks/{id}/dispatch` `{editor_note, upstreams?}` |
+| review | 主编 | `POST /api/v1/deliverables/{id}/reviews` `{verdict, comment?, return_direction?, return_location?}` |
+| my-tasks | 各 agent | `GET /api/v1/me/tasks?status=open\|all` |
+| task | 各 agent | `GET /api/v1/tasks/{id}` → 作业手册+自检+验收+派工单(dispatch)+各版本产出(含 latest_review)+闸 |
+| fetch | 各 agent | 见 §2.1（双后端） |
+| **submit（一步式）** | 各 agent | `POST /api/v1/tasks/{id}/deliverables`（**multipart**）——见 §2.2 |
+| run / timeline | 各 agent | `GET /api/v1/runs/{id}` / `…/timeline` |
 
-> 没有任何「建/改工作流」命令——工作流定义只在管理后台（`adminctl`），本 skill 不碰。
+> 没有任何「建/改工作流」动作——定义只在管理后台，本 skill 不碰。
 
-## 4. 按角色的典型流程
+### 2.1 fetch：下载上游交付物（双后端兼容）
 
-### 非管理角色（情报收集员 / 选题研究员 / 文案 / 设计师 / 发布员）
+上游链接来自派工单 `dispatch.upstreams[].url`：
+
+- 链接是 OSS 公共 URL（不含 `/api/v1/files/`）→ 直接 `curl -L -o up.zip "<url>"`，无需鉴权；
+- 链接是本服务代理（`…/api/v1/files/<id>`）→ 加 `-H "Authorization: Bearer $TOKEN"`。
+
 ```bash
-csw-task my-tasks                       # 1. 看我的任务，拿 task_id + 派工单(含上游 url)
-csw-task task 101                        #    看派工单详情：主编意见、下一步、upstreams
-csw-task fetch <上游url> -o up.zip       # 2. 下上游交付物（每条 upstream 都下）
-# …干活，产出 zip…
-csw-task upload 资讯日更_文案_20260609_v1.zip   # 3. 上传 → 得 file_id + download_url
-csw-task submit 101 --type 文章 --file 5001 \
-  --self-check "三段结构✓ 事实核对✓ 配图对应✓"      # 4. 提交 → task 进入 review
-# 等主编/Van 审；被退回则按 review 的 direction/location 改，重新 upload+submit（版本自动 +1）
+curl -fL ${url#*api/v1/files/*}  # 统一写法：带上 Authorization 头总是安全的
+curl -fL -H "Authorization: Bearer $TOKEN" -o up.zip "<url>"
 ```
 
-### 中枢（主编）
-```bash
-# 起跑（按人类指示触发当日实例）
-csw-task trigger daily_news --subject 2026-06-09 --inputs "采集6/9露营装备上新"
+下载后解压，以 `index.md` 为入口读正文与附件。**每条 upstream 都要下**。
 
-csw-task inbox                           # 看三件事：派工队列 / 审核队列 / 我的自产任务
-csw-task dispatch 102 --note "选5则+排序+15图"        # 派工（upstreams 自动预填，可 --upstream 增改）
-csw-task review 1002 --pass                          # 主编审通过 → 转 Van 闸
-csw-task review 1002 --pass --comment "Van：通过"     # 代录 Van 审通过 → 该阶段过、下游就绪
-csw-task review 1004 --reject \
-  --direction "补足到15张" --location "第3则仅2张"    # 退回（必填方向+位置）
+### 2.2 submit：一步式提交（推荐，文件名/路径/版本全由服务端定）
+
+把交付物文件夹打成 zip（zip 内文件夹名随意，建议与服务端命名一致，见 §3 第 4 步），然后**一步提交**：
+
+```bash
+IDEM="submit-${TASK_ID}-$(shasum -a 256 交付物.zip | cut -c1-16)"
+curl -fsS -X POST "$BASE/api/v1/tasks/$TASK_ID/deliverables" \
+  -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: $IDEM" \
+  -F "file=@交付物.zip" \
+  -F "self_check=来源✓ 链接✓ 去重✓（逐条对照 task 返回的自检标准）" \
+  -F "title=可选一句话标题" \
+  -F "upstreams=[{\"label\":\"选题\",\"url\":\"https://…\"}]"   # 可选；不传则只有派工单记上游
 ```
 
-### 调度器（服务器侧）
+服务端自动完成：版本=当前版本+1；责任方=角色名（合流阶段=产出类型「成品」）；文件名 `{工作流}_{责任方}_{日期}_r{run}_v{n}.zip`；存储路径 `{工作流}/{subject}/r{run}/{阶段名}/{文件名}`；`doc_type` 缺省=阶段产出类型。响应回 `deliverable.download_url / filename / version`。**你不拼路径、不算版本、不起文件名。**
+
+（兼容两步式：`POST /files` 拿 `file_id` 再 JSON 提交——仅特殊场景用，常规一律一步式。）
+
+## 3. worker 循环（情报收集员 / 选题研究员 / 文案 / 设计师 / 发布员）
+
+**铁律：群消息只是提示，引擎才是真相。** 被 @ 后不要按消息内容直接干活——消息可能过期、可能是人随手发的。**「没有引擎任务不开工」= 新版「没有派工单不开工」。**
+
+1. **醒来**（被编辑部群 @ / 定时兜底）→ `my-tasks?status=open`，**处理全部 open 任务**（不只被 @ 那单，防漏消息）。
+2. `task <id>` → 读派工单（`dispatch.editor_note` 主编意见 + `dispatch.upstreams` 上游链接）、作业手册、自检标准。
+3. `fetch` 每条上游 → 解压读 `index.md` → **照作业手册干活**（它点名什么工具 skill 就用什么）。
+4. 装交付物文件夹（`index.md` + 附件子目录），`index.md` 顶部 YAML 头按作业手册的九字段范式，字段值从引擎取：
+   - `阶段` = task.stage_name；`版本` = task.cur_version + 1；
+   - `上游来源` = 派工单 upstreams 逐条「label · url」；派工单本身引用写「主编 · r{run_id} 任务#{task_id} 派工单（引擎）」（派工单是引擎记录，无 zip 链接）；
+   - `自检` = 逐条对照 task 返回的自检标准打 ✓。
+5. zip → **一步式 submit**（§2.2）→ 成功后**群播报 @主编**（§5.2 交付模板）。
+6. 等审。**被退回时不等群消息**：`task <id>` → 该版本 `latest_review` 自助读 `return_direction / return_location / comment` → 照改 → 回到第 4 步重新提交（版本自动 +1，审核从第一道闸重走）。
+
+> 发布员补充：作业手册要求「完成先通知主编、不要直接通知 Van」——本协议下即第 5 步的交付播报，**worker 任何时候都不 @Van**（§5.3 护栏）。
+
+## 4. 主编编排（中枢）
+
+主编**绝不亲自编辑内容**；所有判断对照引擎返回的验收标准。**每个动作 = 引擎调用成功后立即群播报**（§5）。
+
+### 4.1 起跑（每日任务启动）
+
+Van（人类）在群里把当日任务交给主编 → 主编：
+
 ```bash
-csw-task trigger daily_news --subject "$(date +%F)" --inputs "每日例行采集"
+# ① 触发实例（subject=日期；inputs 仅作 run 事件留痕）
+curl … -X POST "$BASE/api/v1/workflows/daily_news/runs" -d '{"subject":"2026-06-12","inputs":{"采集要求":"…"}}'
+# ② 串联首单：响应里找 seq=1 的 ready 任务，立即派工，当日采集要求写进 editor_note
+curl … -X POST "$BASE/api/v1/tasks/<首任务id>/dispatch" -d '{"editor_note":"今天采集：…（范围/对象/平台/指定链接）"}'
+# ③ 群播报 @情报收集员（§5.2 派工模板）
 ```
 
-## 5. 关键约定与注意
+> trigger 的 `inputs` **不会**自动变成首个派工单——②③ 不能省。
 
-- **只传链接**：把产出交给下游＝主编 `dispatch` 时把上游 `download_url` 放进派工单；下游用 `fetch` 取。不要把文件本体塞进消息。
-- **上游自动预填**：`dispatch` 不带 `--upstream` 时，引擎自动填依赖阶段已通过产出的链接；带了 `--upstream` 则以你给的为准（用于手加内容上游，如 07 补 05-成品）。
-- **退回必填**：`review --reject` 必须带 `--direction`（改什么方向）和 `--location`（具体位置）；主编不代改。
-- **版本与闸重置**：被退回后重新 `submit` 即 v+1，审核从第一道闸重走；原派工单不必重发。
-- **合流阶段自动派**：05/09 这类 assignee=主编的合流阶段，就绪时引擎自动派给主编自己（`inbox` 的「自产任务」里出现），主编直接 `submit` 成品即可。
-- **提交守卫**：task 不在 dispatched/returned/in_progress 时 `submit` 会被拒（409）；说明还没轮到你或正在审。
-- **幂等**：写命令可重试，重复不会重复派工/提交（自动 Idempotency-Key）。
+### 4.2 审核循环（双闸）
 
-## 6. 错误码
+```text
+inbox（review_queue 拿 deliverable_id + task_id + 下一闸信息）
+ → task <task_id>（拿验收标准 acceptance + 该版本 download_url + 自检申报）
+ → fetch 解压，对照验收标准逐条核
+ → 判定：
+   ├─ 不过 → review reject（必填 direction+location）→ 群播报 @该角色（退回模板）
+   ├─ 过（gate1，主编审）→ review pass → 此时下一闸是 Van 闸（relayed_by_hub）→ 群播报 @Van 转审（转审模板，附链接）
+   └─ Van 在群里给结论 → 代录 gate2：
+        过：review pass --comment "Van：通过"（末闸过即下游就绪）
+        不过：review reject --direction/--location（转述 Van 的方向与位置）
+ → 末闸过后：inbox 看 dispatch_queue（新就绪任务）→ dispatch 下一棒 + 群播报派工
+```
 
-| HTTP | 含义 | 处置 |
+```bash
+# reject 示例（reject 必带方向+位置，引擎强制）
+IDEM="review-${DELIV_ID}-reject-v${VER}"
+curl … -X POST "$BASE/api/v1/deliverables/$DELIV_ID/reviews" -H "Idempotency-Key: $IDEM" \
+  -d '{"verdict":"reject","return_direction":"补足到15张","return_location":"第3则仅2张"}'
+```
+
+### 4.3 两个特殊点（容易忘，写死成检查单）
+
+- **派 07-小红书文本时必须手加内容上游**：07 的 DAG 依赖是 06（发布物），但内容源是 **05-公众号成品**。dispatch 时必带 `upstreams:[{"label":"公众号成品","url":"<05 的 download_url>"}]`（可再附 06）。漏了文案就会拿错包。
+- **05 / 09 合成是你的自产任务**（就绪即自动派给你，inbox 的 `my_tasks` 出现）：fetch 03+04（或 07+08）两份已过审最新版 → 合并成一个文件夹（`index.md` 九字段头：责任方=成品；05 注明**公众号作者名**、09 注明**发布还是入草稿**；上游来源两条链接；附主编意见与下一步）→ 一步式 submit（服务端自动命名 `…_成品_…`）→ 它同样走双闸。
+
+## 5. 编辑部群协作协议（lark）
+
+**双写纪律：恒引擎先、群播报后。** 引擎失败则不发消息（什么都没发生）；引擎成功而发消息失败 → 重试一次，仍失败则在产出/备注里记「通知未达，请补发」。发送用 `lark-im`（`<at user_id="...">名字</at>`，发新消息不用回复式）；worker 监听被 @ 用 `lark-event`。
+
+### 5.1 花名册
+
+真实花名册见 **`skill/roster.json`**（部署时 `$CSW_TASK_ROSTER` 指向它；群「CSW编辑部」`chat_id=oc_c748…`）。键 = 引擎 `role_code`（taskDTO / inbox 都带 role_code，拿到即查该 @ 谁），值含 `open_id`——@ 时填到 `<at user_id="<open_id>">名字</at>`（lark 的 at 属性名叫 user_id，值用 open_id）。人类副本与映射现状见 `docs/CSW编辑部_通讯录.md`。
+
+当前映射（群成员按不同角色集建，已按指派对齐到资讯日更 role_code）：
+
+| role_code | 群 bot（承担者） | 状态 |
 |---|---|---|
-| 401 | token 无效/缺失 | 检查 `CSW_TASK_TOKEN` |
-| 403 | 权限不足（如 worker 触发、非中枢派工） | 该动作不归你；走对的角色 |
-| 404 | task/deliverable/run 不存在 | 核对 id |
-| 409 | 状态冲突（越闸、提交守卫、版本竞争） | 先 `task <id>` 看当前状态再操作 |
-| 5xx | 服务端错误 | skill 自动重试；持续失败上报 |
+| editor 主编 / researcher 选题研究员 / writer ← 深度内容创作者 / designer ← 视觉设计师 / publisher ← 发布运营员 / van | 已映射 | ✅ 可用 |
+| `collector` 情报收集员 | 待补充承接 bot | ⏳ roster 暂 `null` |
 
-## 7. 待实现项（草稿遗留）
+⚠️ **`collector` 补全前**，01-采集 的派工/交付播报查不到 open_id、@ 不到人——遇到时**回退为纯文本提示并报主编**，不要静默跳过。群里「小红书图文作者 / 合规版权审查员 / 数据复盘师」暂不接入本工作流，列在 roster 的 `reserved_bots`。
 
-- 服务 `csw-task-svc` 尚未实现；本 skill 命令为契约草稿，随服务定稿。
-- `--inputs` 如何映射到入口阶段派工单内容，待与服务对齐。
-- 鉴权/配置载入细节（token 来源、多 run 上下文）待实现时固化。
+### 5.2 五类消息模板（每条 ≤3 行、必带 ids，群面即流水线仪表盘）
 
-> 完整模型见《任务流转服务 · 设计文档》；流程语义见《资讯日更 · 全流程 / 交付与流转规范 / 验收标准》。
+| 时机 | 模板 |
+|---|---|
+| 派工（主编） | `【r{run}·{阶段}·任务#{task_id}】<at>角色</at> 新派工：{note 一句话}。详情与上游见引擎任务 #{task_id}` |
+| 交付（worker） | `【r{run}·{阶段}·v{n}】<at>主编</at> 已提交 交付物#{id}：{自检一句话}。{download_url}` |
+| 退回（主编） | `【r{run}·{阶段}·v{n}】<at>角色</at> 退回（{闸名}）：方向={direction}；位置={location}` |
+| 转审（主编） | `【r{run}·{阶段}·v{n}】<at>Van</at> 主编已过，请终审：{download_url}` |
+| 阶段过（主编） | `【r{run}·{阶段}】已过 Van 审。下一棒：{下一阶段/角色}` |
+
+### 5.3 护栏
+
+- **只有主编可以 @Van**；worker 永不直接联系 Van（发布员「先通知主编」即交付模板）。
+- **Van 的终审结论请 @主编 回复**（人侧约定，写进给 Van 的说明），否则主编监听不到、流程卡死。
+- Van 在群里对 worker 的直接插话**不构成派工/审核**——由主编转译成 dispatch / review 才生效（引擎是权威）。
+- 任何群成员都能发消息，所以 worker 收到 @ 后一律回到 §3 第 1 步从引擎核实。
+
+## 6. 幂等键（确定性派生，重试安全）
+
+写操作必带 `Idempotency-Key`，**从内容确定性派生**（重试自然回放首次响应，不会重复派工/双版本）：
+
+| 动作 | 键 |
+|---|---|
+| submit | `submit-{task_id}-{zip 的 sha256 前16位}` |
+| dispatch | `dispatch-{task_id}-{note 的 sha256 前16位}` |
+| review | `review-{deliverable_id}-{verdict}-v{version}` |
+| trigger | `trigger-{wf}-{subject}-{当日批次号}`（同日有意开第二批时换批次号） |
+
+## 7. 错误码处置
+
+| HTTP / code | 含义 | 处置 |
+|---|---|---|
+| 401 | token 无效/缺失 | 查 `CSW_TASK_TOKEN` |
+| 403 `not_assignee` / `not_hub` / `not_reviewer` / `relay_requires_hub` | 动作不归你的角色 | 走对的角色；worker 不派工不审核 |
+| 404 | task/deliverable/run/file 不存在 | 核对 id |
+| 409 `cannot_submit` | 任务不在 dispatched/returned/in_progress | 还没轮到你或正在审：`task <id>` 看状态 |
+| 409 `task_not_ready` | 派工对象不是 ready | 上游还没全过，看 `run <id>` |
+| 409 `stale_version` | 审的不是当前版本 | 重新 `task <id>` 取最新版本的 deliverable |
+| 409 `no_gate` | 越闸或已末闸 | `task <id>` 看 cur_gate 与 gates |
+| 400 `return_required` | reject 缺方向/位置 | 补 `return_direction`+`return_location` |
+| 400 `doc_type_required` | doc_type 与阶段产出类型都空 | 显式传 `-F doc_type=…` |
+| 5xx | 服务端错误 | 带同一幂等键重试；持续失败报主编 |
+
+> 完整模型见《任务流转服务 · 设计文档》；流程语义见《资讯日更 · 全流程 / 交付与流转规范 / 验收标准》（已 seed 进引擎，运行期以 `task <id>` 返回为准）。

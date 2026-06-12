@@ -13,7 +13,8 @@ import (
 )
 
 // OSSStore 阿里云 OSS 存储。对象以 public-read 上传，下载用永久公共直链（实现 BlobStore + PublicURLer）。
-// 对象 key：调用方传 objectKey（交付规范语义路径）则按它存，否则内容寻址 <prefix>/<sha 分片>。
+// 对象 key 一律落在 prefix 下（prefix = 本服务在 bucket 内的根目录，如 csw/）：
+// 语义路径 <prefix>/<objectKey>（交付规范路径），内容寻址 <prefix>/<sha 分片>。
 type OSSStore struct {
 	bucket     *oss.Bucket
 	prefix     string // 归一化为 "" 或 "xxx/"
@@ -73,8 +74,8 @@ func (s *OSSStore) Put(r io.Reader, objectKey string) (string, string, int64, er
 	}
 
 	sha := hex.EncodeToString(h.Sum(nil))
-	key := objectKey
-	if key == "" {
+	key := s.prefix + strings.TrimLeft(objectKey, "/")
+	if objectKey == "" {
 		key = s.shaKey(sha)
 		if exist, err := s.bucket.IsObjectExist(key); err != nil {
 			return "", "", 0, fmt.Errorf("oss head: %w", err)

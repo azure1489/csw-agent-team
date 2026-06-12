@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/domain"
@@ -287,5 +288,58 @@ func TestInboxQueries(t *testing.T) {
 	}
 	if _, err := st.Q().ListPendingReviews(ctx); err != nil {
 		t.Fatalf("ListPendingReviews: %v", err)
+	}
+}
+
+// TestReviewEventDetailAndDocTypeDefault 退回原因写进事件 detail（timeline 自助可读）；
+// submit 不传 doc_type 时缺省取阶段 output_type 快照。
+func TestReviewEventDetailAndDocTypeDefault(t *testing.T) {
+	e, st := setup(t)
+	ctx := context.Background()
+	editor, editorRole := who(t, st, "editor")
+
+	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-06-14", "", "")
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	runID := res.Run.ID
+	task := taskByCode(t, st, runID, "collect")
+	if task.OutputType != "资讯包" {
+		t.Fatalf("output_type snapshot: %q", task.OutputType)
+	}
+	if _, err := e.Dispatch(ctx, editor, editorRole, task.ID, "去采", nil); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	collector, _ := who(t, st, "collector")
+	// 不传 DocType → 取 output_type。
+	d, err := e.Submit(ctx, collector, task.ID, SubmitInput{DownloadURL: "http://x/1", SelfCheck: "ok"})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if d.DocType != "资讯包" {
+		t.Fatalf("doc_type default want 资讯包, got %q", d.DocType)
+	}
+
+	if _, err := e.Review(ctx, editor, editorRole, d.ID, ReviewInput{
+		Verdict: domain.VerdictReject, ReturnDirection: "补足来源", ReturnLocation: "第3条", Comment: "缺原文链接",
+	}); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+
+	events, err := st.Q().ListEventsByRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	var detail string
+	for _, ev := range events {
+		if ev.Type == domain.EvtGateReturned {
+			detail = ev.DetailJSON
+		}
+	}
+	for _, want := range []string{`"return_direction":"补足来源"`, `"return_location":"第3条"`, `"comment":"缺原文链接"`, `"gate_name":"主编审"`} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("gate_returned detail 缺 %s：%s", want, detail)
+		}
 	}
 }

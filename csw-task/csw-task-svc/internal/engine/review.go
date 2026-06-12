@@ -2,10 +2,20 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/domain"
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/store/sqlite"
 )
+
+// evtDetail 序列化事件 detail；失败返回空串（事件仍写入）。
+func evtDetail(m map[string]any) string {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
 
 // ReviewInput 审核入参。
 type ReviewInput struct {
@@ -102,6 +112,9 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 			if err != nil {
 				return err
 			}
+			passDetail := evtDetail(map[string]any{
+				"gate": nextGate, "gate_name": tg.Name, "comment": in.Comment, "final": nextGate >= len(gates),
+			})
 			if nextGate >= len(gates) {
 				// 末闸通过：task/deliverable passed，重算下游。
 				if err := q.SetDeliverableGate(ctx, deliverableID, nextGate, domain.DelPassed, nil); err != nil {
@@ -110,7 +123,7 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 				if err := q.SetTaskPassed(ctx, task.ID, d.Version); err != nil {
 					return err
 				}
-				if err := q.InsertEvent(ctx, domain.Event{RunID: &run.ID, TaskID: &task.ID, DeliverableID: &deliverableID, ActorID: &reviewerID, Type: domain.EvtGatePassed}); err != nil {
+				if err := q.InsertEvent(ctx, domain.Event{RunID: &run.ID, TaskID: &task.ID, DeliverableID: &deliverableID, ActorID: &reviewerID, Type: domain.EvtGatePassed, DetailJSON: passDetail}); err != nil {
 					return err
 				}
 				if err := q.InsertEvent(ctx, domain.Event{RunID: &run.ID, TaskID: &task.ID, Type: domain.EvtStagePassed}); err != nil {
@@ -124,13 +137,13 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 				if err := q.SetDeliverableGate(ctx, deliverableID, nextGate, domain.DelInReview, nil); err != nil {
 					return err
 				}
-				if err := q.InsertEvent(ctx, domain.Event{RunID: &run.ID, TaskID: &task.ID, DeliverableID: &deliverableID, ActorID: &reviewerID, Type: domain.EvtGatePassed}); err != nil {
+				if err := q.InsertEvent(ctx, domain.Event{RunID: &run.ID, TaskID: &task.ID, DeliverableID: &deliverableID, ActorID: &reviewerID, Type: domain.EvtGatePassed, DetailJSON: passDetail}); err != nil {
 					return err
 				}
 			}
 			res.GatePassed = true
 		} else {
-			// reject：退回，记退回闸位；不推进下游。
+			// reject：退回，记退回闸位；不推进下游。退回原因写进事件 detail（timeline 可读）。
 			nx := nextGate
 			if err := q.SetDeliverableGate(ctx, deliverableID, d.CurGate, domain.DelReturned, &nx); err != nil {
 				return err
@@ -138,7 +151,11 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 			if err := q.SetTaskReturned(ctx, task.ID); err != nil {
 				return err
 			}
-			if err := q.InsertEvent(ctx, domain.Event{RunID: &run.ID, TaskID: &task.ID, DeliverableID: &deliverableID, ActorID: &reviewerID, Type: domain.EvtGateReturned}); err != nil {
+			rejDetail := evtDetail(map[string]any{
+				"gate": nextGate, "gate_name": tg.Name,
+				"return_direction": in.ReturnDirection, "return_location": in.ReturnLocation, "comment": in.Comment,
+			})
+			if err := q.InsertEvent(ctx, domain.Event{RunID: &run.ID, TaskID: &task.ID, DeliverableID: &deliverableID, ActorID: &reviewerID, Type: domain.EvtGateReturned, DetailJSON: rejDetail}); err != nil {
 				return err
 			}
 		}

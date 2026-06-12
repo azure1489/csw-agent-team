@@ -88,6 +88,7 @@ type Task struct {
 	StageCode         string
 	StageName         string
 	RoleCode          string
+	OutputType        string
 	Instructions      string
 	SelfCheckCriteria string
 	Acceptance        string
