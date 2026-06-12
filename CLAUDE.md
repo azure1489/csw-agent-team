@@ -56,6 +56,14 @@ pnpm lint     # 仅 tsc --noEmit（无 ESLint）
 
 配置优先级 **env > `config.yaml` > 内置默认**。完整字段、联调步骤、各包测试覆盖见 `csw-task/csw-task-svc/README.md` 与 `csw-task/csw-task-web/README.md`。
 
+生产一键部署（幂等；本机构建 → 上传 → 远端 systemd×2 + docker nginx 反代 + 引导）：
+
+```bash
+./csw-task/deploy.sh [user@host] [domain]   # 默认 root@8.138.43.109 tasks.aworld.ltd
+# 布局：/ 前端 SPA · /admin/* → adminsrv:8081 · /api/v1/* → server:8080（同源免 CORS）
+# 角色 token 一次性引导不在脚本内：ssh <host> /opt/csw-task/bin/adminctl token issue <role>
+```
+
 ---
 
 # 第一部分：流程规范（`docs/`）
