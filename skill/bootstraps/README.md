@@ -19,7 +19,7 @@ csw-task skill（同一份，见 ../SKILL.md）
 | bootstrap | role_code | 群 bot（承担者） | 除公共底座外的工具 skill |
 |---|---|---|---|
 | `editor.md` | editor | 主编 | —（lark 重度使用） |
-| `collector.md` | collector | ⏳ 待补充 | 营事编集室 csw MCP · opencli（xiaohongshu）· WebFetch |
+| `collector.md` | collector | 情报收集员 | 营事编集室 csw MCP · opencli（xiaohongshu）· WebFetch |
 | `researcher.md` | researcher | 选题研究员 | —（纯编辑判断） |
 | `writer.md` | writer | 深度内容创作者 | —（写作） |
 | `designer.md` | designer | 视觉设计师 | generate-images |

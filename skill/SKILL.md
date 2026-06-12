@@ -142,14 +142,14 @@ curl … -X POST "$BASE/api/v1/deliverables/$DELIV_ID/reviews" -H "Idempotency-K
 
 真实花名册见 **`skill/roster.json`**（部署时 `$CSW_TASK_ROSTER` 指向它；群「CSW编辑部」`chat_id=oc_c748…`）。键 = 引擎 `role_code`（taskDTO / inbox 都带 role_code，拿到即查该 @ 谁），值含 `open_id`——@ 时填到 `<at user_id="<open_id>">名字</at>`（lark 的 at 属性名叫 user_id，值用 open_id）。人类副本与映射现状见 `docs/CSW编辑部_通讯录.md`。
 
-当前映射（群成员按不同角色集建，已按指派对齐到资讯日更 role_code）：
+当前映射（七个角色已全部对齐，花名册闭环）：
 
-| role_code | 群 bot（承担者） | 状态 |
-|---|---|---|
-| editor 主编 / researcher 选题研究员 / writer ← 深度内容创作者 / designer ← 视觉设计师 / publisher ← 发布运营员 / van | 已映射 | ✅ 可用 |
-| `collector` 情报收集员 | 待补充承接 bot | ⏳ roster 暂 `null` |
+| role_code | 群 bot（承担者） |
+|---|---|
+| editor 主编 / collector 情报收集员 / researcher 选题研究员 / van Van | 同名直接对应 |
+| writer 文案 ← 深度内容创作者 · designer 设计师 ← 视觉设计师 · publisher 发布员 ← 发布运营员 | 指派承担 |
 
-⚠️ **`collector` 补全前**，01-采集 的派工/交付播报查不到 open_id、@ 不到人——遇到时**回退为纯文本提示并报主编**，不要静默跳过。群里「小红书图文作者 / 合规版权审查员 / 数据复盘师」暂不接入本工作流，列在 roster 的 `reserved_bots`。
+若某角色在 roster 中查不到 open_id（如热改后新增角色未补花名册），**回退为纯文本提示并报主编**，不要静默跳过。群里「小红书图文作者 / 合规版权审查员 / 数据复盘师」暂不接入本工作流，列在 roster 的 `reserved_bots`。
 
 ### 5.2 五类消息模板（每条 ≤3 行、必带 ids，群面即流水线仪表盘）
 
