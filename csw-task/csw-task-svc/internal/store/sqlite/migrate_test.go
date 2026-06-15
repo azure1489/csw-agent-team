@@ -17,15 +17,15 @@ func TestMigrate(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	// 20 张业务表 + goose 版本表。
+	// 20 张原始业务表 + 0008 花名册 2 张（chats / chat_members）+ goose 版本表。
 	var n int
 	if err := db.QueryRow(
 		`SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name <> 'goose_db_version'`,
 	).Scan(&n); err != nil {
 		t.Fatalf("count tables: %v", err)
 	}
-	if n != 20 {
-		t.Fatalf("want 20 tables, got %d", n)
+	if n != 22 {
+		t.Fatalf("want 22 tables, got %d", n)
 	}
 
 	// 抽查部分唯一索引（约束硬化）存在。

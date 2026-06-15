@@ -143,6 +143,32 @@ type Deliverable struct {
 	IsDispatch     bool
 }
 
+// Chat 飞书群（花名册容器）。
+type Chat struct {
+	ChatKey   string
+	Name      string
+	Note      string
+	CreatedAt string
+	UpdatedAt string
+	ID        int64
+}
+
+// ChatMember 群成员：mapped（映射 role_code 的 agent）/ reserved（未接入工作流的 bot）/ 人类 van。
+type ChatMember struct {
+	Kind        string  // mapped | reserved
+	RoleCode    *string // mapped 必填；reserved 为 nil
+	OpenID      string
+	UserID      *string // 仅 van
+	DisplayName string
+	BotName     string
+	CreatedAt   string
+	UpdatedAt   string
+	ID          int64
+	ChatID      int64
+	Sort        int
+	IsHuman     bool
+}
+
 // Upstream 派工单/成品的上游链接条目。
 type Upstream struct {
 	Label       string

@@ -80,3 +80,18 @@ func nullInt(p *int) sql.NullInt64 {
 	}
 	return sql.NullInt64{Int64: int64(*p), Valid: true}
 }
+
+func ptrStr(n sql.NullString) *string {
+	if n.Valid {
+		v := n.String
+		return &v
+	}
+	return nil
+}
+
+func nullStr(p *string) sql.NullString {
+	if p == nil || *p == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: *p, Valid: true}
+}

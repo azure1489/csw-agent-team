@@ -19,7 +19,7 @@ description: 营事编集室「任务流转服务」客户端 + 编辑部协作�
 |---|---|
 | `CSW_TASK_BASE_URL` | 服务地址，如 `http://localhost:8080`（下文 `$BASE`） |
 | `CSW_TASK_TOKEN` | 本 agent 的 bearer token（**token 即角色与权限**，不要外泄；下文 `$TOKEN`） |
-| `CSW_TASK_ROSTER` | 花名册 JSON 路径（§5.1），群播报查 user_id 用 |
+| `CSW_TASK_ROSTER` | 花名册**离线兜底文件**路径（§5.1）；正常走 `GET /api/v1/roster`，此文件仅 API 不可达时降级用 |
 
 通用调用头：`-H "Authorization: Bearer $TOKEN"`。写操作必须带确定性幂等键（§6）。错误统一 `{code,message}`（§7）。
 
@@ -37,6 +37,7 @@ description: 营事编集室「任务流转服务」客户端 + 编辑部协作�
 | fetch | 各 agent | 见 §2.1（双后端） |
 | **submit（一步式）** | 各 agent | `POST /api/v1/tasks/{id}/deliverables`（**multipart**）——见 §2.2 |
 | run / timeline | 各 agent | `GET /api/v1/runs/{id}` / `…/timeline` |
+| **roster（花名册）** | 各 agent | `GET /api/v1/roster[?chat_id=]` → `{chat_id, roster{role_code:{open_id,name,bot}}, reserved_bots{}}`（群播报查 open_id 用，见 §5.1） |
 
 > 没有任何「建/改工作流」动作——定义只在管理后台，本 skill 不碰。
 
@@ -140,7 +141,13 @@ curl … -X POST "$BASE/api/v1/deliverables/$DELIV_ID/reviews" -H "Idempotency-K
 
 ### 5.1 花名册
 
-真实花名册见 **`skill/roster.json`**（部署时 `$CSW_TASK_ROSTER` 指向它；群「CSW编辑部」`chat_id=oc_c748…`）。键 = 引擎 `role_code`（taskDTO / inbox 都带 role_code，拿到即查该 @ 谁），值含 `open_id`——@ 时填到 `<at user_id="<open_id>">名字</at>`（lark 的 at 属性名叫 user_id，值用 open_id）。人类副本与映射现状见 `docs/CSW编辑部_通讯录.md`。
+**花名册以引擎为权威，实时拉取**——开工/播报前 `curl -fsS -H "Authorization: Bearer $TOKEN" "$BASE/api/v1/roster"`（结构见 §2 命令表），后台改人/换 open_id **即时生效、无需重新部署**。获取顺序（降级链）：
+
+1. `GET /api/v1/roster` 返回 200 → 用它；
+2. API 不可达/5xx 且 `$CSW_TASK_ROSTER` 指向的离线兜底文件存在 → 读该文件；
+3. 都没有 → 该角色 @ 不到人时**回退纯文本提示并报主编**，不静默跳过。
+
+键 = 引擎 `role_code`（taskDTO / inbox 都带 role_code，拿到即查该 @ 谁），值含 `open_id`——@ 时填到 `<at user_id="<open_id>">名字</at>`（lark 的 at 属性名叫 user_id，值用 open_id）。`reserved_bots`（群里有但未接入工作流的 bot）一般不 @。`skill/roster.json` 现为离线兜底快照（与 DB 同源，由 deploy 下发）；人类副本与映射现状见 `docs/CSW编辑部_通讯录.md`，后台可视化增删改见管理后台「通讯录」页。
 
 当前映射（七个角色已全部对齐，花名册闭环）：
 

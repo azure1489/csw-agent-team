@@ -59,6 +59,8 @@ func (s *Server) Router() *gin.Engine {
 		p.GET("/workflows/:id", s.handleGetWorkflow)
 		p.GET("/roles", s.handleListRoles)
 		p.GET("/agents", s.handleListAgents)
+		p.GET("/chats", s.handleListChats)
+		p.GET("/chats/:id/members", s.handleListChatMembers)
 		p.GET("/runs", s.handleListRuns)
 		p.GET("/runs/:id", s.handleRunDetail)
 		p.GET("/runs/:id/timeline", s.handleRunTimeline)
@@ -84,6 +86,12 @@ func (s *Server) Router() *gin.Engine {
 			w.PATCH("/agents/:id", s.handleUpdateAgent)
 			w.POST("/agents/:id/tokens", s.handleIssueToken)
 			w.POST("/agents/:id/tokens/:tid/revoke", s.handleRevokeToken)
+
+			w.POST("/chats", s.handleCreateChat)
+			w.PATCH("/chats/:id", s.handleUpdateChat)
+			w.POST("/chats/:id/members", s.handleCreateChatMember)
+			w.PATCH("/chats/:id/members/:mid", s.handleUpdateChatMember)
+			w.DELETE("/chats/:id/members/:mid", s.handleDeleteChatMember)
 		}
 
 		// superadmin only
@@ -95,6 +103,8 @@ func (s *Server) Router() *gin.Engine {
 			su.PATCH("/users/:id", s.handleUpdateUser)
 			su.POST("/users/:id/reset-password", s.handleResetPassword)
 			su.PUT("/settings", s.handlePutSettings)
+
+			su.DELETE("/chats/:id", s.handleDeleteChat)
 		}
 	}
 	return r

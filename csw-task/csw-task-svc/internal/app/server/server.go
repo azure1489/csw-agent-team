@@ -49,6 +49,9 @@ func (s *Server) Router() *gin.Engine {
 		v1.GET("/files/:id", s.handleDownload)
 		v1.POST("/tasks/:id/deliverables", s.handleSubmit)
 
+		// 花名册（任意角色 token 可读，群播报查 open_id 用）
+		v1.GET("/roster", s.handleRoster)
+
 		// 触发
 		v1.GET("/workflows", s.handleListWorkflows)
 		v1.POST("/workflows/:key/runs", s.handleTrigger)
