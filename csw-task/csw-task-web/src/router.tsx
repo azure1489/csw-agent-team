@@ -8,6 +8,7 @@ import { Dashboard } from '@/pages/Dashboard'
 import { Workflows } from '@/pages/Workflows'
 import { WorkflowEditor } from '@/pages/WorkflowEditor'
 import { Members } from '@/pages/Members'
+import { Rosters } from '@/pages/Rosters'
 import { AdminUsers } from '@/pages/AdminUsers'
 import { Runs } from '@/pages/Runs'
 import { RunDetailPage } from '@/pages/RunDetail'
@@ -51,6 +52,7 @@ export const router = createBrowserRouter([
       { path: '/workflows', element: <Workflows /> },
       { path: '/workflows/:id/edit', element: <WorkflowEditor /> },
       { path: '/members', element: <Members /> },
+      { path: '/rosters', element: <Rosters /> },
       {
         path: '/admin-users',
         element: (

@@ -71,6 +71,7 @@ export const NAV: NavItem[] = [
   { key: 'dashboard', label: '仪表盘', icon: I.dashboard, roles: ['superadmin', 'operator', 'viewer'], path: '/' },
   { key: 'workflows', label: '工作流', icon: I.workflow, roles: ['superadmin', 'operator', 'viewer'], path: '/workflows' },
   { key: 'members', label: '角色与成员', icon: I.members, roles: ['superadmin', 'operator', 'viewer'], path: '/members' },
+  { key: 'rosters', label: '通讯录', icon: I.building, roles: ['superadmin', 'operator', 'viewer'], path: '/rosters' },
   { key: 'admin-users', label: '后台用户', icon: I.adminUser, roles: ['superadmin'], badge: 'superadmin', path: '/admin-users' },
   { key: 'runs', label: '运行监控', icon: I.runs, roles: ['superadmin', 'operator', 'viewer'], path: '/runs' },
   { key: 'audit', label: '审计日志', icon: I.audit, roles: ['superadmin', 'operator', 'viewer'], path: '/audit' },

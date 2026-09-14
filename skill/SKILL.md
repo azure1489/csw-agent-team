@@ -137,7 +137,20 @@ curl … -X POST "$BASE/api/v1/deliverables/$DELIV_ID/reviews" -H "Idempotency-K
 
 ## 5. 编辑部群协作协议（lark）
 
-**双写纪律：恒引擎先、群播报后。** 引擎失败则不发消息（什么都没发生）；引擎成功而发消息失败 → 重试一次，仍失败则在产出/备注里记「通知未达，请补发」。发送用 `lark-im`（`<at user_id="...">名字</at>`，发新消息不用回复式）；worker 监听被 @ 用 `lark-event`。
+**双写纪律：恒引擎先、群播报后。** 引擎失败则不发消息（什么都没发生）；引擎成功而发消息失败 → 重试一次，仍失败则在产出/备注里记「通知未达，请补发」。worker 监听被 @ 用 `lark-event`。
+
+**群发送硬性规范（不这样发，@ 不生效、对方 agent 不会被唤醒）：**
+
+1. **直接发新消息**到群（独立消息，不要回复 / 对话线程形式）。
+2. **真 mention**：@ 人必须用 at-tag `<at user_id="{open_id}">{名称}</at>`，`user_id` 填花名册（`GET /api/v1/roster`）里该角色的 `open_id`。
+3. **发送方式固定**：`lark-cli im +messages-send --chat-id <chat_id> --msg-type text --content '<json>'`，content 形如 `{"text":"<at user_id=\"ou_xxx\">名称</at> 正文…"}`（一条消息可串多个 at-tag）。
+4. **禁止**：纯文本「@名字」、Markdown 文本里的 @、普通 `send_message`/markdown 发送——这些只是字符串，飞书不会真正提及，对方收不到 @、不会被唤醒（曾出现「口头说已 @、实际没真 @」就是这原因）。
+
+```bash
+# 群内 @ 示例：chat_id 与 open_id 都取自 GET /api/v1/roster；可一条带多个 at-tag
+lark-cli im +messages-send --chat-id oc_xxx --msg-type text \
+  --content '{"text":"<at user_id=\"ou_xxx\">情报收集员</at> 【r17·01-采集·任务#42】新派工：今天采集…，详情见引擎任务 #42"}'
+```
 
 ### 5.1 花名册
 
@@ -154,11 +167,13 @@ curl … -X POST "$BASE/api/v1/deliverables/$DELIV_ID/reviews" -H "Idempotency-K
 | role_code | 群 bot（承担者） |
 |---|---|
 | editor 主编 / collector 情报收集员 / researcher 选题研究员 / van Van | 同名直接对应 |
-| writer 文案 ← 深度内容创作者 · designer 设计师 ← 视觉设计师 · publisher 发布员 ← 发布运营员 | 指派承担 |
+| writer 文案 · designer 设计师 · publisher 发布员 | 企业群内 bot 显示名已与角色同名（曾用 深度内容创作者 / 视觉设计师 / 发布运营员）|
 
-若某角色在 roster 中查不到 open_id（如热改后新增角色未补花名册），**回退为纯文本提示并报主编**，不要静默跳过。群里「小红书图文作者 / 合规版权审查员 / 数据复盘师」暂不接入本工作流，列在 roster 的 `reserved_bots`。
+若某角色在 roster 中查不到 open_id（如热改后新增角色未补花名册），**回退为纯文本提示并报主编**，不要静默跳过。群里「小红书图文 / 合规审查员 / 数据复盘师」暂不接入本工作流，列在 roster 的 `reserved_bots`。
 
 ### 5.2 五类消息模板（每条 ≤3 行、必带 ids，群面即流水线仪表盘）
+
+> 模板里的 `<at>角色</at>` 是简写——实际发送必须按上面「群发送硬性规范」展开成真 at-tag `<at user_id="{该角色 open_id}">名称</at>`，用 `lark-cli im +messages-send --content` 发出，否则不算真 @。
 
 | 时机 | 模板 |
 |---|---|

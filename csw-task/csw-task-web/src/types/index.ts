@@ -138,6 +138,41 @@ export interface IssuedToken {
   label: string
 }
 
+// ---------- 通讯录（花名册）----------
+export interface Chat {
+  id: number
+  chat_key: string
+  name: string
+  note: string
+  member_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ChatMember {
+  id: number
+  chat_id: number
+  kind: 'mapped' | 'reserved'
+  role_code: string // mapped 必有；reserved 为 ""
+  open_id: string
+  user_id: string // 仅人类（Van）有；否则 ""
+  display_name: string
+  bot_name: string
+  is_human: boolean
+  sort: number
+}
+
+export interface MemberBody {
+  kind: 'mapped' | 'reserved'
+  role_code: string
+  open_id: string
+  user_id?: string
+  display_name: string
+  bot_name: string
+  is_human: boolean
+  sort: number
+}
+
 // ---------- 监控 ----------
 export interface RunListItem {
   id: number

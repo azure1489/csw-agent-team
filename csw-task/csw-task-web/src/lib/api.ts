@@ -9,9 +9,12 @@ import type {
   Agent,
   ApiWorkflowFull,
   AuditEntry,
+  Chat,
+  ChatMember,
   Deliverable,
   IssuedToken,
   LoginResp,
+  MemberBody,
   Overview,
   Role,
   RunDetail,
@@ -123,6 +126,16 @@ export const api = {
   updateAgent: (id: number, body: { name: string; role_code: string; active: boolean }) => http.patch(`/agents/${id}`, body).then((r) => r.data),
   issueToken: (id: number, body: { label?: string; expires_at?: string }) => http.post<IssuedToken>(`/agents/${id}/tokens`, body).then((r) => r.data),
   revokeToken: (id: number, tid: number) => http.post(`/agents/${id}/tokens/${tid}/revoke`).then((r) => r.data),
+
+  // roster（通讯录）
+  listChats: () => http.get<{ chats: Chat[] }>('/chats').then((r) => r.data.chats),
+  listChatMembers: (id: number) => http.get<{ members: ChatMember[] }>(`/chats/${id}/members`).then((r) => r.data.members),
+  createChat: (body: { chat_key: string; name: string; note?: string }) => http.post<{ id: number }>('/chats', body).then((r) => r.data.id),
+  updateChat: (id: number, body: { name: string; note?: string }) => http.patch(`/chats/${id}`, body).then((r) => r.data),
+  deleteChat: (id: number) => http.delete(`/chats/${id}`).then((r) => r.data),
+  createChatMember: (cid: number, body: MemberBody) => http.post<{ id: number }>(`/chats/${cid}/members`, body).then((r) => r.data.id),
+  updateChatMember: (cid: number, mid: number, body: MemberBody) => http.patch(`/chats/${cid}/members/${mid}`, body).then((r) => r.data),
+  deleteChatMember: (cid: number, mid: number) => http.delete(`/chats/${cid}/members/${mid}`).then((r) => r.data),
 
   // admin users
   listUsers: () => http.get<{ users: AdminUser[] }>('/users').then((r) => r.data.users),
