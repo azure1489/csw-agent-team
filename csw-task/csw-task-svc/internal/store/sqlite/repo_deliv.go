@@ -253,11 +253,44 @@ func (q *Queries) Idempotency(ctx context.Context, key string) (string, bool, er
 	return resp.String, true, nil
 }
 
-// PutIdempotency 记录幂等键 + 首次响应。
-func (q *Queries) PutIdempotency(ctx context.Context, key string, agentID *int64, endpoint, responseJSON string) error {
-	_, err := q.ex.ExecContext(ctx,
-		`INSERT OR IGNORE INTO idempotency_keys (key, agent_id, endpoint, response_json) VALUES (?,?,?,?)`,
-		key, nullI64(agentID), endpoint, responseJSON)
+// ClaimIdempotency 业务执行前持久占位：同键首次插入成功返回 owned=true，已存在返回 false。
+// 依赖主键冲突判定唯一执行权，对共享同一 DB 的多个服务进程同样有效。
+func (q *Queries) ClaimIdempotency(ctx context.Context, key string, agentID int64, endpoint, claimJSON string) (bool, error) {
+	var aid *int64
+	if agentID != 0 {
+		aid = &agentID
+	}
+	res, err := q.ex.ExecContext(ctx,
+		`INSERT INTO idempotency_keys (key, agent_id, endpoint, response_json) VALUES (?,?,?,?) ON CONFLICT(key) DO NOTHING`,
+		key, nullI64(aid), endpoint, claimJSON)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// CompleteIdempotency CAS：仅当该键仍是本次占位时写入最终响应；占位已被改动则报错。
+func (q *Queries) CompleteIdempotency(ctx context.Context, key, claimJSON, responseJSON string) error {
+	res, err := q.ex.ExecContext(ctx,
+		`UPDATE idempotency_keys SET response_json=? WHERE key=? AND response_json=?`,
+		responseJSON, key, claimJSON)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return errors.New("idempotency claim lost")
+	}
+	return nil
+}
+
+// ReleaseIdempotency 释放本次占位（业务未产生副作用时），允许同键重试。
+func (q *Queries) ReleaseIdempotency(ctx context.Context, key, claimJSON string) error {
+	_, err := q.ex.ExecContext(ctx, `DELETE FROM idempotency_keys WHERE key=? AND response_json=?`, key, claimJSON)
 	return err
 }
 

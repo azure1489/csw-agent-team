@@ -38,7 +38,7 @@ func (s *Server) Router() *gin.Engine {
 	r.GET("/healthz", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
 
 	v1 := r.Group("/api/v1")
-	v1.Use(middleware.AgentAuth(s.store), middleware.Idempotency(s.store))
+	v1.Use(middleware.AgentAuth(s.store), middleware.Idempotency(s.store, s.cfg.MaxUploadBytes+(1<<20)))
 	{
 		// Agent 自助
 		v1.GET("/me/tasks", s.handleMyTasks)

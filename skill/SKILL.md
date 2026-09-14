@@ -201,6 +201,8 @@ lark-cli im +messages-send --chat-id oc_xxx --msg-type text \
 | review | `review-{deliverable_id}-{verdict}-v{version}` |
 | trigger | `trigger-{wf}-{subject}-{当日批次号}`（同日有意开第二批时换批次号） |
 
+服务端语义（fail-closed，按键 at-most-once）：同一键**第一次到达即占位**，业务成功（2xx）后同键重试直接回放首次响应；业务失败（4xx/5xx）会释放占位，修正后可用同一键重试；键相同但内容 / 身份 / 目标不同 → 409 `idempotency_request_mismatch`；首次请求中途崩溃、结果不确定 → 同键一律 409 `idempotency_in_progress_or_uncertain`，此时**先 `task <id>` 核实产出是否已落**，不要换键重发。multipart 重试可以换 boundary（服务端按各 part 内容比对），但 zip 字节、字段值必须与首次一致。
+
 ## 7. 错误码处置
 
 | HTTP / code | 含义 | 处置 |
@@ -214,6 +216,10 @@ lark-cli im +messages-send --chat-id oc_xxx --msg-type text \
 | 409 `no_gate` | 越闸或已末闸 | `task <id>` 看 cur_gate 与 gates |
 | 400 `return_required` | reject 缺方向/位置 | 补 `return_direction`+`return_location` |
 | 400 `doc_type_required` | doc_type 与阶段产出类型都空 | 显式传 `-F doc_type=…` |
-| 5xx | 服务端错误 | 带同一幂等键重试；持续失败报主编 |
+| 409 `idempotency_request_mismatch` | 同一幂等键被用在了不同内容 / 身份 / 目标上 | 检查键的派生是否漏了变量；确认是新请求就换键 |
+| 409 `idempotency_in_progress_or_uncertain` | 同键首次请求仍在处理或结果不确定 | `task <id>` 核实产出是否已落；已落则不再重发，未落报主编 |
+| 413 `idempotency_body_too_large` | 带键请求体超过上传上限 | 检查 zip 大小，超限拆分附件 |
+| 503 `idempotency_store_unavailable` | 幂等存储不可用，业务未执行 | 稍后带同一键重试 |
+| 5xx | 服务端错误 | 带同一幂等键重试（非 2xx 会自动释放占位）；持续失败报主编 |
 
 > 完整模型见《任务流转服务 · 设计文档》；流程语义见《资讯日更 · 全流程 / 交付与流转规范 / 验收标准》（已 seed 进引擎，运行期以 `task <id>` 返回为准）。
