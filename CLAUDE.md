@@ -156,7 +156,7 @@ internal/
 
 技术栈：`gin` · `modernc.org/sqlite`（纯 Go 免 cgo）· `goose/v3`（迁移 embed）· `slog`。并发模型：WAL + `busy_timeout` + `foreign_keys` + `SetMaxOpenConns(1)`（写串行）。
 
-引擎要点（`internal/engine`）：触发即**快照**工作流定义（运行实例不受此后定义热改影响）；提交后按闸推进（主编闸 → Van 闸，0 闸直通）；越级审核 409；退回必填方向+位置；合流阶段（assignee=主编）就绪时自动派给主编。所有写操作支持 `Idempotency-Key`（重复请求回放首次响应），错误统一 `{code,message}` + HTTP 码。
+引擎要点（`internal/engine`）：触发即**快照**工作流定义（运行实例不受此后定义热改影响）；提交后按闸推进（主编闸 → Van 闸，0 闸直通）；越级审核 409；退回必填方向+位置；合流阶段（assignee=主编）就绪时自动派给主编。所有写操作支持 `Idempotency-Key`（fail-closed：业务前持久占位 + 请求指纹绑定；2xx 后同指纹回放，非 2xx 释放占位可重试，崩溃后同键 409 需人工核实；见设计 §8），错误统一 `{code,message}` + HTTP 码。
 
 ## 前端 `csw-task-web/`：管理后台
 
