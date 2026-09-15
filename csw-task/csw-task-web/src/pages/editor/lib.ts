@@ -88,9 +88,9 @@ export function runChecks(draft: EditorWorkflow, roles: Role[]): FrontCheck[] {
   if (badAction.length === 0) checks.push({ status: 'pass', text: '动作类别均合法' })
   else badAction.forEach((s) => checks.push({ status: 'fail', text: `${s.name}：动作类别「${s.action_class}」不合法`, stageId: s.id }))
 
-  const badMode = draft.stages.filter((s) => !['', 'auto', 'manual'].includes(s.dispatch_mode || '') || (s.sla_minutes || 0) < 0)
+  const badMode = draft.stages.filter((s) => !['', 'auto', 'manual'].includes(s.dispatch_mode || '') || (s.sla_minutes || 0) < 0 || (s.ack_minutes || 0) < 0 || (s.idle_minutes || 0) < 0)
   if (badMode.length === 0) checks.push({ status: 'pass', text: '派工模式与时限取值合法' })
-  else badMode.forEach((s) => checks.push({ status: 'fail', text: `${s.name}：派工模式或时限取值不合法`, stageId: s.id }))
+  else badMode.forEach((s) => checks.push({ status: 'fail', text: `${s.name}：派工模式、时限或提醒分钟数取值不合法`, stageId: s.id }))
 
   const orphanItem = draft.stages.filter((s) => {
     if (!s.per_item) return false

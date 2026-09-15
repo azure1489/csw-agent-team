@@ -33,6 +33,8 @@ type taskDTO struct {
 	Seq            int    `json:"seq"`
 	CurVersion     int    `json:"cur_version"`
 	SLAMinutes     int    `json:"sla_minutes,omitempty"`
+	AckMinutes     int    `json:"ack_minutes,omitempty"`
+	IdleMinutes    int    `json:"idle_minutes,omitempty"`
 	IsMerge        bool   `json:"is_merge"`
 	ReworkPending  bool   `json:"rework_pending"`
 }
@@ -47,6 +49,7 @@ func toTaskDTO(t domain.Task) taskDTO {
 		Seq: t.Seq, RoleCode: t.RoleCode, OutputType: t.OutputType, IsMerge: t.IsMerge, Status: string(t.Status),
 		CurVersion: t.CurVersion, AssigneeID: t.AssigneeID,
 		ActionClass: ac, DispatchMode: string(t.DispatchMode), SLAMinutes: t.SLAMinutes,
+		AckMinutes: t.AckMinutes, IdleMinutes: t.IdleMinutes,
 		ItemKey: t.ItemKey, WaitItemStages: t.WaitItemStages, FailReason: t.FailReason, DueAt: t.DueAt, DispatchedAt: t.DispatchedAt,
 		StartedAt: t.StartedAt, CompletedAt: t.CompletedAt, LastActivityAt: t.LastActivityAt, ReworkPending: t.ReworkPending,
 	}

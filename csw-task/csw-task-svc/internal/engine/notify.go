@@ -123,3 +123,43 @@ func (e *Engine) NotifyOverdue(ctx context.Context, taskID int64) (bool, error) 
 	})
 	return sent, err
 }
+
+// NotifyStall 接续告警（未接单 / 未接单升级 / 接单后无活动），每类每次停滞只提醒一次；返回是否本次发出。
+// 未接单与无活动主送执行者、抄送中枢；升级只主送中枢，由中枢改派、重开或取消。
+func (e *Engine) NotifyStall(ctx context.Context, taskID int64, k domain.StallKind) (bool, error) {
+	var sent bool
+	err := e.store.Tx(ctx, func(q *sqlite.Queries) error {
+		ok, err := q.MarkStallNotified(ctx, taskID, k)
+		if err != nil || !ok {
+			return err
+		}
+		task, err := q.GetTask(ctx, taskID)
+		if err != nil {
+			return err
+		}
+		wf, err := taskWorkflow(ctx, q, task)
+		if err != nil {
+			return err
+		}
+		n := &notice{target: task.RoleCode, hub: wf.HubRoleCode, cc: []string{wf.HubRoleCode}}
+		var typ string
+		var detail map[string]any
+		switch k {
+		case domain.StallAck:
+			typ = domain.EvtAckOverdue
+			detail = map[string]any{"minutes": domain.AckMinutesOf(task), "dispatched_at": task.DispatchedAt}
+		case domain.StallEscalate:
+			typ = domain.EvtAckEscalated
+			n.target, n.cc = wf.HubRoleCode, nil
+			detail = map[string]any{"minutes": domain.AckMinutesOf(task) * domain.AckEscalateFactor,
+				"dispatched_at": task.DispatchedAt, "assignee_role": task.RoleCode}
+		default:
+			typ = domain.EvtTaskIdle
+			detail = map[string]any{"minutes": domain.IdleMinutesOf(task), "last_activity_at": task.LastActivityAt}
+		}
+		n.payload = taskPayload(task, detail)
+		sent = true
+		return emit(ctx, q, domain.Event{RunID: &task.RunID, TaskID: &task.ID, Type: typ, DetailJSON: evtDetail(detail)}, n)
+	})
+	return sent, err
+}

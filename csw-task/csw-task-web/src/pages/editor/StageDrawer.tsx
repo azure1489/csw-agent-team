@@ -88,7 +88,7 @@ export function StageDrawer({
           </div>
         </div>
 
-        {/* dispatch / action / sla / per-item */}
+        {/* dispatch / action / sla / alerts / per-item */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
           <Field label="派工模式" hint="继承=沿用工作流设置；手动=就绪后等中枢写派工意见再派。">
             <Select value={s.dispatch_mode || ''} onChange={(v) => set({ dispatch_mode: v })} options={DISPATCH_MODE_OPTS} disabled={readonly} />
@@ -102,6 +102,22 @@ export function StageDrawer({
               onChange={(v) => set({ sla_minutes: parseInt(v.replace(/\D/g, '') || '0', 10) })}
               readOnly={readonly}
               placeholder="不设"
+            />
+          </Field>
+          <Field label="接单提醒（分钟）" hint="派工后多久未接单提醒执行者，超过 3 倍升级主编；留空=默认 5。">
+            <TextInput
+              value={s.ack_minutes ? String(s.ack_minutes) : ''}
+              onChange={(v) => set({ ack_minutes: parseInt(v.replace(/\D/g, '') || '0', 10) })}
+              readOnly={readonly}
+              placeholder="默认 5"
+            />
+          </Field>
+          <Field label="无活动提醒（分钟）" hint="接单后多久没有心跳或产物提醒一次；留空=默认 10。">
+            <TextInput
+              value={s.idle_minutes ? String(s.idle_minutes) : ''}
+              onChange={(v) => set({ idle_minutes: parseInt(v.replace(/\D/g, '') || '0', 10) })}
+              readOnly={readonly}
+              placeholder="默认 10"
             />
           </Field>
           <div className="row gap8" style={{ alignSelf: 'end', paddingBottom: 8 }}>

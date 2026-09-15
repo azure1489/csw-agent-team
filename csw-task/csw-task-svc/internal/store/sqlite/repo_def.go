@@ -182,7 +182,7 @@ func (q *Queries) ListStages(ctx context.Context, workflowID int64) ([]domain.St
 	rows, err := q.ex.QueryContext(ctx, `
 		SELECT id, workflow_id, seq, code, name, role_code, output_type,
 		       instructions, self_check_criteria, acceptance, is_merge,
-		       dispatch_mode, action_class, sla_minutes, per_item
+		       dispatch_mode, action_class, sla_minutes, per_item, ack_minutes, idle_minutes
 		FROM workflow_stages WHERE workflow_id=? ORDER BY seq`, workflowID)
 	if err != nil {
 		return nil, err
@@ -192,15 +192,16 @@ func (q *Queries) ListStages(ctx context.Context, workflowID int64) ([]domain.St
 	for rows.Next() {
 		var st domain.Stage
 		var ot, ins, sc, ac, dmode sql.NullString
-		var sla sql.NullInt64
+		var sla, ack, idle sql.NullInt64
 		var merge, perItem int
 		if err := rows.Scan(&st.ID, &st.WorkflowID, &st.Seq, &st.Code, &st.Name, &st.RoleCode,
-			&ot, &ins, &sc, &ac, &merge, &dmode, &st.ActionClass, &sla, &perItem); err != nil {
+			&ot, &ins, &sc, &ac, &merge, &dmode, &st.ActionClass, &sla, &perItem, &ack, &idle); err != nil {
 			return nil, err
 		}
 		st.OutputType, st.Instructions, st.SelfCheckCriteria, st.Acceptance = ot.String, ins.String, sc.String, ac.String
 		st.IsMerge, st.PerItem = merge == 1, perItem == 1
 		st.DispatchMode, st.SLAMinutes = dmode.String, int(sla.Int64)
+		st.AckMinutes, st.IdleMinutes = int(ack.Int64), int(idle.Int64)
 		out = append(out, st)
 	}
 	return out, rows.Err()
@@ -344,11 +345,12 @@ func (q *Queries) InsertStage(ctx context.Context, s domain.Stage) (int64, error
 	res, err := q.ex.ExecContext(ctx, `
 		INSERT INTO workflow_stages
 		  (workflow_id, seq, code, name, role_code, output_type, instructions, self_check_criteria, acceptance, is_merge,
-		   dispatch_mode, action_class, sla_minutes, per_item)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   dispatch_mode, action_class, sla_minutes, per_item, ack_minutes, idle_minutes)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		s.WorkflowID, s.Seq, s.Code, s.Name, s.RoleCode, s.OutputType,
 		s.Instructions, s.SelfCheckCriteria, s.Acceptance, b2i(s.IsMerge),
-		nullIfEmpty(s.DispatchMode), actionOrRead(s.ActionClass), nullIfNonPos(s.SLAMinutes), b2i(s.PerItem))
+		nullIfEmpty(s.DispatchMode), actionOrRead(s.ActionClass), nullIfNonPos(s.SLAMinutes), b2i(s.PerItem),
+		nullIfNonPos(s.AckMinutes), nullIfNonPos(s.IdleMinutes))
 	if err != nil {
 		return 0, err
 	}

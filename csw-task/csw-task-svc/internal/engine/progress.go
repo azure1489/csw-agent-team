@@ -14,9 +14,6 @@ import (
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/store/sqlite"
 )
 
-// idleAfter 已接单但超过该时长没有心跳或产物，进度上标「无活动」。
-const idleAfter = 30 * time.Minute
-
 var scopeLabel = map[domain.AuthScope]string{
 	domain.ScopeLocalDrill: "本地演练", domain.ScopeWxDraft: "公众号草稿", domain.ScopeWxPublish: "公众号发布",
 	domain.ScopeXhsDraft: "小红书草稿", domain.ScopeXhsPublish: "小红书发布",
@@ -193,10 +190,16 @@ func BuildProgress(ctx context.Context, q *sqlite.Queries, runID int64, now time
 				pt.Next = "主编派工"
 			}
 		case domain.TaskDispatched:
-			pt.Blocker = &Blocker{Kind: "ack", Text: "待" + who + "接单"}
+			text := "待" + who + "接单"
+			if disp, err := time.Parse(time.RFC3339, t.DispatchedAt); err == nil {
+				if m := int(now.Sub(disp).Minutes()); m >= domain.AckMinutesOf(t) {
+					text = fmt.Sprintf("已派工 %d 分钟，待%s接单", m, who)
+				}
+			}
+			pt.Blocker = &Blocker{Kind: "ack", Text: text}
 			pt.Next = who + "接单"
 		case domain.TaskInProgress:
-			if last, err := time.Parse(time.RFC3339, t.LastActivityAt); err == nil && now.Sub(last) > idleAfter {
+			if last, err := time.Parse(time.RFC3339, t.LastActivityAt); err == nil && now.Sub(last) >= time.Duration(domain.IdleMinutesOf(t))*time.Minute {
 				pt.Idle = true
 				pt.Blocker = &Blocker{Kind: "idle", Text: fmt.Sprintf("已接单，%d 分钟无活动", int(now.Sub(last).Minutes()))}
 			}

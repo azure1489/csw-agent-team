@@ -443,6 +443,8 @@ export function WorkflowEditor() {
         dispatch_mode: '',
         action_class: 'read',
         sla_minutes: 0,
+        ack_minutes: 0,
+        idle_minutes: 0,
         per_item: false,
         deps: d.stages.length ? [d.stages[d.stages.length - 1].id] : [],
         instructions: '',

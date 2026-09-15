@@ -122,6 +122,8 @@ type putStage struct {
 	IsMerge           bool      `json:"is_merge"`
 	PerItem           bool      `json:"per_item"`
 	SLAMinutes        int       `json:"sla_minutes"`
+	AckMinutes        int       `json:"ack_minutes"`  // 派工后多久未接单提醒；0=默认
+	IdleMinutes       int       `json:"idle_minutes"` // 接单后多久无活动提醒；0=默认
 	Deps              []string  `json:"deps"`
 	Gates             []putGate `json:"gates"`
 }
@@ -214,6 +216,10 @@ func (s *Server) handlePutWorkflow(c *gin.Context) {
 			s.renderErr(c, domain.BadRequest("bad_sla", st.Code+" 的时限不能为负数"))
 			return
 		}
+		if st.AckMinutes < 0 || st.IdleMinutes < 0 {
+			s.renderErr(c, domain.BadRequest("bad_alert_minutes", st.Code+" 的接单提醒 / 无活动提醒分钟数不能为负数"))
+			return
+		}
 		for _, d := range st.Deps {
 			if d == st.Code {
 				s.renderErr(c, domain.BadRequest("self_dep", st.Code+" 不能依赖自己"))
@@ -252,6 +258,7 @@ func (s *Server) handlePutWorkflow(c *gin.Context) {
 				OutputType: st.OutputType, Instructions: st.Instructions,
 				SelfCheckCriteria: st.SelfCheckCriteria, Acceptance: st.Acceptance, IsMerge: st.IsMerge,
 				DispatchMode: st.DispatchMode, ActionClass: st.ActionClass, SLAMinutes: st.SLAMinutes, PerItem: st.PerItem,
+				AckMinutes: st.AckMinutes, IdleMinutes: st.IdleMinutes,
 			})
 			if err != nil {
 				return err

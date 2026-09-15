@@ -123,6 +123,8 @@ func Diff(base, next *Def) []Change {
 		cmp("派工模式", orInherit(b.DispatchMode), orInherit(n.DispatchMode))
 		cmp("动作类别", orRead(b.ActionClass), orRead(n.ActionClass))
 		cmp("时限", fmt.Sprint(b.SLAMinutes), fmt.Sprint(n.SLAMinutes))
+		cmp("接单提醒", fmt.Sprint(b.AckMinutes), fmt.Sprint(n.AckMinutes))
+		cmp("无活动提醒", fmt.Sprint(b.IdleMinutes), fmt.Sprint(n.IdleMinutes))
 		cmp("逐条", fmt.Sprint(b.PerItem), fmt.Sprint(n.PerItem))
 		for _, f := range fields {
 			add("阶段", c, f)

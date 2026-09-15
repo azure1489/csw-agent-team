@@ -47,6 +47,8 @@ type Stage struct {
 	WorkflowID        int64
 	Seq               int
 	SLAMinutes        int // 派工后时限（分钟），0=不设
+	AckMinutes        int // 派工后多久未接单提醒（分钟），0=默认
+	IdleMinutes       int // 接单后多久无活动提醒（分钟），0=默认
 	IsMerge           bool
 	PerItem           bool // 按条目生成任务（条目级推进）
 }
@@ -114,6 +116,8 @@ type Task struct {
 	Seq               int
 	CurVersion        int
 	SLAMinutes        int // 快照：派工后时限（分钟），0=不设
+	AckMinutes        int // 快照：未接单提醒阈值（分钟），0=默认
+	IdleMinutes       int // 快照：无活动提醒阈值（分钟），0=默认
 	IsMerge           bool
 	ReworkPending     bool // 上游补件到达，需按新资产返工
 }

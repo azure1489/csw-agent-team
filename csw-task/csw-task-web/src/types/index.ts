@@ -44,6 +44,8 @@ export interface ApiStage {
   dispatch_mode?: string | null // 阶段级派工模式覆盖：空=继承工作流 / manual / auto
   action_class?: string // read | platform_write:<scope>
   sla_minutes?: number | null // 派工后时限（分钟），0/空=不设
+  ack_minutes?: number | null // 派工后多久未接单提醒（分钟），0/空=默认 5
+  idle_minutes?: number | null // 接单后多久无活动提醒（分钟），0/空=默认 10
   per_item?: boolean // 按条目生成任务
   deps: string[] // 上游阶段 code
   gates: ApiGate[] // 覆盖闸（空=用 default_gates）
@@ -94,6 +96,8 @@ export interface EditorStage {
   dispatch_mode: string // '' = 继承工作流
   action_class: string // read | platform_write:<scope>
   sla_minutes: number // 0 = 不设
+  ack_minutes: number // 0 = 默认 5
+  idle_minutes: number // 0 = 默认 10
   per_item: boolean
   deps: number[] // 上游阶段 id
   gate_override: EditorGate[] | null
@@ -217,6 +221,8 @@ export interface TaskBrief {
   action_class?: string
   dispatch_mode?: string
   sla_minutes?: number
+  ack_minutes?: number
+  idle_minutes?: number
   item_key?: string
   fail_reason?: string
   due_at?: string

@@ -130,6 +130,12 @@ func render(o domain.Outbox, r roster) (string, bool) {
 		line = fmt.Sprintf("【r%s·%s·任务#%s】%s 执行方报告无法完成：%s", run, stage, task, to, p.s("reason"))
 	case domain.EvtOverdue:
 		line = fmt.Sprintf("【r%s·%s·任务#%s】%s 已逾期（时限 %s 分钟，截止 %s）", run, stage, task, to, p.s("sla_minutes"), p.s("due_at"))
+	case domain.EvtAckOverdue:
+		line = fmt.Sprintf("【r%s·%s·任务#%s】%s 已派工 %s 分钟仍未接单：请先接单再开工；做不了请报告失败", run, stage, task, to, p.s("minutes"))
+	case domain.EvtAckEscalated:
+		line = fmt.Sprintf("【r%s·%s·任务#%s】%s 执行方（%s）派工 %s 分钟仍未接单，请改派、重开或取消", run, stage, task, to, p.s("assignee_role"), p.s("minutes"))
+	case domain.EvtTaskIdle:
+		line = fmt.Sprintf("【r%s·%s·任务#%s】%s 接单后 %s 分钟没有心跳或产物：请提交、心跳或报告失败", run, stage, task, to, p.s("minutes"))
 	default:
 		line = fmt.Sprintf("【r%s·%s】%s %s", run, stage, to, o.EventType)
 	}

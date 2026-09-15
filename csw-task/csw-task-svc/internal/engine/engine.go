@@ -190,6 +190,8 @@ func (e *Engine) Trigger(ctx context.Context, actor domain.Agent, role domain.Ro
 				DispatchMode:      stageDispatchMode(st, wf),
 				ActionClass:       st.ActionClass,
 				SLAMinutes:        st.SLAMinutes,
+				AckMinutes:        st.AckMinutes,
+				IdleMinutes:       st.IdleMinutes,
 				WaitItemStages:    strings.Join(waits[st.ID], ","),
 				AssigneeID:        resolveAssignee(ctx, q, st.RoleCode),
 				Status:            domain.TaskBlocked,

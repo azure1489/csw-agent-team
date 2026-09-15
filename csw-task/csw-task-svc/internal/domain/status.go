@@ -136,6 +136,42 @@ const (
 	EvtSupplementArrived = "supplement_arrived"
 )
 
+// 接续告警：事件类型与默认阈值（阶段未设 ack_minutes / idle_minutes 时）。
+const (
+	EvtAckOverdue   = "ack_overdue"   // 派工后超过阈值仍未接单：提醒执行者、抄送中枢
+	EvtAckEscalated = "ack_escalated" // 未接单超过阈值 × AckEscalateFactor：升级中枢处置
+	EvtTaskIdle     = "task_idle"     // 接单后超过阈值没有心跳或产物：提醒执行者、抄送中枢
+
+	DefaultAckMinutes  = 5
+	DefaultIdleMinutes = 10
+	AckEscalateFactor  = 3
+)
+
+// StallKind 接续告警类别。
+type StallKind string
+
+const (
+	StallAck      StallKind = "ack"      // 派工后未接单
+	StallEscalate StallKind = "escalate" // 未接单升级中枢（须已提醒过执行者）
+	StallIdle     StallKind = "idle"     // 接单后无活动
+)
+
+// AckMinutesOf 任务的未接单提醒阈值（快照为 0 时取默认）。
+func AckMinutesOf(t Task) int {
+	if t.AckMinutes > 0 {
+		return t.AckMinutes
+	}
+	return DefaultAckMinutes
+}
+
+// IdleMinutesOf 任务的无活动提醒阈值（快照为 0 时取默认）。
+func IdleMinutesOf(t Task) int {
+	if t.IdleMinutes > 0 {
+		return t.IdleMinutes
+	}
+	return DefaultIdleMinutes
+}
+
 // ActionRead 普通阶段的动作类别。平台写操作写作 "platform_write:<scope>"。
 const (
 	ActionRead          = "read"

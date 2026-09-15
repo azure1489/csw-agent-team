@@ -157,7 +157,7 @@ func ValidatePure(in PureInput) Report {
 	// 9. 派工模式覆盖与时限取值合法。
 	var badMode []string
 	for _, st := range stages {
-		if !domain.ValidStageDispatchMode(st.DispatchMode) || st.SLAMinutes < 0 {
+		if !domain.ValidStageDispatchMode(st.DispatchMode) || st.SLAMinutes < 0 || st.AckMinutes < 0 || st.IdleMinutes < 0 {
 			badMode = append(badMode, st.Name)
 		}
 	}

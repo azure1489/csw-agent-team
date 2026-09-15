@@ -269,3 +269,30 @@ func TestProgressCardAfterStagePassedOnce(t *testing.T) {
 		t.Fatalf("unchanged digest must not resend progress card")
 	}
 }
+
+func TestStallScanRemindsThenEscalates(t *testing.T) {
+	r := newRig(t, Options{})
+	r.trigger(t)
+	r.flush(t)
+	intake := r.task(t, "intake")
+	if _, err := r.st.DB().Exec(`UPDATE tasks SET dispatched_at='2000-01-01T00:00:00Z' WHERE id=?`, intake.ID); err != nil {
+		t.Fatal(err)
+	}
+	// 第一轮只提醒执行者（升级须在提醒之后）；第二轮升级主编；之后不再重复。
+	for i, want := range []int{1, 1, 0} {
+		if n, err := r.n.ScanStalls(context.Background()); err != nil || n != want {
+			t.Fatalf("scan %d: n=%d want %d err=%v", i+1, n, want, err)
+		}
+	}
+	if got := r.flush(t); got != 2 {
+		t.Fatalf("stall messages: %d", got)
+	}
+	texts := r.sender.texts()
+	remind, escalate := texts[len(texts)-2], texts[len(texts)-1]
+	if !strings.Contains(remind, "仍未接单：请先接单") || !strings.Contains(remind, openCollector) {
+		t.Fatalf("remind text: %s", remind)
+	}
+	if !strings.Contains(escalate, "请改派、重开或取消") || !strings.Contains(escalate, openEditor) {
+		t.Fatalf("escalate text: %s", escalate)
+	}
+}

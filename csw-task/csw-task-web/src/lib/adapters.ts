@@ -48,6 +48,8 @@ export function apiToEditor(full: ApiWorkflowFull): EditorWorkflow {
     dispatch_mode: s.dispatch_mode || '',
     action_class: s.action_class || 'read',
     sla_minutes: s.sla_minutes || 0,
+    ack_minutes: s.ack_minutes || 0,
+    idle_minutes: s.idle_minutes || 0,
     per_item: !!s.per_item,
     deps: (s.deps || []).map((c) => codeToId[c]).filter((x) => x != null),
     gate_override: s.gates && s.gates.length ? s.gates.map((g, i) => apiGateToEditor(g, i + 1)) : null,
@@ -88,6 +90,8 @@ export interface PutWorkflowBody {
     dispatch_mode: string
     action_class: string
     sla_minutes: number
+    ack_minutes: number
+    idle_minutes: number
     per_item: boolean
     deps: string[]
     gates: ApiGate[]
@@ -119,6 +123,8 @@ export function editorToPutBody(wf: EditorWorkflow): PutWorkflowBody {
       dispatch_mode: s.dispatch_mode || '',
       action_class: s.action_class || 'read',
       sla_minutes: s.sla_minutes || 0,
+      ack_minutes: s.ack_minutes || 0,
+      idle_minutes: s.idle_minutes || 0,
       per_item: !!s.per_item,
       deps: (s.deps || []).map((id) => idToCode[id]).filter(Boolean),
       gates: s.gate_override ? s.gate_override.map((g, i) => editorGateToApi(g, i + 1)) : [],

@@ -92,6 +92,9 @@ func (n *Notifier) Run(ctx context.Context) {
 			if _, err := n.ScanOverdue(ctx); err != nil {
 				n.fail(err)
 			}
+			if _, err := n.ScanStalls(ctx); err != nil {
+				n.fail(err)
+			}
 		case <-poll.C:
 			if _, err := n.Flush(ctx); err != nil {
 				n.fail(err)
@@ -277,6 +280,28 @@ func (n *Notifier) ScanOverdue(ctx context.Context) (int, error) {
 		}
 		if ok {
 			count++
+		}
+	}
+	return count, nil
+}
+
+// ScanStalls 扫接续告警（未接单 / 未接单升级 / 接单后无活动），每类每次停滞只提醒一次，返回本次提醒条数。
+// 升级只发生在已提醒过执行者之后，所以同一轮不会同时发出提醒与升级。
+func (n *Notifier) ScanStalls(ctx context.Context) (int, error) {
+	count := 0
+	for _, k := range []domain.StallKind{domain.StallEscalate, domain.StallAck, domain.StallIdle} {
+		tasks, err := n.store.Q().ListStalledTasks(ctx, k)
+		if err != nil {
+			return count, err
+		}
+		for _, t := range tasks {
+			ok, err := n.eng.NotifyStall(ctx, t.ID, k)
+			if err != nil {
+				return count, err
+			}
+			if ok {
+				count++
+			}
 		}
 	}
 	return count, nil

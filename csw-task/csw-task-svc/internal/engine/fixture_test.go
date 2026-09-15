@@ -21,7 +21,7 @@ type fxStage struct {
 	code, role, mode, action string
 	deps                     []string
 	gates                    []fxGate
-	sla                      int
+	sla, ack, idle           int
 	merge, perItem           bool
 }
 
@@ -40,6 +40,7 @@ func buildFlow(t *testing.T, st *sqlite.Store, wfMode string, stages []fxStage) 
 				WorkflowID: id, Seq: i + 1, Code: s.code, Name: s.code, RoleCode: s.role, OutputType: "产出",
 				Instructions: "做", SelfCheckCriteria: "查", Acceptance: "验", IsMerge: s.merge,
 				DispatchMode: s.mode, ActionClass: s.action, SLAMinutes: s.sla, PerItem: s.perItem,
+				AckMinutes: s.ack, IdleMinutes: s.idle,
 			})
 			if err != nil {
 				return err

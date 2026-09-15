@@ -34,6 +34,7 @@ func (d *Def) PureInput(roles map[string]domain.Role) workflow.PureInput {
 			ID: int64(i + 1), Seq: i + 1, Code: s.Code, Name: s.Name, RoleCode: s.Role, OutputType: s.OutputType,
 			Instructions: s.Instructions.Value, SelfCheckCriteria: s.SelfCheck.Value, Acceptance: s.Acceptance.Value,
 			IsMerge: s.IsMerge, DispatchMode: s.DispatchMode, ActionClass: s.ActionClass, SLAMinutes: s.SLAMinutes, PerItem: s.PerItem,
+			AckMinutes: s.AckMinutes, IdleMinutes: s.IdleMinutes,
 		})
 		for _, dep := range s.Deps {
 			if did, ok := id[dep]; ok {

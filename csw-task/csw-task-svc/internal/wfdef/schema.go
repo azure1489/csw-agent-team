@@ -69,6 +69,8 @@ type Stage struct {
 	DispatchMode string   `yaml:"dispatch_mode,omitempty"` // 空=继承工作流 / manual / auto
 	ActionClass  string   `yaml:"action_class,omitempty"`  // 空=read / platform_write:<scope>
 	SLAMinutes   int      `yaml:"sla_minutes,omitempty"`
+	AckMinutes   int      `yaml:"ack_minutes,omitempty"`  // 派工后多久未接单提醒；0=默认
+	IdleMinutes  int      `yaml:"idle_minutes,omitempty"` // 接单后多久无活动提醒；0=默认
 	PerItem      bool     `yaml:"per_item,omitempty"`
 	Instructions Text     `yaml:"instructions"`
 	SelfCheck    Text     `yaml:"self_check"`
@@ -211,6 +213,8 @@ type APIStage struct {
 	Deps              []string  `json:"deps"`
 	Gates             []APIGate `json:"gates"`
 	SLAMinutes        int       `json:"sla_minutes"`
+	AckMinutes        int       `json:"ack_minutes"`
+	IdleMinutes       int       `json:"idle_minutes"`
 	IsMerge           bool      `json:"is_merge"`
 	PerItem           bool      `json:"per_item"`
 }
@@ -283,7 +287,7 @@ func FromGet(g GetBody) *Def {
 		st := Stage{
 			Code: s.Code, Name: s.Name, Role: s.RoleCode, OutputType: s.OutputType, IsMerge: s.IsMerge,
 			Deps: append([]string{}, s.Deps...), DispatchMode: s.DispatchMode, ActionClass: s.ActionClass,
-			SLAMinutes: s.SLAMinutes, PerItem: s.PerItem,
+			SLAMinutes: s.SLAMinutes, PerItem: s.PerItem, AckMinutes: s.AckMinutes, IdleMinutes: s.IdleMinutes,
 			Instructions: Text{Value: s.Instructions}, SelfCheck: Text{Value: s.SelfCheckCriteria}, Acceptance: Text{Value: s.Acceptance},
 		}
 		if st.ActionClass == "read" {
@@ -309,7 +313,8 @@ func ToPut(d *Def) PutBody {
 		as := APIStage{
 			Code: s.Code, Name: s.Name, RoleCode: s.Role, OutputType: s.OutputType, IsMerge: s.IsMerge,
 			Deps: append([]string{}, s.Deps...), DispatchMode: s.DispatchMode, ActionClass: s.ActionClass,
-			SLAMinutes: s.SLAMinutes, PerItem: s.PerItem, Instructions: s.Instructions.Value,
+			SLAMinutes: s.SLAMinutes, PerItem: s.PerItem, AckMinutes: s.AckMinutes, IdleMinutes: s.IdleMinutes,
+			Instructions:      s.Instructions.Value,
 			SelfCheckCriteria: s.SelfCheck.Value, Acceptance: s.Acceptance.Value, Gates: []APIGate{},
 		}
 		if as.ActionClass == "" {

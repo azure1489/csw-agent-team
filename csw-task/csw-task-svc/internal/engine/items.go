@@ -217,6 +217,7 @@ func (e *Engine) spawnItemTasks(ctx context.Context, q *sqlite.Queries, run doma
 			IsMerge: st.IsMerge, OutputType: st.OutputType, Instructions: combine(wf.CommonInstructions, st.Instructions),
 			SelfCheckCriteria: st.SelfCheckCriteria, Acceptance: combine(wf.CommonAcceptance, st.Acceptance),
 			DispatchMode: stageDispatchMode(st, wf), ActionClass: st.ActionClass, SLAMinutes: st.SLAMinutes,
+			AckMinutes: st.AckMinutes, IdleMinutes: st.IdleMinutes,
 			AssigneeID: resolveAssignee(ctx, q, st.RoleCode), Status: domain.TaskBlocked,
 		}
 		id, err := q.InsertTask(ctx, t)

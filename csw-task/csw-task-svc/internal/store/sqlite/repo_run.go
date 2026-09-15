@@ -60,11 +60,12 @@ func (q *Queries) InsertTask(ctx context.Context, t domain.Task) (int64, error) 
 		INSERT INTO tasks
 		  (run_id, stage_code, stage_name, seq, role_code, is_merge, output_type,
 		   instructions, self_check_criteria, acceptance, assignee_id, status, cur_version,
-		   dispatch_mode, action_class, sla_minutes, item_key, wait_item_stages)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   dispatch_mode, action_class, sla_minutes, item_key, wait_item_stages, ack_minutes, idle_minutes)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		t.RunID, t.StageCode, t.StageName, t.Seq, t.RoleCode, b2i(t.IsMerge), t.OutputType,
 		t.Instructions, t.SelfCheckCriteria, t.Acceptance, nullI64(t.AssigneeID), string(t.Status), t.CurVersion,
-		nullIfEmpty(string(t.DispatchMode)), actionOrRead(t.ActionClass), nullIfNonPos(t.SLAMinutes), t.ItemKey, nullIfEmpty(t.WaitItemStages))
+		nullIfEmpty(string(t.DispatchMode)), actionOrRead(t.ActionClass), nullIfNonPos(t.SLAMinutes), t.ItemKey, nullIfEmpty(t.WaitItemStages),
+		nullIfNonPos(t.AckMinutes), nullIfNonPos(t.IdleMinutes))
 	if err != nil {
 		return 0, err
 	}
@@ -75,26 +76,27 @@ const taskCols = `id, run_id, stage_code, stage_name, seq, role_code, is_merge, 
 	instructions, self_check_criteria, acceptance, assignee_id, status, cur_version,
 	dispatch_mode, action_class, sla_minutes,
 	item_key, fail_reason, due_at, dispatched_at, started_at, completed_at, last_activity_at, rework_pending,
-	wait_item_stages`
+	wait_item_stages, ack_minutes, idle_minutes`
 
 // 带表别名 t. 的列，用于含 JOIN 的查询（避免 id 等与 runs 列歧义）。
 const taskColsT = `t.id, t.run_id, t.stage_code, t.stage_name, t.seq, t.role_code, t.is_merge, t.output_type,
 	t.instructions, t.self_check_criteria, t.acceptance, t.assignee_id, t.status, t.cur_version,
 	t.dispatch_mode, t.action_class, t.sla_minutes,
 	t.item_key, t.fail_reason, t.due_at, t.dispatched_at, t.started_at, t.completed_at, t.last_activity_at, t.rework_pending,
-	t.wait_item_stages`
+	t.wait_item_stages, t.ack_minutes, t.idle_minutes`
 
 func scanTask(s interface{ Scan(...any) error }) (domain.Task, error) {
 	var t domain.Task
 	var merge int
 	var outType, ins, sc, ac, dmode, failR, due, disp, start, done, act, wait sql.NullString
-	var assignee, sla sql.NullInt64
+	var assignee, sla, ack, idle sql.NullInt64
 	var status string
 	var rework int
 	err := s.Scan(&t.ID, &t.RunID, &t.StageCode, &t.StageName, &t.Seq, &t.RoleCode, &merge, &outType,
 		&ins, &sc, &ac, &assignee, &status, &t.CurVersion, &dmode, &t.ActionClass, &sla,
-		&t.ItemKey, &failR, &due, &disp, &start, &done, &act, &rework, &wait)
+		&t.ItemKey, &failR, &due, &disp, &start, &done, &act, &rework, &wait, &ack, &idle)
 	t.WaitItemStages = wait.String
+	t.AckMinutes, t.IdleMinutes = int(ack.Int64), int(idle.Int64)
 	t.DispatchMode, t.SLAMinutes = domain.DispatchMode(dmode.String), int(sla.Int64)
 	t.FailReason, t.DueAt, t.DispatchedAt = failR.String, due.String, disp.String
 	t.StartedAt, t.CompletedAt, t.LastActivityAt = start.String, done.String, act.String
@@ -198,7 +200,7 @@ func (q *Queries) SetTaskReady(ctx context.Context, id int64) error {
 func (q *Queries) SetTaskDispatched(ctx context.Context, id int64) error {
 	_, err := q.ex.ExecContext(ctx, `
 		UPDATE tasks SET status='dispatched',
-			dispatched_at=COALESCE(dispatched_at, strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+			dispatched_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'), ack_notified_at=NULL, ack_escalated_at=NULL,
 			updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
 		WHERE id=?`, id)
 	return err
@@ -236,7 +238,7 @@ func (q *Queries) SetTaskInProgress(ctx context.Context, id int64) error {
 	_, err := q.ex.ExecContext(ctx, `
 		UPDATE tasks SET status='in_progress',
 			started_at=COALESCE(started_at, strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-			last_activity_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+			last_activity_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'), idle_notified_at=NULL,
 			updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
 		WHERE id=?`, id)
 	return err
@@ -245,7 +247,7 @@ func (q *Queries) SetTaskInProgress(ctx context.Context, id int64) error {
 // TouchTaskActivity 刷新最近活动时间（接单心跳 / 提交）。
 func (q *Queries) TouchTaskActivity(ctx context.Context, id int64) error {
 	_, err := q.ex.ExecContext(ctx,
-		`UPDATE tasks SET last_activity_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?`, id)
+		`UPDATE tasks SET last_activity_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'), idle_notified_at=NULL WHERE id=?`, id)
 	return err
 }
 
@@ -323,6 +325,62 @@ func (q *Queries) MarkOverdueNotified(ctx context.Context, id int64) (bool, erro
 		WHERE id=? AND overdue_notified_at IS NULL AND due_at IS NOT NULL
 		  AND due_at <= strftime('%Y-%m-%dT%H:%M:%SZ','now')
 		  AND status IN ('dispatched','in_progress','returned')`, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// 接续告警的到期条件（阈值为空时取默认；未接单条件带倍数，升级用 AckEscalateFactor）。
+const (
+	condAckDue = `t.status='dispatched' AND t.dispatched_at IS NOT NULL
+		AND strftime('%Y-%m-%dT%H:%M:%SZ', t.dispatched_at, '+' || (COALESCE(t.ack_minutes, ?) * ?) || ' minutes')
+		    <= strftime('%Y-%m-%dT%H:%M:%SZ','now')`
+	condIdleDue = `t.status='in_progress' AND t.last_activity_at IS NOT NULL
+		AND strftime('%Y-%m-%dT%H:%M:%SZ', t.last_activity_at, '+' || COALESCE(t.idle_minutes, ?) || ' minutes')
+		    <= strftime('%Y-%m-%dT%H:%M:%SZ','now')`
+)
+
+// stallSQL 某类接续告警「已到期且尚未提醒」的条件、参数与标记列。升级只在已提醒过执行者之后发生。
+func stallSQL(k domain.StallKind) (cond string, args []any, col string) {
+	switch k {
+	case domain.StallAck:
+		return condAckDue + ` AND t.ack_notified_at IS NULL`, []any{domain.DefaultAckMinutes, 1}, "ack_notified_at"
+	case domain.StallEscalate:
+		return condAckDue + ` AND t.ack_notified_at IS NOT NULL AND t.ack_escalated_at IS NULL`,
+			[]any{domain.DefaultAckMinutes, domain.AckEscalateFactor}, "ack_escalated_at"
+	default:
+		return condIdleDue + ` AND t.idle_notified_at IS NULL`, []any{domain.DefaultIdleMinutes}, "idle_notified_at"
+	}
+}
+
+// ListStalledTasks 列某类接续告警到期且尚未提醒的任务（只看进行中的 run）。
+func (q *Queries) ListStalledTasks(ctx context.Context, k domain.StallKind) ([]domain.Task, error) {
+	cond, args, _ := stallSQL(k)
+	rows, err := q.ex.QueryContext(ctx, `SELECT `+taskColsT+` FROM tasks t JOIN runs r ON r.id = t.run_id
+		WHERE r.status='active' AND `+cond+` ORDER BY t.id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Task
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// MarkStallNotified 条件标记某类接续告警「已提醒」：仍到期且尚未提醒时才标，返回是否本次标上。
+// 同一次停滞只提醒一次；并发扫描时只有一方拿到。
+func (q *Queries) MarkStallNotified(ctx context.Context, id int64, k domain.StallKind) (bool, error) {
+	cond, args, col := stallSQL(k)
+	res, err := q.ex.ExecContext(ctx, `UPDATE tasks AS t SET `+col+`=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE t.id=? AND `+cond, append([]any{id}, args...)...)
 	if err != nil {
 		return false, err
 	}

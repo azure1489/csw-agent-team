@@ -96,6 +96,8 @@ type rtStage struct {
 	Deps              []string `json:"deps"`
 	Gates             []rtGate `json:"gates"`
 	SLAMinutes        int      `json:"sla_minutes"`
+	AckMinutes        int      `json:"ack_minutes"`
+	IdleMinutes       int      `json:"idle_minutes"`
 	IsMerge           bool     `json:"is_merge"`
 	PerItem           bool     `json:"per_item"`
 }
@@ -126,6 +128,7 @@ func (w rtWorkflow) toPut() putWorkflowReq {
 			Instructions: s.Instructions, SelfCheckCriteria: s.SelfCheckCriteria, Acceptance: s.Acceptance,
 			IsMerge: s.IsMerge, DispatchMode: s.DispatchMode, ActionClass: s.ActionClass,
 			SLAMinutes: s.SLAMinutes, PerItem: s.PerItem, Deps: s.Deps,
+			AckMinutes: s.AckMinutes, IdleMinutes: s.IdleMinutes,
 		}
 		for _, g := range s.Gates {
 			ps.Gates = append(ps.Gates, putGate(g))
@@ -147,8 +150,8 @@ func stageSigs(w rtWorkflow) []string {
 		for _, g := range s.Gates {
 			gs = append(gs, fmt.Sprintf("%s/%v/%s", g.ReviewerRole, g.RelayedByHub, g.Name))
 		}
-		out = append(out, fmt.Sprintf("%s mode=%q action=%s sla=%d item=%v merge=%v deps=%s gates=%s text=%d/%d/%d",
-			s.Code, s.DispatchMode, s.ActionClass, s.SLAMinutes, s.PerItem, s.IsMerge,
+		out = append(out, fmt.Sprintf("%s mode=%q action=%s sla=%d ack=%d idle=%d item=%v merge=%v deps=%s gates=%s text=%d/%d/%d",
+			s.Code, s.DispatchMode, s.ActionClass, s.SLAMinutes, s.AckMinutes, s.IdleMinutes, s.PerItem, s.IsMerge,
 			strings.Join(deps, ","), strings.Join(gs, ";"), len(s.Instructions), len(s.SelfCheckCriteria), len(s.Acceptance)))
 	}
 	return out
@@ -188,6 +191,7 @@ func TestWorkflowRoundTripKeepsStageFields(t *testing.T) {
 	for i := range body.Stages {
 		if body.Stages[i].Code == "topic" {
 			body.Stages[i].SLAMinutes = 20
+			body.Stages[i].IdleMinutes = 7
 		}
 	}
 	var putResp struct {
@@ -204,6 +208,7 @@ func TestWorkflowRoundTripKeepsStageFields(t *testing.T) {
 	for i, s := range before.Stages {
 		if s.Code == "topic" {
 			want[i] = strings.Replace(want[i], "sla=15", "sla=20", 1)
+			want[i] = strings.Replace(want[i], "idle=0", "idle=7", 1)
 		}
 	}
 	diffSigs(t, "after put", stageSigs(after), want)
@@ -232,5 +237,10 @@ func TestWorkflowRoundTripKeepsStageFields(t *testing.T) {
 	bad.Stages[0].DispatchMode = "sometimes"
 	if code := adminDo(t, ts, token, http.MethodPut, path, bad, &errResp); code != 400 || errResp.Code != "bad_dispatch_mode" {
 		t.Fatalf("bad dispatch_mode: %d %s", code, errResp.Code)
+	}
+	bad = after.toPut()
+	bad.Stages[0].AckMinutes = -1
+	if code := adminDo(t, ts, token, http.MethodPut, path, bad, &errResp); code != 400 || errResp.Code != "bad_alert_minutes" {
+		t.Fatalf("bad ack_minutes: %d %s", code, errResp.Code)
 	}
 }

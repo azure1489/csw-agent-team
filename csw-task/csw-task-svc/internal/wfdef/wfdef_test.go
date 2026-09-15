@@ -26,7 +26,7 @@ func sample() *Def {
 		Common: Common{Instructions: Text{Value: "通用约定"}, Acceptance: Text{Value: "通用合规"}},
 		Stages: []Stage{
 			{Code: "a", Name: "01-写作", Role: "writer", Deps: []string{}, Gates: gates(Gate{Reviewer: "editor", Name: "主编审"}, Gate{Reviewer: "van", Name: "Van审", Relayed: true}),
-				DispatchMode: "manual", SLAMinutes: 30, Instructions: Text{Value: long}, SelfCheck: Text{Value: "- 自检"}, Acceptance: Text{Value: "- 验收"}},
+				DispatchMode: "manual", SLAMinutes: 30, AckMinutes: 5, IdleMinutes: 10, Instructions: Text{Value: long}, SelfCheck: Text{Value: "- 自检"}, Acceptance: Text{Value: "- 验收"}},
 			{Code: "b", Name: "02-草稿保存", Role: "publisher", Deps: []string{"a"}, Gates: gates(), ActionClass: "platform_write:wx_draft",
 				Instructions: Text{Value: "保存草稿"}, SelfCheck: Text{Value: "- 回读"}, Acceptance: Text{Value: "- 有草稿"}},
 		},
@@ -82,6 +82,7 @@ func TestToPutAndFromGet(t *testing.T) {
 func TestDiffKinds(t *testing.T) {
 	a, b := sample(), sample()
 	b.Stages[0].SLAMinutes = 45
+	b.Stages[0].IdleMinutes = 5
 	b.Stages[1].Deps = []string{}
 	*b.Stages[1].Gates = []Gate{{Reviewer: "editor", Name: "主编核"}}
 	b.Stages[1].Acceptance.Value = "- 有草稿\n- 有截图"
@@ -94,7 +95,7 @@ func TestDiffKinds(t *testing.T) {
 		t.Fatalf("diff kinds: %v", kinds)
 	}
 	out := Render(Diff(a, b), b)
-	if !strings.Contains(out, "时限：30 → 45") || !strings.Contains(out, "−a") || !strings.Contains(out, "已在跑的 run") {
+	if !strings.Contains(out, "时限：30 → 45") || !strings.Contains(out, "无活动提醒：10 → 5") || !strings.Contains(out, "−a") || !strings.Contains(out, "已在跑的 run") {
 		t.Fatalf("render:\n%s", out)
 	}
 }

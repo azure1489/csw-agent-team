@@ -42,6 +42,9 @@ func TestMigrate(t *testing.T) {
 		{"deliverables", "diff_summary"}, {"deliverables", "collab"},
 		{"reviews", "decision_type"}, {"reviews", "source_quote"}, {"reviews", "items_json"}, {"reviews", "expected_version"},
 		{"runs", "target_count"}, {"tasks", "wait_item_stages"},
+		// 0023 接续告警。
+		{"workflow_stages", "ack_minutes"}, {"workflow_stages", "idle_minutes"}, {"tasks", "ack_minutes"}, {"tasks", "idle_minutes"},
+		{"tasks", "ack_notified_at"}, {"tasks", "ack_escalated_at"}, {"tasks", "idle_notified_at"},
 	} {
 		var c int
 		if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, tc.table, tc.col).Scan(&c); err != nil || c != 1 {
