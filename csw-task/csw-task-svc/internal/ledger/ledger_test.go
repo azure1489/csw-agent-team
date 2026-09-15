@@ -35,7 +35,7 @@ func TestParseNotesFlags(t *testing.T) {
 	if rows[0].Metrics["views"] != 7465.0 || rows[0].Post.PostID == "" || !strings.HasPrefix(rows[0].Post.PostID, "csv-") {
 		t.Fatalf("row0: %+v", rows[0])
 	}
-	if len(rows[0].Flags) != 0 || len(rows[2].Flags) != 2 || !strings.Contains(rows[2].Flags[0], "pending_refresh") {
+	if len(rows[0].Flags) != 0 || len(rows[2].Flags) != 2 || !strings.HasPrefix(rows[2].Flags[0], "refresh_pending:") {
 		t.Fatalf("flags: %v / %v", rows[0].Flags, rows[2].Flags)
 	}
 	again, _ := ParseNotes(strings.NewReader(csv))
@@ -55,7 +55,7 @@ func TestParseAccountMismatch(t *testing.T) {
 	if s.WindowFrom != "2026-08-15" || s.WindowTo != "2026-09-13" || s.Totals["新增关注"] != 394 || s.Totals["净涨粉"] != 340 {
 		t.Fatalf("summary: %+v", s)
 	}
-	if len(s.Flags) != 1 || !strings.Contains(s.Flags[0], "差 4") {
+	if len(s.Flags) != 1 || !strings.Contains(s.Flags[0], "差 4") || !strings.HasPrefix(s.Flags[0], "definition_pending:") {
 		t.Fatalf("net mismatch must be kept and flagged: %v", s.Flags)
 	}
 }
@@ -68,7 +68,7 @@ func fakeScript(t *testing.T) string {
 case "$1" in
   list) printf '%s\n' '{"posts":[{"post_id":"p1","title":"营事编集室 vol.12","published_at":"2026-09-10 08:00","state":"published"},{"post_id":"d1","title":"草稿","state":"draft"}]}' ;;
   get) printf '%s\n' '{"post":{"post_id":"'"$2"'","title":"营事编集室 vol.12","body":"### HxO｜折叠木椅\n正文\n### NANGA｜羽绒进城\n正文"}}' ;;
-  metrics) printf '%s\n' '{"metrics":{"views":100,"impressions":0}}' ;;
+  metrics) printf '%s\n' '{"metrics":{"views":100,"impressions":0},"definitions":{"impressions":"曝光：笔记被展示的次数"}}' ;;
   account) printf '%s\n' '{"unavailable":"账号趋势需要运营后台权限"}'; exit 3 ;;
   *) exit 1 ;;
 esac
@@ -143,7 +143,8 @@ func TestSyncAndSnapshot(t *testing.T) {
 		t.Fatalf("snapshot: n=%d gaps=%v err=%v", n, gaps, err)
 	}
 	snaps, _ := st.Q().ListMetricSnapshots(ctx, p.ID)
-	if len(snaps) != 1 || !strings.Contains(snaps[0].FlagsJSON, "pending_refresh") || !strings.Contains(snaps[0].RawJSON, `"impressions":0`) {
+	if len(snaps) != 1 || !strings.Contains(snaps[0].FlagsJSON, "refresh_pending") || !strings.Contains(snaps[0].RawJSON, `"impressions":0`) ||
+		!strings.Contains(snaps[0].DefinitionsJSON, "曝光：笔记被展示的次数") {
 		t.Fatalf("snapshot keeps raw zero and flags it: %+v", snaps)
 	}
 	if n, _, _ := Snapshot(ctx, st, a, "24h"); n != 0 {
@@ -152,5 +153,63 @@ func TestSyncAndSnapshot(t *testing.T) {
 	cov, _ := st.Q().LedgerCoverage(ctx)
 	if len(cov) != 1 || cov[0].Kind != "sync" || cov[0].Platform != "wechat" {
 		t.Fatalf("coverage: %+v", cov)
+	}
+}
+
+func scriptAdapter(t *testing.T, name, body string) *CommandAdapter {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name+".sh")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\ncase \"$1\" in\n"+body+"\n  *) exit 1 ;;\nesac\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return &CommandAdapter{Name: "xhs", Cmd: p}
+}
+
+func ledgerStore(t *testing.T) *sqlite.Store {
+	t.Helper()
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "l.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := sqlite.Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	return sqlite.New(db)
+}
+
+// TestSnapshotGapKinds 快照缺口分「平台不提供」与「采集失败」两类，都不写快照。
+func TestSnapshotGapKinds(t *testing.T) {
+	st, ctx := ledgerStore(t), context.Background()
+	a := scriptAdapter(t, "gaps", `  list) printf '%s\n' '{"posts":[{"post_id":"p1","title":"A","published_at":"2026-09-01 08:00","state":"published"},{"post_id":"p2","title":"B","published_at":"2026-09-01 09:00","state":"published"}]}' ;;
+  get) printf '%s\n' '{"post":{"post_id":"'"$2"'","title":"A","body":"正文"}}' ;;
+  metrics) if [ "$2" = "p1" ]; then printf '%s\n' '{"unavailable":"该笔记不提供曝光"}'; exit 3; else echo boom >&2; exit 1; fi ;;`)
+	if _, err := Sync(ctx, st, a, "营事编集室", "backfill", TimeZero()); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	n, gaps, err := Snapshot(ctx, st, a, "24h")
+	if err != nil || n != 0 || len(gaps) != 2 {
+		t.Fatalf("snapshot: n=%d gaps=%v err=%v", n, gaps, err)
+	}
+	if k := GapKinds(gaps); k[GapUnavailable] != 1 || k[GapFetchFailed] != 1 {
+		t.Fatalf("gap kinds: %v (%v)", k, gaps)
+	}
+}
+
+// TestSnapshotAccountKeepsWindowAndDefinitions 账号级快照：区间、原值与指标定义原样保存，净涨粉口径不符标 definition_pending；
+// 读不到时不写占位数据。
+func TestSnapshotAccountKeepsWindowAndDefinitions(t *testing.T) {
+	st, ctx := ledgerStore(t), context.Background()
+	a := scriptAdapter(t, "acct", `  account) printf '%s\n' '{"window_from":"2026-08-15","window_to":"2026-09-13","raw":{"新增关注":394,"取消关注":58,"净涨粉":340,"曝光":35000},"definitions":{"净涨粉":"区间内关注数净变化（平台口径）"}}' ;;`)
+	s, ok, err := SnapshotAccount(ctx, st, a, "营事编集室", 30)
+	if err != nil || !ok {
+		t.Fatalf("account snapshot: ok=%v err=%v", ok, err)
+	}
+	if s.WindowFrom != "2026-08-15" || s.WindowTo != "2026-09-13" || !strings.Contains(s.RawJSON, `"净涨粉":340`) ||
+		!strings.Contains(s.DefinitionsJSON, "平台口径") || !strings.Contains(s.FlagsJSON, "definition_pending") || !strings.Contains(s.FlagsJSON, "差 4") {
+		t.Fatalf("account snapshot: %+v", s)
+	}
+	if _, ok, err := SnapshotAccount(ctx, st, &CommandAdapter{Name: "wechat", Cmd: fakeScript(t)}, "营事编集室", 30); ok || !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("unavailable account must not write: ok=%v err=%v", ok, err)
 	}
 }

@@ -107,7 +107,7 @@ func Probe(ctx context.Context, a Adapter, known string) ProbeReport {
 	}
 	rep.Checks = append(rep.Checks, check("单篇正文", err, detail, nil))
 	m, err := a.Metrics(ctx, id)
-	rep.Checks = append(rep.Checks, check("单篇指标", err, strings.Join(keys(m), "、"), m))
+	rep.Checks = append(rep.Checks, check("单篇指标", err, strings.Join(keys(m.Values), "、"), m.Values))
 	acc, err := a.Account(ctx, 30)
 	rep.Checks = append(rep.Checks, check("账号 30 天趋势", err, acc.WindowFrom+" ~ "+acc.WindowTo+"；字段 "+strings.Join(keys(acc.Raw), "、"), acc.Raw))
 	return rep

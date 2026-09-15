@@ -74,25 +74,27 @@ type FeedbackRecord struct {
 
 // MetricSnapshot 单篇指标快照：只存平台原值与异常标记。
 type MetricSnapshot struct {
-	Platform    string
-	AgeBucket   string // 2h | 24h | 72h | 7d | 30d | adhoc
-	CollectedAt string
-	WindowFrom  string
-	WindowTo    string
-	RawJSON     string
-	FlagsJSON   string
-	ID          int64
-	PostRef     int64
+	Platform        string
+	AgeBucket       string // 2h | 24h | 72h | 7d | 30d | adhoc
+	CollectedAt     string
+	WindowFrom      string
+	WindowTo        string
+	RawJSON         string
+	FlagsJSON       string
+	DefinitionsJSON string // 指标定义与口径来源（平台字段说明 / 导出文件），原样保存
+	ID              int64
+	PostRef         int64
 }
 
 // AccountSnapshot 账号区间趋势快照。
 type AccountSnapshot struct {
-	Platform    string
-	Account     string
-	WindowFrom  string
-	WindowTo    string
-	CollectedAt string
-	RawJSON     string
-	FlagsJSON   string
-	ID          int64
+	Platform        string
+	Account         string
+	WindowFrom      string
+	WindowTo        string
+	CollectedAt     string
+	RawJSON         string
+	FlagsJSON       string
+	DefinitionsJSON string // 指标定义与口径来源，原样保存
+	ID              int64
 }

@@ -236,9 +236,10 @@ func (q *Queries) LastOKSyncWindowTo(ctx context.Context, platform string) (stri
 // InsertMetricSnapshot 写单篇快照（同一篇同一龄期同一采集时间只一条），返回是否新写入。
 func (q *Queries) InsertMetricSnapshot(ctx context.Context, s domain.MetricSnapshot) (bool, error) {
 	res, err := q.ex.ExecContext(ctx, `
-		INSERT INTO ledger_metrics_snapshots (post_ref, platform, age_bucket, collected_at, window_from, window_to, raw_json, flags_json)
-		VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(post_ref, age_bucket, collected_at) DO NOTHING`,
-		s.PostRef, s.Platform, s.AgeBucket, s.CollectedAt, nullIfEmpty(s.WindowFrom), nullIfEmpty(s.WindowTo), s.RawJSON, nullIfEmpty(s.FlagsJSON))
+		INSERT INTO ledger_metrics_snapshots (post_ref, platform, age_bucket, collected_at, window_from, window_to, raw_json, flags_json, definitions_json)
+		VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(post_ref, age_bucket, collected_at) DO NOTHING`,
+		s.PostRef, s.Platform, s.AgeBucket, s.CollectedAt, nullIfEmpty(s.WindowFrom), nullIfEmpty(s.WindowTo), s.RawJSON, nullIfEmpty(s.FlagsJSON),
+		nullIfEmpty(s.DefinitionsJSON))
 	if err != nil {
 		return false, err
 	}
@@ -270,7 +271,7 @@ func (q *Queries) PostsDueForSnapshot(ctx context.Context, platform, bucket stri
 // ListMetricSnapshots 列一篇的快照（按采集时间）。
 func (q *Queries) ListMetricSnapshots(ctx context.Context, postRef int64) ([]domain.MetricSnapshot, error) {
 	rows, err := q.ex.QueryContext(ctx, `SELECT id, post_ref, platform, age_bucket, collected_at, COALESCE(window_from,''), COALESCE(window_to,''),
-		raw_json, COALESCE(flags_json,'') FROM ledger_metrics_snapshots WHERE post_ref=? ORDER BY collected_at`, postRef)
+		raw_json, COALESCE(flags_json,''), COALESCE(definitions_json,'') FROM ledger_metrics_snapshots WHERE post_ref=? ORDER BY collected_at`, postRef)
 	if err != nil {
 		return nil, err
 	}
@@ -278,7 +279,7 @@ func (q *Queries) ListMetricSnapshots(ctx context.Context, postRef int64) ([]dom
 	var out []domain.MetricSnapshot
 	for rows.Next() {
 		var s domain.MetricSnapshot
-		if err := rows.Scan(&s.ID, &s.PostRef, &s.Platform, &s.AgeBucket, &s.CollectedAt, &s.WindowFrom, &s.WindowTo, &s.RawJSON, &s.FlagsJSON); err != nil {
+		if err := rows.Scan(&s.ID, &s.PostRef, &s.Platform, &s.AgeBucket, &s.CollectedAt, &s.WindowFrom, &s.WindowTo, &s.RawJSON, &s.FlagsJSON, &s.DefinitionsJSON); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
@@ -289,9 +290,10 @@ func (q *Queries) ListMetricSnapshots(ctx context.Context, postRef int64) ([]dom
 // InsertAccountSnapshot 写账号区间快照（同一区间同一采集时间只一条）。
 func (q *Queries) InsertAccountSnapshot(ctx context.Context, s domain.AccountSnapshot) (bool, error) {
 	res, err := q.ex.ExecContext(ctx, `
-		INSERT INTO ledger_account_snapshots (platform, account, window_from, window_to, collected_at, raw_json, flags_json)
-		VALUES (?,?,?,?,?,?,?) ON CONFLICT(platform, account, window_from, window_to, collected_at) DO NOTHING`,
-		s.Platform, s.Account, nullIfEmpty(s.WindowFrom), nullIfEmpty(s.WindowTo), s.CollectedAt, s.RawJSON, nullIfEmpty(s.FlagsJSON))
+		INSERT INTO ledger_account_snapshots (platform, account, window_from, window_to, collected_at, raw_json, flags_json, definitions_json)
+		VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(platform, account, window_from, window_to, collected_at) DO NOTHING`,
+		s.Platform, s.Account, nullIfEmpty(s.WindowFrom), nullIfEmpty(s.WindowTo), s.CollectedAt, s.RawJSON, nullIfEmpty(s.FlagsJSON),
+		nullIfEmpty(s.DefinitionsJSON))
 	if err != nil {
 		return false, err
 	}

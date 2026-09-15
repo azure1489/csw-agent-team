@@ -79,16 +79,21 @@ func rowMap(header, rec []string) (map[string]string, map[string]any) {
 	return canonical, raw
 }
 
-// NoteFlags 单篇异常标记：有观看而曝光为 0 → pending_refresh（平台数据可能尚未刷新，不能认定表现差）。
+// 异常标记分四类，不未经核查就把差异归因于刷新：
+//   - refresh_pending：平台数据可能尚未刷新（如观看 > 0 而曝光 = 0），不能认定表现差，待下一龄期复采核实；
+//   - definition_pending：口径待核（如净涨粉 ≠ 新增 − 取消），原值原样保留，待平台定义或统计时点解释；
+//   - fetch_failed：采集失败，可重试；unavailable：平台不提供该项。这两类只记在同步批次的缺口里，不写快照、不填 0。
+//
+// NoteFlags 单篇异常标记（refresh_pending）。
 func NoteFlags(c map[string]string) []string {
 	var flags []string
 	views, vok := number(c["views"])
 	imp, iok := number(c["impressions"])
 	if vok && iok && views > 0 && imp == 0 {
-		flags = append(flags, "pending_refresh:观看>0 而曝光=0")
+		flags = append(flags, "refresh_pending:观看>0 而曝光=0")
 	}
 	if w, ok := number(c["avg_watch"]); ok && vok && views > 0 && w == 0 {
-		flags = append(flags, "pending_refresh:观看>0 而平均时长=0")
+		flags = append(flags, "refresh_pending:观看>0 而平均时长=0")
 	}
 	return flags
 }
@@ -183,21 +188,25 @@ func ParseAccount(r io.Reader) (AccountSummary, error) {
 		}
 		s.Days = append(s.Days, raw)
 	}
-	net, nok := sumCanon(header, s.Totals, "follows")
-	add, aok := sumCanon(header, s.Totals, "new_follows")
-	sub, sok := sumCanon(header, s.Totals, "unfollows")
-	if nok && aok && sok && add-sub != net {
-		s.Flags = append(s.Flags, fmt.Sprintf("net_mismatch:净涨粉 %.0f，新增−取消 %.0f，差 %.0f（原样保留，待平台定义或刷新时间解释）", net, add-sub, net-(add-sub)))
-	}
+	s.Flags = append(s.Flags, netMismatch(s.Totals)...)
 	return s, nil
 }
 
-func sumCanon(header []string, totals map[string]float64, key string) (float64, bool) {
-	for _, h := range header {
-		if canon(h) == key {
-			v, ok := totals[strings.TrimSpace(strings.TrimPrefix(h, "\ufeff"))]
-			return v, ok
+// netMismatch 净涨粉 ≠ 新增 − 取消 时标 definition_pending（口径待核）。values 以平台原字段名为键。
+func netMismatch(values map[string]float64) []string {
+	get := func(key string) (float64, bool) {
+		for k, v := range values {
+			if canon(k) == key {
+				return v, true
+			}
 		}
+		return 0, false
 	}
-	return 0, false
+	net, nok := get("follows")
+	add, aok := get("new_follows")
+	sub, sok := get("unfollows")
+	if !nok || !aok || !sok || add-sub == net {
+		return nil
+	}
+	return []string{fmt.Sprintf("definition_pending:净涨粉 %.0f，新增−取消 %.0f，差 %.0f（原样保留，口径待核：平台定义或统计时点）", net, add-sub, net-(add-sub))}
 }

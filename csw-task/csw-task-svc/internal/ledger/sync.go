@@ -138,11 +138,15 @@ func Snapshot(ctx context.Context, st *sqlite.Store, a Adapter, bucket string) (
 	for _, p := range due {
 		m, err := a.Metrics(ctx, p.PostID)
 		if err != nil {
-			gaps = append(gaps, p.PostID+"："+err.Error())
+			kind := GapFetchFailed
+			if errors.Is(err, ErrUnavailable) {
+				kind = GapUnavailable
+			}
+			gaps = append(gaps, kind+":"+p.PostID+"："+err.Error())
 			continue
 		}
 		c := map[string]string{}
-		for k, v := range m {
+		for k, v := range m.Values {
 			c[k] = fmt.Sprint(v)
 		}
 		var flags string
@@ -151,7 +155,7 @@ func Snapshot(ctx context.Context, st *sqlite.Store, a Adapter, bucket string) (
 			flags = string(b)
 		}
 		ok, err := q.InsertMetricSnapshot(ctx, domain.MetricSnapshot{PostRef: p.ID, Platform: a.Platform(), AgeBucket: bucket,
-			CollectedAt: now.Format("2006-01-02T15:04:05Z"), RawJSON: rawJSON(m), FlagsJSON: flags})
+			CollectedAt: now.Format("2006-01-02T15:04:05Z"), RawJSON: rawJSON(m.Values), FlagsJSON: flags, DefinitionsJSON: jsonOrEmpty(m.Definitions)})
 		if err != nil {
 			return n, gaps, err
 		}
@@ -160,6 +164,54 @@ func Snapshot(ctx context.Context, st *sqlite.Store, a Adapter, bucket string) (
 		}
 	}
 	return n, gaps, nil
+}
+
+// 快照缺口的两类（不写快照、不填 0，只记在同步批次里）：平台不提供该项 / 采集失败可重试。
+const (
+	GapUnavailable = "unavailable"
+	GapFetchFailed = "fetch_failed"
+)
+
+// GapKinds 快照缺口按类别计数。
+func GapKinds(gaps []string) map[string]int {
+	out := map[string]int{}
+	for _, g := range gaps {
+		if k, _, ok := strings.Cut(g, ":"); ok {
+			out[k]++
+		}
+	}
+	return out
+}
+
+// SnapshotAccount 经适配器采账号区间趋势：原值、区间与指标定义原样保存（与单篇快照分表，不相加）；
+// 净涨粉与新增 − 取消不符时标 definition_pending。读不到时返回 ErrUnavailable，不写占位数据。
+func SnapshotAccount(ctx context.Context, st *sqlite.Store, a Adapter, account string, days int) (domain.AccountSnapshot, bool, error) {
+	tr, err := a.Account(ctx, days)
+	if err != nil {
+		return domain.AccountSnapshot{}, false, err
+	}
+	nums := map[string]float64{}
+	for k, v := range tr.Raw {
+		if f, ok := number(fmt.Sprint(v)); ok {
+			nums[k] = f
+		}
+	}
+	s := domain.AccountSnapshot{Platform: a.Platform(), Account: account, WindowFrom: tr.WindowFrom, WindowTo: tr.WindowTo,
+		CollectedAt: time.Now().UTC().Format("2006-01-02T15:04:05Z"), RawJSON: rawJSON(tr.Raw), DefinitionsJSON: jsonOrEmpty(tr.Definitions)}
+	if f := netMismatch(nums); len(f) > 0 {
+		b, _ := json.Marshal(f)
+		s.FlagsJSON = string(b)
+	}
+	ok, err := st.Q().InsertAccountSnapshot(ctx, s)
+	return s, ok, err
+}
+
+func jsonOrEmpty(m map[string]any) string {
+	if len(m) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(m)
+	return string(b)
 }
 
 // TimeZero 很早的时间点（回填全部）。

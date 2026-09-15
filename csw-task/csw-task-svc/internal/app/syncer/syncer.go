@@ -6,9 +6,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -24,7 +26,8 @@ const usage = `用法：
   syncer probe-xhs [--known <post_id>]            小红书读取可行性探针
   syncer backfill --platform wechat|xhs [--since 30d]   回填发布记录（含人工发布；草稿与已发分列）
   syncer sync --platform wechat|xhs [--window 30m]      增量同步（从上次成功覆盖处起，回看 window）
-  syncer snapshot --platform wechat|xhs --bucket 24h|72h|7d|30d   按龄期采一次原始指标
+  syncer snapshot --platform wechat|xhs --bucket 24h|72h|7d|30d   按龄期采一次原始指标（缺口分 unavailable / fetch_failed）
+  syncer account-snapshot --platform wechat|xhs [--days 30]      采账号区间趋势（原值 + 区间 + 指标定义）
   syncer import-csv --platform wechat|xhs --kind notes|account --file F.csv [--account 名称]
                                                   导入人工导出的明细 / 账号趋势（异常原值原样保留并标记）
   syncer split --platform wechat --post <post_id> --manual items.json [--by 校对人]
@@ -133,12 +136,57 @@ func RunWith(args []string, cfg config.Config, out io.Writer, adapter func(platf
 			fmt.Fprintln(out, "缺 --platform 或 --bucket")
 			return 2
 		}
+		runID, _ := st.Q().StartSyncRun(ctx, platform, "snapshot", "", "")
 		n, gaps, err := ledger.Snapshot(ctx, st, adapter(platform), flags["--bucket"])
-		printJSON(map[string]any{"platform": platform, "bucket": flags["--bucket"], "snapshots": n, "gaps": gaps})
+		kinds := ledger.GapKinds(gaps)
+		note, _ := json.Marshal(map[string]any{"bucket": flags["--bucket"], "snapshots": n, "gap_kinds": kinds, "gaps": gaps})
+		fin := domain.LedgerSyncRun{ID: runID, OK: err == nil && kinds[ledger.GapFetchFailed] == 0, Inserted: n, GapNote: string(note)}
+		if err != nil {
+			fin.Error = err.Error()
+		}
+		_ = st.Q().FinishSyncRun(ctx, fin)
+		printJSON(map[string]any{"platform": platform, "bucket": flags["--bucket"], "snapshots": n, "gap_kinds": kinds, "gaps": gaps})
 		if err != nil {
 			fmt.Fprintln(out, "失败：", err)
 			return 1
 		}
+		return 0
+
+	case "account-snapshot":
+		if platform == "" {
+			fmt.Fprintln(out, "缺 --platform")
+			return 2
+		}
+		days := 30
+		if v := flags["--days"]; v != "" {
+			d, err := strconv.Atoi(v)
+			if err != nil || d <= 0 {
+				fmt.Fprintln(out, "--days 须为正整数")
+				return 2
+			}
+			days = d
+		}
+		runID, _ := st.Q().StartSyncRun(ctx, platform, "snapshot", "", "")
+		s, inserted, err := ledger.SnapshotAccount(ctx, st, adapter(platform), account(platform), days)
+		fin := domain.LedgerSyncRun{ID: runID, OK: err == nil, WindowFrom: s.WindowFrom, WindowTo: s.WindowTo, GapNote: s.FlagsJSON}
+		if inserted {
+			fin.Inserted = 1
+		}
+		switch {
+		case errors.Is(err, ledger.ErrUnavailable):
+			fin.GapNote = ledger.GapUnavailable + ":" + err.Error()
+		case err != nil:
+			fin.GapNote, fin.Error = ledger.GapFetchFailed+":"+err.Error(), err.Error()
+		}
+		_ = st.Q().FinishSyncRun(ctx, fin)
+		if err != nil {
+			fmt.Fprintln(out, "账号快照未写入：", err)
+			if errors.Is(err, ledger.ErrUnavailable) {
+				return 3
+			}
+			return 1
+		}
+		fmt.Fprintf(out, "账号快照 %s ~ %s；标记：%s；定义：%s\n", s.WindowFrom, s.WindowTo, or(s.FlagsJSON, "无"), or(s.DefinitionsJSON, "平台未提供"))
 		return 0
 
 	case "import-csv":
@@ -205,6 +253,19 @@ func parseDur(s string, def time.Duration) (time.Duration, error) {
 	return d, nil
 }
 
+// csvDefs 人工导出表格的口径来源：字段名即平台导出列名，定义以导出文件为准。
+func csvDefs(file string) string {
+	b, _ := json.Marshal(map[string]string{"source": "人工导出 CSV", "file": filepath.Base(file)})
+	return string(b)
+}
+
+func or(s, def string) string {
+	if strings.TrimSpace(s) == "" {
+		return def
+	}
+	return s
+}
+
 func importCSV(ctx context.Context, st *sqlite.Store, out io.Writer, platform, account string, flags map[string]string) int {
 	if platform == "" || flags["--file"] == "" || flags["--kind"] == "" {
 		fmt.Fprintln(out, "缺 --platform / --kind / --file")
@@ -248,14 +309,14 @@ func importCSV(ctx context.Context, st *sqlite.Store, out io.Writer, platform, a
 				flagged++
 			}
 			if _, err := q.InsertMetricSnapshot(ctx, domain.MetricSnapshot{PostRef: id, Platform: platform, AgeBucket: "adhoc",
-				CollectedAt: now, RawJSON: string(mraw), FlagsJSON: fl}); err != nil {
+				CollectedAt: now, RawJSON: string(mraw), FlagsJSON: fl, DefinitionsJSON: csvDefs(flags["--file"])}); err != nil {
 				fmt.Fprintln(out, "快照写入失败：", err)
 				return 1
 			}
 		}
 		_ = q.FinishSyncRun(ctx, domain.LedgerSyncRun{ID: runID, OK: true, Fetched: len(rows), Inserted: ins, Updated: upd,
 			GapNote: fmt.Sprintf("人工导出导入：%s；%d 条带异常标记", flags["--file"], flagged)})
-		fmt.Fprintf(out, "导入 %d 条（新增 %d，更新 %d），%d 条带异常标记（pending_refresh 等）\n", len(rows), ins, upd, flagged)
+		fmt.Fprintf(out, "导入 %d 条（新增 %d，更新 %d），%d 条带异常标记（refresh_pending / definition_pending）\n", len(rows), ins, upd, flagged)
 		return 0
 	case "account":
 		sum, err := ledger.ParseAccount(bufio.NewReader(f))
@@ -270,7 +331,7 @@ func importCSV(ctx context.Context, st *sqlite.Store, out io.Writer, platform, a
 			fl = string(b)
 		}
 		if _, err := q.InsertAccountSnapshot(ctx, domain.AccountSnapshot{Platform: platform, Account: account, WindowFrom: sum.WindowFrom,
-			WindowTo: sum.WindowTo, CollectedAt: now, RawJSON: string(raw), FlagsJSON: fl}); err != nil {
+			WindowTo: sum.WindowTo, CollectedAt: now, RawJSON: string(raw), FlagsJSON: fl, DefinitionsJSON: csvDefs(flags["--file"])}); err != nil {
 			fmt.Fprintln(out, "写入失败：", err)
 			return 1
 		}

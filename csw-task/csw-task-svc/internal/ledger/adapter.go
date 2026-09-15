@@ -29,9 +29,16 @@ type RemotePost struct {
 
 // AccountTrend 账号区间趋势（原值）。
 type AccountTrend struct {
-	WindowFrom string         `json:"window_from"`
-	WindowTo   string         `json:"window_to"`
-	Raw        map[string]any `json:"raw"`
+	WindowFrom  string         `json:"window_from"`
+	WindowTo    string         `json:"window_to"`
+	Raw         map[string]any `json:"raw"`
+	Definitions map[string]any `json:"definitions,omitempty"` // 字段 → 平台说明（口径），可选
+}
+
+// PostMetrics 单篇原始指标与指标定义（口径）。
+type PostMetrics struct {
+	Values      map[string]any `json:"metrics"`
+	Definitions map[string]any `json:"definitions,omitempty"`
 }
 
 // Adapter 平台读取能力。
@@ -39,7 +46,7 @@ type Adapter interface {
 	Platform() string
 	List(ctx context.Context, since time.Time) ([]RemotePost, error)
 	Get(ctx context.Context, postID string) (RemotePost, error)
-	Metrics(ctx context.Context, postID string) (map[string]any, error)
+	Metrics(ctx context.Context, postID string) (PostMetrics, error)
 	Account(ctx context.Context, days int) (AccountTrend, error)
 }
 
@@ -47,8 +54,8 @@ type Adapter interface {
 //
 //	<cmd> list --since <RFC3339>   → {"posts":[{post_id,url,published_at,title,state,body?,raw?}]}
 //	<cmd> get <post_id>            → {"post":{…}}
-//	<cmd> metrics <post_id>        → {"metrics":{平台原始字段…}}
-//	<cmd> account --days <n>       → {"window_from","window_to","raw":{…}}
+//	<cmd> metrics <post_id>        → {"metrics":{平台原始字段…},"definitions":{字段:说明}}（definitions 可选）
+//	<cmd> account --days <n>       → {"window_from","window_to","raw":{…},"definitions":{…}}
 //
 // cmd 可以是 `ssh agent-host /opt/csw-sync/wx.sh` 这类在持有登录态的主机上执行的命令。
 type CommandAdapter struct {
@@ -114,12 +121,10 @@ func (a *CommandAdapter) Get(ctx context.Context, postID string) (RemotePost, er
 }
 
 // Metrics 单篇原始指标。
-func (a *CommandAdapter) Metrics(ctx context.Context, postID string) (map[string]any, error) {
-	var r struct {
-		Metrics map[string]any `json:"metrics"`
-	}
+func (a *CommandAdapter) Metrics(ctx context.Context, postID string) (PostMetrics, error) {
+	var r PostMetrics
 	err := a.run(ctx, &r, "metrics", postID)
-	return r.Metrics, err
+	return r, err
 }
 
 // Account 账号区间趋势。
