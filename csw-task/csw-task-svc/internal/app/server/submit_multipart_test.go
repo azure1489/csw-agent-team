@@ -34,6 +34,10 @@ func setupHTTP(t *testing.T) (*httptest.Server, *sqlite.Store, *engine.Engine, f
 		t.Fatalf("migrate: %v", err)
 	}
 	st := sqlite.New(db)
+	// 本文件用例按 daily_news v1（十阶段双闸）断言。
+	if err := st.Q().ActivateWorkflowVersion(context.Background(), "daily_news", 1); err != nil {
+		t.Fatalf("activate daily_news v1: %v", err)
+	}
 	eng := engine.New(st)
 	blobs, err := files.NewLocalStore(filepath.Join(t.TempDir(), "blobs"))
 	if err != nil {

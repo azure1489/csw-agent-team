@@ -319,6 +319,23 @@ func (q *Queries) ArchiveOtherActive(ctx context.Context, wfKey string, exceptID
 	return err
 }
 
+// ActivateWorkflowVersion 把某 key 的指定版本置 active，并归档同 key 其余 active 版本（测试与运维用）。
+func (q *Queries) ActivateWorkflowVersion(ctx context.Context, wfKey string, version int) error {
+	if _, err := q.ex.ExecContext(ctx,
+		`UPDATE workflows SET status='archived' WHERE wf_key=? AND status='active' AND version<>?`, wfKey, version); err != nil {
+		return err
+	}
+	res, err := q.ex.ExecContext(ctx,
+		`UPDATE workflows SET status='active' WHERE wf_key=? AND version=?`, wfKey, version)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return errors.New("workflow version not found")
+	}
+	return nil
+}
+
 // InsertStage 插入阶段定义，返回 id。
 func (q *Queries) InsertStage(ctx context.Context, s domain.Stage) (int64, error) {
 	res, err := q.ex.ExecContext(ctx, `

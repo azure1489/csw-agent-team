@@ -25,6 +25,17 @@ func setup(t *testing.T) (*Engine, *sqlite.Store) {
 	return New(st), st
 }
 
+// setupV1 在 setup 基础上把 daily_news 切回 v1（十阶段双闸）：
+// 旧用例按 v1 形态断言，v2 定义由 TestFullFlowV2 与 fixture 用例覆盖。
+func setupV1(t *testing.T) (*Engine, *sqlite.Store) {
+	t.Helper()
+	e, st := setup(t)
+	if err := st.Q().ActivateWorkflowVersion(context.Background(), "daily_news", 1); err != nil {
+		t.Fatalf("activate daily_news v1: %v", err)
+	}
+	return e, st
+}
+
 func who(t *testing.T, st *sqlite.Store, role string) (domain.Agent, domain.Role) {
 	t.Helper()
 	ctx := context.Background()
@@ -72,7 +83,7 @@ func curDeliverable(t *testing.T, st *sqlite.Store, taskID int64, version int) i
 
 // TestFullFlow 驱动 daily_news 整条流程：触发→派工→提交→双闸→退回重提→合流自动派→run done。
 func TestFullFlow(t *testing.T) {
-	e, st := setup(t)
+	e, st := setupV1(t)
 	ctx := context.Background()
 
 	editor, editorRole := who(t, st, "editor")
@@ -229,7 +240,7 @@ func TestFullFlow(t *testing.T) {
 
 // TestPermissions 校验关键鉴权护栏。
 func TestPermissions(t *testing.T) {
-	e, st := setup(t)
+	e, st := setupV1(t)
 	ctx := context.Background()
 	editor, editorRole := who(t, st, "editor")
 	collector, collectorRole := who(t, st, "collector")
@@ -273,7 +284,7 @@ func TestPermissions(t *testing.T) {
 
 // TestInboxQueries 防 inbox 相关含 JOIN 查询的列歧义回归。
 func TestInboxQueries(t *testing.T) {
-	e, st := setup(t)
+	e, st := setupV1(t)
 	ctx := context.Background()
 	editor, editorRole := who(t, st, "editor")
 	if _, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-06-13", "", ""); err != nil {
@@ -294,7 +305,7 @@ func TestInboxQueries(t *testing.T) {
 // TestReviewEventDetailAndDocTypeDefault 退回原因写进事件 detail（timeline 自助可读）；
 // submit 不传 doc_type 时缺省取阶段 output_type 快照。
 func TestReviewEventDetailAndDocTypeDefault(t *testing.T) {
-	e, st := setup(t)
+	e, st := setupV1(t)
 	ctx := context.Background()
 	editor, editorRole := who(t, st, "editor")
 
