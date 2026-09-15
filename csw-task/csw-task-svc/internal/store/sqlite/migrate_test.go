@@ -135,7 +135,7 @@ func TestSeedDailyNews(t *testing.T) {
 	}
 }
 
-// TestSeedDailyNewsV2 验证 0009 seed：v2 为唯一 active；十三阶段、逐阶段闸（无默认闸）、
+// TestSeedDailyNewsV2 验证 0009 seed（0024 起归档，结构不变）：十三阶段、逐阶段闸（无默认闸）、
 // 派工模式覆盖、平台写与条目级标记、三个新角色与花名册转正。
 func TestSeedDailyNewsV2(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "test.db"))
@@ -147,14 +147,14 @@ func TestSeedDailyNewsV2(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	var wfID, ver int
-	var mode string
-	if err := db.QueryRow(`SELECT id, version, dispatch_mode FROM workflows WHERE wf_key='daily_news' AND status='active'`).
-		Scan(&wfID, &ver, &mode); err != nil {
-		t.Fatalf("active daily_news: %v", err)
+	var wfID int
+	var mode, status string
+	if err := db.QueryRow(`SELECT id, dispatch_mode, status FROM workflows WHERE wf_key='daily_news' AND version=2`).
+		Scan(&wfID, &mode, &status); err != nil {
+		t.Fatalf("daily_news v2: %v", err)
 	}
-	if ver != 2 || mode != "auto" {
-		t.Fatalf("want v2 auto, got v%d %s", ver, mode)
+	if mode != "auto" || status != "archived" {
+		t.Fatalf("want v2 auto archived (v3 active since 0024), got %s %s", mode, status)
 	}
 
 	count := func(q string, args ...any) int {
@@ -258,5 +258,107 @@ func TestSeedDailyNewsV2(t *testing.T) {
 	}
 	if n := count(`SELECT count(*) FROM chat_members WHERE kind='reserved'`); n != 0 {
 		t.Fatalf("want 0 reserved chat members, got %d", n)
+	}
+}
+
+// TestSeedDailyNewsV3 验证 0024：v3 为唯一 active；Van 闸只在 03 / 08 / 12；组版前移（08 即完整审核稿）；
+// 小红书 11 改为收集员选图包、与 10 同依赖 08；写作自动派工；时限与接续告警阈值。
+func TestSeedDailyNewsV3(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	if err := Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	var wfID, ver int
+	if err := db.QueryRow(`SELECT id, version FROM workflows WHERE wf_key='daily_news' AND status='active'`).Scan(&wfID, &ver); err != nil {
+		t.Fatalf("active daily_news: %v", err)
+	}
+	if ver != 3 {
+		t.Fatalf("want v3 active, got v%d", ver)
+	}
+	count := func(q string, args ...any) int {
+		t.Helper()
+		var n int
+		if err := db.QueryRow(q, args...).Scan(&n); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		return n
+	}
+	codes := func(cond string) string {
+		t.Helper()
+		var s string
+		if err := db.QueryRow(`SELECT COALESCE(group_concat(code), '') FROM (SELECT code FROM workflow_stages WHERE workflow_id=? AND `+cond+` ORDER BY seq)`, wfID).Scan(&s); err != nil {
+			t.Fatalf("codes %s: %v", cond, err)
+		}
+		return s
+	}
+	if n := count(`SELECT count(*) FROM workflow_stages WHERE workflow_id=?`, wfID); n != 13 {
+		t.Fatalf("want 13 stages, got %d", n)
+	}
+	if n := count(`SELECT count(*) FROM workflow_stages WHERE workflow_id=? AND (
+		COALESCE(instructions,'')='' OR COALESCE(self_check_criteria,'')='' OR COALESCE(acceptance,'')=''
+		OR length(instructions)>2500 OR length(self_check_criteria)>2500 OR length(acceptance)>2500)`, wfID); n != 0 {
+		t.Fatalf("stage texts must be non-empty and <= 2500 chars, %d bad", n)
+	}
+	if n := count(`SELECT count(*) FROM workflow_stage_deps WHERE workflow_id=?`, wfID); n != 15 {
+		t.Fatalf("want 15 deps, got %d", n)
+	}
+	if n := count(`SELECT count(*) FROM workflow_gates WHERE workflow_id=? AND stage_id IS NULL`, wfID); n != 0 {
+		t.Fatalf("want 0 default gates, got %d", n)
+	}
+	for code, want := range map[string]int{"topic": 2, "write": 1, "fulltext": 1, "wx_layout": 2, "xhs_text": 1, "xhs_package": 2} {
+		if n := count(`SELECT count(*) FROM workflow_gates g JOIN workflow_stages s ON s.id=g.stage_id WHERE g.workflow_id=? AND s.code=?`, wfID, code); n != want {
+			t.Fatalf("%s gates: %d, want %d", code, n, want)
+		}
+	}
+	if n := count(`SELECT count(*) FROM workflow_gates WHERE workflow_id=?`, wfID); n != 9 {
+		t.Fatalf("want 9 gates, got %d", n)
+	}
+	if got := codes(`id IN (SELECT stage_id FROM workflow_gates WHERE reviewer_role='van' AND relayed_by_hub=1)`); got != "topic,wx_layout,xhs_package" {
+		t.Fatalf("van gates at: %s", got)
+	}
+	if got := codes("dispatch_mode='manual'"); got != "xhs_text,xhs_pick" {
+		t.Fatalf("manual stages: %s", got)
+	}
+	if got := codes("dispatch_mode IS NOT NULL AND dispatch_mode<>'manual'"); got != "" {
+		t.Fatalf("unexpected auto overrides: %s", got)
+	}
+	if got := codes("per_item=1"); got != "write,material" {
+		t.Fatalf("per_item stages: %s", got)
+	}
+	if got := codes("action_class LIKE 'platform_write:%'"); got != "wx_save,xhs_save" {
+		t.Fatalf("platform_write stages: %s", got)
+	}
+	if got := codes("role_code='collector'"); got != "intake,material,xhs_pick" {
+		t.Fatalf("collector stages: %s", got)
+	}
+	if got := codes("id IN (SELECT stage_id FROM workflow_stage_deps d JOIN workflow_stages u ON u.id=d.depends_on_id WHERE u.code='wx_layout')"); got != "wx_save,xhs_text,xhs_pick" {
+		t.Fatalf("downstream of wx_layout: %s", got)
+	}
+	for code, want := range map[string]int{"intake": 40, "topic": 15, "write": 50, "design_prep": 30, "fulltext": 15, "wx_layout": 15, "wx_save": 20} {
+		if n := count(`SELECT COALESCE(sla_minutes,0) FROM workflow_stages WHERE workflow_id=? AND code=?`, wfID, code); n != want {
+			t.Fatalf("%s sla: %d, want %d", code, n, want)
+		}
+	}
+	if n := count(`SELECT count(*) FROM workflow_stages WHERE workflow_id=? AND ack_minutes=5`, wfID); n != 13 {
+		t.Fatalf("ack_minutes=5 on all stages, got %d", n)
+	}
+	if got := codes("idle_minutes=5"); got != "wx_layout,wx_save,xhs_package,xhs_save" {
+		t.Fatalf("idle 5 stages: %s", got)
+	}
+	if n := count(`SELECT count(*) FROM workflow_stages WHERE workflow_id=? AND (instr(name,'/')>0 OR instr(name,'\')>0 OR instr(name,':')>0)`, wfID); n != 0 {
+		t.Fatalf("stage names must not contain path separators or colons")
+	}
+	// 旧形态的说法不能留在 v3 文本里。
+	if n := count(`SELECT count(*) FROM workflow_stages WHERE workflow_id=? AND (
+		instr(instructions||self_check_criteria||acceptance,'07 完整审核稿')>0 OR instr(instructions||self_check_criteria||acceptance,'小红书视觉')>0
+		OR instr(instructions||self_check_criteria||acceptance,'分页文案')>0 OR instr(instructions||self_check_criteria||acceptance,'§')>0)`, wfID); n != 0 {
+		t.Fatalf("%d stage texts still describe the v2 shape", n)
+	}
+	if n := count(`SELECT instr(common_acceptance,'11-小红书选图包') FROM workflows WHERE id=?`, wfID); n == 0 {
+		t.Fatal("common acceptance should list v3 stage names")
 	}
 }

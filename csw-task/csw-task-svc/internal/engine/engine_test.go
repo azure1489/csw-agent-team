@@ -29,9 +29,15 @@ func setup(t *testing.T) (*Engine, *sqlite.Store) {
 // 旧用例按 v1 形态断言，v2 定义由 TestFullFlowV2 与 fixture 用例覆盖。
 func setupV1(t *testing.T) (*Engine, *sqlite.Store) {
 	t.Helper()
+	return setupVersion(t, 1)
+}
+
+// setupVersion 在 setup 基础上把 daily_news 切到指定版本（归档版本的用例按各自形态断言）。
+func setupVersion(t *testing.T, ver int) (*Engine, *sqlite.Store) {
+	t.Helper()
 	e, st := setup(t)
-	if err := st.Q().ActivateWorkflowVersion(context.Background(), "daily_news", 1); err != nil {
-		t.Fatalf("activate daily_news v1: %v", err)
+	if err := st.Q().ActivateWorkflowVersion(context.Background(), "daily_news", ver); err != nil {
+		t.Fatalf("activate daily_news v%d: %v", ver, err)
 	}
 	return e, st
 }

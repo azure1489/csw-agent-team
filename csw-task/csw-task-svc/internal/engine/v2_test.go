@@ -24,9 +24,9 @@ func taskByItem(t *testing.T, st *sqlite.Store, runID int64, code, key string) d
 }
 
 // TestFullFlowV2 驱动 daily_news v2：0 闸直通、合流自动派主编、选题逐条批准生成条目任务、
-// 手动派工、并行分支、完整审核稿等全部条目、平台写停在待授权、授权后续派、run done。
+// 手动派工、并行分支、完整审核稿等全部条目、平台写停在待授权、授权后续派、run done。（v2 已归档，按 v2 形态固定。）
 func TestFullFlowV2(t *testing.T) {
-	e, st := setup(t)
+	e, st := setupVersion(t, 2)
 	ctx := context.Background()
 	editor, editorRole := who(t, st, "editor")
 

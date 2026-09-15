@@ -19,7 +19,7 @@ func blockerOf(p Progress, code string) (ProgressTask, bool) {
 }
 
 func TestProgressBlockers(t *testing.T) {
-	e, st := setup(t)
+	e, st := setupVersion(t, 2) // 通用阻塞判定：固定在 v2 形态（10 手动待派工紧接 07）
 	ctx := context.Background()
 	editor, editorRole := who(t, st, "editor")
 	collector, _ := who(t, st, "collector")

@@ -183,7 +183,7 @@ func TestWorkflowRoundTripKeepsStageFields(t *testing.T) {
 		t.Fatalf("get: %d", code)
 	}
 	if len(before.Stages) != 13 || len(before.DefaultGates) != 0 {
-		t.Fatalf("v2 shape: %d stages, %d default gates", len(before.Stages), len(before.DefaultGates))
+		t.Fatalf("v3 shape: %d stages, %d default gates", len(before.Stages), len(before.DefaultGates))
 	}
 
 	// 改一处（topic 时限 15→20）后整份保存。
@@ -208,7 +208,7 @@ func TestWorkflowRoundTripKeepsStageFields(t *testing.T) {
 	for i, s := range before.Stages {
 		if s.Code == "topic" {
 			want[i] = strings.Replace(want[i], "sla=15", "sla=20", 1)
-			want[i] = strings.Replace(want[i], "idle=0", "idle=7", 1)
+			want[i] = strings.Replace(want[i], "idle=10", "idle=7", 1)
 		}
 	}
 	diffSigs(t, "after put", stageSigs(after), want)

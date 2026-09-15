@@ -35,7 +35,7 @@ func TestWorkflowAuditCarriesReason(t *testing.T) {
 		ID      int64 `json:"id"`
 		Version int   `json:"version"`
 	}
-	if code := adminDo(t, ts, token, http.MethodPost, path+"/clone", map[string]string{"reason": "复制做实验"}, &cl); code != 201 || cl.Version != 3 {
+	if code := adminDo(t, ts, token, http.MethodPost, path+"/clone", map[string]string{"reason": "复制做实验"}, &cl); code != 201 || cl.Version != 4 {
 		t.Fatalf("clone: %d v%d", code, cl.Version)
 	}
 	var au struct {
@@ -49,10 +49,10 @@ func TestWorkflowAuditCarriesReason(t *testing.T) {
 		t.Fatalf("audit by prefix: %d %+v", code, au)
 	}
 	first, second := au.Audit[0], au.Audit[1]
-	if first.Action != "workflow_clone" || first.Target != "daily_news@3" || !strings.Contains(first.Detail, `"from_version":2`) || !strings.Contains(first.Detail, "复制做实验") {
+	if first.Action != "workflow_clone" || first.Target != "daily_news@4" || !strings.Contains(first.Detail, `"from_version":3`) || !strings.Contains(first.Detail, "复制做实验") {
 		t.Fatalf("clone audit: %+v", first)
 	}
-	if second.Action != "workflow_update" || second.Target != "daily_news@2" || !strings.Contains(second.Detail, "Van：选题时限放宽") || !strings.Contains(second.Detail, "topic 时限 15→20") {
+	if second.Action != "workflow_update" || second.Target != "daily_news@3" || !strings.Contains(second.Detail, "Van：选题时限放宽") || !strings.Contains(second.Detail, "topic 时限 15→20") {
 		t.Fatalf("update audit: %+v", second)
 	}
 	// 前端调用不带请求体。
