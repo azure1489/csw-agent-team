@@ -426,12 +426,18 @@ func (q *Queries) ListActiveFeedback(ctx context.Context, tags []string, limit i
 		for trs.Next() {
 			var t string
 			if err := trs.Scan(&t); err != nil {
-				trs.Close()
+				_ = trs.Close()
 				return nil, err
 			}
 			out[i].Tags = append(out[i].Tags, t)
 		}
-		trs.Close()
+		if err := trs.Err(); err != nil {
+			_ = trs.Close()
+			return nil, err
+		}
+		if err := trs.Close(); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }

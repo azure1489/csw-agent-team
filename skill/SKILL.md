@@ -168,7 +168,7 @@ curl -fsS -X POST "$BASE/api/v1/deliverables/$D/reviews" -H "Authorization: Bear
 
 ### 4.3 选题决定（03 Van 闸，按条目）
 
-- `items` 写 Van 批准的条目键；「保留」「就这条」= 批准可写；「再看看」「继续研究」= 只开研究、不派写作；措辞不明时只问一次受影响的范围。
+- `items` 写 Van 批准的条目键，**只随 Van 闸录入**（主编自审闸带条目会被拒绝，防止写作在 Van 批准前开工）；「保留」「就这条」= 批准可写；「再看看」「继续研究」= 只开研究、不派写作；措辞不明时只问一次受影响的范围。
 - 引擎为每个批准可写的条目生成 04-公众号写作与 05-配图与素材核任务并自动派工（派工单由引擎写明条目、来源与 Van 原话）；07-内容整合稿等这些条目的两项都通过才就绪。
 - 补批或撤回单条：`POST /runs/{id}/items/{item_key}/decision {decision, source_quote}`。撤回只取消该条尚未完成的任务，不影响内容整合稿；已写成的条目不能再改决定。批准晚到时，已开工的内容整合稿会标「补件待返工」，由你决定纳入本期还是留到下期。
 - 数量不足：已批准的照常推进，缺量说明四要素（差多少、为什么缺、怎样补、补不齐怎么办）写进选题方案；不用旧闻或弱题凑数；改数量或范围由 Van 一次决定。整期目标来自触发 inputs（`目标.主选`）；其余任务都结束而已写成仍不足时，run 保持进行中，Van 接受缺口后 `POST /runs/{id}/close {reason}` 结束。
@@ -266,6 +266,7 @@ curl -fsS -X POST "$BASE/api/v1/tasks/$TASK_ID/deliverables" -H "Authorization: 
 | 400 `return_required` / `reason_required` | 缺退回方向位置 / 缺原因 | 补齐 |
 | 400 `source_quote_required` | Van 闸或授权缺 Van 原话 | 补 `source_quote` |
 | 400 `bad_decision_type` / `bad_items_json` / `bad_scope` / `bad_kind` | 取值不合法 | 按 §4 取值 |
+| 400 `items_require_van_gate` | 在主编自审等中间闸带了条目 | 条目只随 Van 闸（或末闸）录入；中间闸不带 items |
 | 400 `affects_required` / `bad_affects` / `edit_of_required` / `diff_summary_required` | 补件或定点编辑缺字段 | 按 §2.3 / §4.5 补齐 |
 | 400 `doc_type_required` | doc_type 与阶段产出类型都空 | 显式传 `-F doc_type=…` |
 | 400 `bad_item_key` / `bad_item_status` / `bad_decision` | 条目键或状态、决定取值不合法 | 条目键小写字母数字与短横；登记只写 candidate / shortlisted |

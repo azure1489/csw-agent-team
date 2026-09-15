@@ -137,6 +137,12 @@ func (s *Server) handleListFeedback(c *gin.Context) {
 		}
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if limit <= 0 {
+		limit = 20 // SQLite 的 LIMIT 负数等于不限，不能直接透传
+	}
+	if limit > 100 {
+		limit = 100
+	}
 	rs, err := s.store.Q().ListActiveFeedback(c.Request.Context(), tags, limit)
 	if err != nil {
 		s.renderErr(c, err)

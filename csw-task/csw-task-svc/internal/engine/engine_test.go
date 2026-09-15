@@ -71,22 +71,6 @@ func taskByCode(t *testing.T, st *sqlite.Store, runID int64, code string) domain
 	return domain.Task{}
 }
 
-// curDeliverable 取 task 当前版本的产出交付物 id。
-func curDeliverable(t *testing.T, st *sqlite.Store, taskID int64, version int) int64 {
-	t.Helper()
-	ds, err := st.Q().ListDeliverablesByTask(context.Background(), taskID)
-	if err != nil {
-		t.Fatalf("list deliverables: %v", err)
-	}
-	for _, d := range ds {
-		if !d.IsDispatch && d.Version == version {
-			return d.ID
-		}
-	}
-	t.Fatalf("no deliverable v%d for task %d", version, taskID)
-	return 0
-}
-
 // TestFullFlow 驱动 daily_news 整条流程：触发→派工→提交→双闸→退回重提→合流自动派→run done。
 func TestFullFlow(t *testing.T) {
 	e, st := setupV1(t)

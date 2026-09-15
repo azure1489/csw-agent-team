@@ -133,6 +133,11 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 		if err != nil {
 			return err
 		}
+		gates, err := q.ListTaskGates(ctx, task.ID)
+		if err != nil {
+			return err
+		}
+		final := nextGate >= len(gates)
 
 		// 权限：人工闸中枢代录；普通闸须 reviewer_role 本人。
 		if tg.RelayedByHub {
@@ -147,6 +152,11 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 			if quote = vanQuote(in.Comment); quote == "" {
 				return domain.BadRequest("source_quote_required", "人工闸结论须附 Van 原话：source_quote，或 comment 以「Van：」开头")
 			}
+		}
+
+		// 条目决定只随 Van 闸（中枢代录）或末闸录入：中间闸（如主编自审）带条目，会让写作在 Van 批准前就被派出。
+		if in.Verdict == domain.VerdictPass && in.ItemsJSON != "" && !tg.RelayedByHub && !final {
+			return domain.BadRequest("items_require_van_gate", "条目决定只能随 Van 闸或末闸录入，「"+tg.Name+"」不是")
 		}
 
 		reviewerID := actor.ID
@@ -192,14 +202,10 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 		}
 
 		if in.Verdict == domain.VerdictPass {
-			gates, err := q.ListTaskGates(ctx, task.ID)
-			if err != nil {
-				return err
-			}
 			passDetail := evtDetail(decorateDecision(map[string]any{
-				"gate": nextGate, "gate_name": tg.Name, "comment": in.Comment, "final": nextGate >= len(gates),
+				"gate": nextGate, "gate_name": tg.Name, "comment": in.Comment, "final": final,
 			}, in, quote))
-			if nextGate >= len(gates) {
+			if final {
 				// 末闸通过：task/deliverable passed，重算下游。
 				if err := q.SetDeliverableGate(ctx, deliverableID, nextGate, domain.DelPassed, nil); err != nil {
 					return err

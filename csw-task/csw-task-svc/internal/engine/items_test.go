@@ -331,3 +331,29 @@ func TestAutoDispatchItemNote(t *testing.T) {
 		t.Fatalf("explicit note must be kept: %s", got)
 	}
 }
+
+// TestItemsOnlyAtVanGate 条目决定只随 Van 闸或末闸录入：主编自审闸带条目直接拒绝，不会在 Van 批准前生成写作任务。
+func TestItemsOnlyAtVanGate(t *testing.T) {
+	e, st, ctx, runID := itemFlow(t, "")
+	editor, editorRole := who(t, st, "editor")
+	d, err := e.Submit(ctx, editor, taskByCode(t, st, runID, "b").ID, SubmitInput{DownloadURL: "http://x/b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.Review(ctx, editor, editorRole, d.ID, ReviewInput{Verdict: domain.VerdictPass, DecisionType: "topic_approve", ItemsJSON: `["hxo-1"]`})
+	wantCode(t, err, "items_require_van_gate")
+	if items, _ := st.Q().ListItems(ctx, runID); len(items) != 0 {
+		t.Fatalf("no item may be decided before the Van gate: %+v", items)
+	}
+	// 同一闸不带条目照常通过，Van 闸带条目生效。
+	if _, err := e.Review(ctx, editor, editorRole, d.ID, ReviewInput{Verdict: domain.VerdictPass}); err != nil {
+		t.Fatalf("hub gate without items: %v", err)
+	}
+	if _, err := e.Review(ctx, editor, editorRole, d.ID, ReviewInput{Verdict: domain.VerdictPass, DecisionType: "topic_approve",
+		ItemsJSON: `["hxo-1"]`, SourceQuote: "Van：HxO 可以写"}); err != nil {
+		t.Fatalf("van gate with items: %v", err)
+	}
+	if it, _ := st.Q().GetItem(ctx, runID, "hxo-1"); it.Status != domain.ItemApprovedWrite {
+		t.Fatalf("item after van gate: %+v", it)
+	}
+}

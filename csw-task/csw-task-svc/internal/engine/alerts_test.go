@@ -109,3 +109,27 @@ func TestStallAlertsOnceEach(t *testing.T) {
 		t.Fatal("silent again: idle due again")
 	}
 }
+
+// TestStallIgnoresOldHistory 停滞开始于 24 小时之前的任务（历史遗留）不补发接续告警。
+func TestStallIgnoresOldHistory(t *testing.T) {
+	e, st := setup(t)
+	ctx := context.Background()
+	buildFlow(t, st, "auto", []fxStage{{code: "a", role: "collector", gates: []fxGate{{reviewer: "editor"}}}})
+	editor, editorRole := who(t, st, "editor")
+	res, err := e.Trigger(ctx, editor, editorRole, "t_flow", "s1", "", "")
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	a := taskByCode(t, st, res.Run.ID, "a")
+	if _, err := st.DB().Exec(`UPDATE tasks SET dispatched_at=strftime('%Y-%m-%dT%H:%M:%SZ','now','-25 hours') WHERE id=?`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []domain.StallKind{domain.StallAck, domain.StallEscalate, domain.StallIdle} {
+		if ts, err := st.Q().ListStalledTasks(ctx, k); err != nil || len(ts) != 0 {
+			t.Fatalf("%s: old stall must be ignored, got %d err=%v", k, len(ts), err)
+		}
+	}
+	if ok, err := e.NotifyStall(ctx, a.ID, domain.StallAck); err != nil || ok {
+		t.Fatalf("old stall must not be notified: ok=%v err=%v", ok, err)
+	}
+}

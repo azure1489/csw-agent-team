@@ -275,7 +275,7 @@ func TestStallScanRemindsThenEscalates(t *testing.T) {
 	r.trigger(t)
 	r.flush(t)
 	intake := r.task(t, "intake")
-	if _, err := r.st.DB().Exec(`UPDATE tasks SET dispatched_at='2000-01-01T00:00:00Z' WHERE id=?`, intake.ID); err != nil {
+	if _, err := r.st.DB().Exec(`UPDATE tasks SET dispatched_at=strftime('%Y-%m-%dT%H:%M:%SZ','now','-20 minutes') WHERE id=?`, intake.ID); err != nil {
 		t.Fatal(err)
 	}
 	// 第一轮只提醒执行者（升级须在提醒之后）；第二轮升级主编；之后不再重复。

@@ -333,11 +333,14 @@ func (q *Queries) MarkOverdueNotified(ctx context.Context, id int64) (bool, erro
 }
 
 // 接续告警的到期条件（阈值为空时取默认；未接单条件带倍数，升级用 AckEscalateFactor）。
+// 只看最近 24 小时内开始的停滞：更早的只可能是历史遗留或 notifier 长时间停机，补发只会刷屏。
 const (
 	condAckDue = `t.status='dispatched' AND t.dispatched_at IS NOT NULL
+		AND t.dispatched_at >= strftime('%Y-%m-%dT%H:%M:%SZ','now','-24 hours')
 		AND strftime('%Y-%m-%dT%H:%M:%SZ', t.dispatched_at, '+' || (COALESCE(t.ack_minutes, ?) * ?) || ' minutes')
 		    <= strftime('%Y-%m-%dT%H:%M:%SZ','now')`
 	condIdleDue = `t.status='in_progress' AND t.last_activity_at IS NOT NULL
+		AND t.last_activity_at >= strftime('%Y-%m-%dT%H:%M:%SZ','now','-24 hours')
 		AND strftime('%Y-%m-%dT%H:%M:%SZ', t.last_activity_at, '+' || COALESCE(t.idle_minutes, ?) || ' minutes')
 		    <= strftime('%Y-%m-%dT%H:%M:%SZ','now')`
 )

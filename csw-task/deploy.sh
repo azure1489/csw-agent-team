@@ -67,7 +67,12 @@ if [ -f data/csw-task.db ]; then
   fi
   echo "   迁移前备份：$BK"
 fi
-./bin/adminctl migrate up 2>&1 | tail -1
+if ! ./bin/adminctl migrate up > /tmp/csw-migrate.log 2>&1; then
+  tail -20 /tmp/csw-migrate.log
+  echo "   ✖ 迁移失败：两个服务保持停止。回退办法：用上面「迁移前备份」那份覆盖 data/csw-task.db，换回旧二进制后再启动" >&2
+  exit 1
+fi
+tail -1 /tmp/csw-migrate.log
 
 # adminsrv 的 secret/env：仅首次生成（重生成会踢掉全部后台登录态）
 if [ ! -f adminsrv.env ]; then
@@ -201,8 +206,7 @@ echo "   服务: server=$(systemctl is-active csw-task) adminsrv=$(systemctl is-
 REMOTE
 
 log "4/5 验证"
-sleep 1
-printf '   healthz:  %s\n' "$(curl -fsS "https://$DOMAIN/healthz")"
+printf '   healthz:  %s\n' "$(curl -fsS --retry 10 --retry-connrefused --retry-all-errors --retry-delay 1 "https://$DOMAIN/healthz")"
 printf '   前端:     HTTP %s\n' "$(curl -s -o /dev/null -w '%{http_code}' "https://$DOMAIN/")"
 printf '   adminsrv: HTTP %s（未登录 401 即正常）\n' "$(curl -s -o /dev/null -w '%{http_code}' "https://$DOMAIN/admin/me")"
 
