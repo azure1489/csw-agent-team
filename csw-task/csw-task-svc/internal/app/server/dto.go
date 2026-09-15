@@ -11,20 +11,28 @@ func (s *Server) fileURL(id int64) string {
 }
 
 type taskDTO struct {
-	StageCode    string `json:"stage_code"`
-	StageName    string `json:"stage_name"`
-	RoleCode     string `json:"role_code"`
-	OutputType   string `json:"output_type"`
-	Status       string `json:"status"`
-	ActionClass  string `json:"action_class"`
-	DispatchMode string `json:"dispatch_mode,omitempty"`
-	AssigneeID   *int64 `json:"assignee_id"`
-	ID           int64  `json:"id"`
-	RunID        int64  `json:"run_id"`
-	Seq          int    `json:"seq"`
-	CurVersion   int    `json:"cur_version"`
-	SLAMinutes   int    `json:"sla_minutes,omitempty"`
-	IsMerge      bool   `json:"is_merge"`
+	StageCode      string `json:"stage_code"`
+	StageName      string `json:"stage_name"`
+	RoleCode       string `json:"role_code"`
+	OutputType     string `json:"output_type"`
+	Status         string `json:"status"`
+	ActionClass    string `json:"action_class"`
+	DispatchMode   string `json:"dispatch_mode,omitempty"`
+	ItemKey        string `json:"item_key"`
+	FailReason     string `json:"fail_reason,omitempty"`
+	DueAt          string `json:"due_at,omitempty"`
+	DispatchedAt   string `json:"dispatched_at,omitempty"`
+	StartedAt      string `json:"started_at,omitempty"`
+	CompletedAt    string `json:"completed_at,omitempty"`
+	LastActivityAt string `json:"last_activity_at,omitempty"`
+	AssigneeID     *int64 `json:"assignee_id"`
+	ID             int64  `json:"id"`
+	RunID          int64  `json:"run_id"`
+	Seq            int    `json:"seq"`
+	CurVersion     int    `json:"cur_version"`
+	SLAMinutes     int    `json:"sla_minutes,omitempty"`
+	IsMerge        bool   `json:"is_merge"`
+	ReworkPending  bool   `json:"rework_pending"`
 }
 
 func toTaskDTO(t domain.Task) taskDTO {
@@ -37,6 +45,8 @@ func toTaskDTO(t domain.Task) taskDTO {
 		Seq: t.Seq, RoleCode: t.RoleCode, OutputType: t.OutputType, IsMerge: t.IsMerge, Status: string(t.Status),
 		CurVersion: t.CurVersion, AssigneeID: t.AssigneeID,
 		ActionClass: ac, DispatchMode: string(t.DispatchMode), SLAMinutes: t.SLAMinutes,
+		ItemKey: t.ItemKey, FailReason: t.FailReason, DueAt: t.DueAt, DispatchedAt: t.DispatchedAt,
+		StartedAt: t.StartedAt, CompletedAt: t.CompletedAt, LastActivityAt: t.LastActivityAt, ReworkPending: t.ReworkPending,
 	}
 }
 

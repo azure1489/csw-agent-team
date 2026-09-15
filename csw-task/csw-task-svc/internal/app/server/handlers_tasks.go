@@ -277,3 +277,98 @@ func (s *Server) handleSubmitMultipart(c *gin.Context, taskID int64) {
 		"file": gin.H{"file_id": fileID, "sha256": sha, "size": size, "object_key": storagePath},
 	})
 }
+
+type reasonReq struct {
+	Reason string `json:"reason"`
+}
+
+// bindReason 读可选 JSON 体里的 reason（空体视为空原因，由引擎判定是否必填）。
+func bindReason(c *gin.Context) (string, error) {
+	var req reasonReq
+	if c.Request.ContentLength == 0 {
+		return "", nil
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return "", domain.BadRequest("bad_body", "请求体非法："+err.Error())
+	}
+	return req.Reason, nil
+}
+
+// POST /tasks/:id/ack —— 执行者接单（dispatched→in_progress）；已接单时再调用只刷新活动时间
+func (s *Server) handleAck(c *gin.Context) {
+	id, err := pathID(c, "id")
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	agent, _ := mwAgent(c)
+	t, err := s.eng.Ack(c.Request.Context(), agent, id)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"task": toTaskDTO(t)})
+}
+
+// POST /tasks/:id/fail {reason} —— 执行者报告无法完成
+func (s *Server) handleFail(c *gin.Context) {
+	id, err := pathID(c, "id")
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	reason, err := bindReason(c)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	agent, _ := mwAgent(c)
+	t, err := s.eng.Fail(c.Request.Context(), agent, id, reason)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"task": toTaskDTO(t)})
+}
+
+// POST /tasks/:id/cancel {reason} —— 中枢取消（尚未开始的下游一并取消）
+func (s *Server) handleCancel(c *gin.Context) {
+	id, err := pathID(c, "id")
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	reason, err := bindReason(c)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	agent, role := mwAgent(c)
+	res, err := s.eng.Cancel(c.Request.Context(), agent, role, id, reason)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"task": toTaskDTO(res.Task), "cancelled_task_ids": res.Cancelled})
+}
+
+// POST /tasks/:id/reopen {reason} —— 中枢重开（失败 / 已取消 / 已通过 → ready 或 blocked，不自动派工）
+func (s *Server) handleReopen(c *gin.Context) {
+	id, err := pathID(c, "id")
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	reason, err := bindReason(c)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	agent, role := mwAgent(c)
+	t, err := s.eng.Reopen(c.Request.Context(), agent, role, id, reason)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"task": toTaskDTO(t)})
+}

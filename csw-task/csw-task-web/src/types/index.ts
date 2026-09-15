@@ -217,6 +217,10 @@ export interface TaskBrief {
   action_class?: string
   dispatch_mode?: string
   sla_minutes?: number
+  item_key?: string
+  fail_reason?: string
+  due_at?: string
+  rework_pending?: boolean
 }
 
 export interface RunAuthorization {

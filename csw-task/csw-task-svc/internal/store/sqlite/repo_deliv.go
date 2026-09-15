@@ -320,6 +320,7 @@ func (q *Queries) ListPendingReviews(ctx context.Context) ([]PendingReview, erro
 		JOIN task_gates tg ON tg.task_id = d.task_id AND tg.gate_order = d.cur_gate + 1
 		WHERE d.is_dispatch = 0
 		  AND d.status IN ('submitted','in_review')
+		  AND t.status = 'review'
 		  AND r.status = 'active'
 		ORDER BY t.run_id, t.seq`)
 	if err != nil {

@@ -41,6 +41,8 @@ export const STATUS: Record<string, StatusMeta> = {
   review: { label: '审核中', tone: 'amber' },
   passed: { label: '已通过', tone: 'green' },
   returned: { label: '已退回', tone: 'red' },
+  failed: { label: '报告失败', tone: 'red', dot: true },
+  cancelled: { label: '已取消', tone: 'gray', outline: true },
   // token / agent / user
   token_active: { label: '启用', tone: 'green', dot: true },
   revoked: { label: '已吊销', tone: 'gray' },
@@ -113,6 +115,11 @@ export const EVENT_TONE: Record<string, string> = {
   authorization_required: 'var(--amber)',
   authorization_granted: 'var(--green)',
   authorization_revoked: 'var(--amber)',
+  task_acked: 'var(--blue)',
+  task_failed: 'var(--red)',
+  task_cancelled: 'var(--gray)',
+  task_reopened: 'var(--amber)',
+  overdue: 'var(--red)',
 }
 
 // 事件类型 → 人类可读模板（缺省回退到原始 type）
@@ -129,6 +136,11 @@ export const EVENT_LABEL: Record<string, string> = {
   authorization_required: '等待授权',
   authorization_granted: '授权录入',
   authorization_revoked: '授权撤销',
+  task_acked: '执行者接单',
+  task_failed: '报告无法完成',
+  task_cancelled: '任务取消',
+  task_reopened: '任务重开',
+  overdue: '任务逾期',
 }
 
 // run 授权范围 → 中文

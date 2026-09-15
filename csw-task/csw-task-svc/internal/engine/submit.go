@@ -33,11 +33,8 @@ func (e *Engine) Submit(ctx context.Context, agent domain.Agent, taskID int64, i
 		}
 
 		// 权限：仅该任务 assignee（合流阶段=中枢）；assignee 未解析时回退到角色匹配。
-		switch {
-		case task.AssigneeID != nil && *task.AssigneeID == agent.ID:
-		case task.AssigneeID == nil && task.RoleCode == agent.RoleCode:
-		default:
-			return domain.Forbidden("not_assignee", "仅该任务负责人可提交产出")
+		if err := checkAssignee(task, agent, "提交产出"); err != nil {
+			return err
 		}
 		if !domain.CanSubmit(task.Status) {
 			return domain.Conflict("cannot_submit", "任务当前状态不可提交："+string(task.Status))
@@ -92,6 +89,13 @@ func (e *Engine) Submit(ctx context.Context, agent domain.Agent, taskID int64, i
 			}
 		}
 		if err := q.InsertEvent(ctx, domain.Event{RunID: &task.RunID, TaskID: &taskID, DeliverableID: &id, ActorID: &producer, Type: domain.EvtSubmitted}); err != nil {
+			return err
+		}
+		// 有产出即有活动；清逾期提醒标记（退回后再逾期可再提醒一次）。
+		if err := q.TouchTaskActivity(ctx, taskID); err != nil {
+			return err
+		}
+		if err := q.ClearOverdueNotified(ctx, taskID); err != nil {
 			return err
 		}
 

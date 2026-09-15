@@ -94,6 +94,11 @@ func (e *Engine) dispatchInternal(ctx context.Context, q *sqlite.Queries, task d
 	if err := q.SetTaskDispatched(ctx, task.ID); err != nil {
 		return domain.Deliverable{}, err
 	}
+	if task.SLAMinutes > 0 {
+		if err := q.SetTaskDue(ctx, task.ID, task.SLAMinutes); err != nil {
+			return domain.Deliverable{}, err
+		}
+	}
 	if err := q.InsertEvent(ctx, domain.Event{RunID: &task.RunID, TaskID: &task.ID, DeliverableID: &id, ActorID: producerID, Type: domain.EvtDispatched}); err != nil {
 		return domain.Deliverable{}, err
 	}

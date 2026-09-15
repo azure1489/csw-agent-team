@@ -67,6 +67,9 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 		if d.Version != task.CurVersion {
 			return domain.Conflict("stale_version", "该交付物非任务当前版本")
 		}
+		if task.Status != domain.TaskReview {
+			return domain.Conflict("not_in_review", "任务不在审核中："+string(task.Status))
+		}
 		run, err := q.GetRun(ctx, task.RunID)
 		if err != nil {
 			return err
@@ -150,6 +153,12 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 			}
 			if err := q.SetTaskReturned(ctx, task.ID); err != nil {
 				return err
+			}
+			// 退回等同重新交办：按时限重新计时。
+			if task.SLAMinutes > 0 {
+				if err := q.SetTaskDue(ctx, task.ID, task.SLAMinutes); err != nil {
+					return err
+				}
 			}
 			rejDetail := evtDetail(map[string]any{
 				"gate": nextGate, "gate_name": tg.Name,

@@ -49,6 +49,8 @@ func (s *Server) Router() *gin.Engine {
 		v1.POST("/files", s.handleUpload)
 		v1.GET("/files/:id", s.handleDownload)
 		v1.POST("/tasks/:id/deliverables", s.handleSubmit)
+		v1.POST("/tasks/:id/ack", s.handleAck)
+		v1.POST("/tasks/:id/fail", s.handleFail)
 
 		// 花名册（任意角色 token 可读，群播报查 open_id 用）
 		v1.GET("/roster", s.handleRoster)
@@ -61,6 +63,8 @@ func (s *Server) Router() *gin.Engine {
 		v1.GET("/me/inbox", s.handleInbox)
 		v1.POST("/tasks/:id/dispatch", s.handleDispatch)
 		v1.POST("/deliverables/:id/reviews", s.handleReview)
+		v1.POST("/tasks/:id/cancel", s.handleCancel)
+		v1.POST("/tasks/:id/reopen", s.handleReopen)
 		v1.POST("/runs/:id/authorizations", s.handleGrantAuthorization)
 		v1.DELETE("/runs/:id/authorizations/:scope", s.handleRevokeAuthorization)
 	}

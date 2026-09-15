@@ -71,6 +71,19 @@ func (s *Server) handleInbox(c *gin.Context) {
 		}
 	}
 
+	// 失败队列：执行者报告无法完成、等中枢重开或取消的任务。
+	failed, err := q.ListActiveRunTasksByStatus(ctx, domain.TaskFailed)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	failedQueue := make([]taskDTO, 0)
+	for _, t := range failed {
+		if w, ok := wfOf(t.RunID); ok && w.HubRoleCode == role.Code {
+			failedQueue = append(failedQueue, toTaskDTO(t))
+		}
+	}
+
 	// 我的任务（含合流自产）：assignee=我且未完成。
 	mine, err := q.ListMyTasks(ctx, agent.ID, true)
 	if err != nil {
@@ -85,6 +98,7 @@ func (s *Server) handleInbox(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"dispatch_queue": dispatchQueue,
 		"review_queue":   reviewQueue,
+		"failed_queue":   failedQueue,
 		"my_tasks":       myTasks,
 	})
 }

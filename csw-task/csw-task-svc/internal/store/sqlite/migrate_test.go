@@ -33,6 +33,9 @@ func TestMigrate(t *testing.T) {
 		{"workflow_stages", "dispatch_mode"}, {"workflow_stages", "action_class"},
 		{"workflow_stages", "sla_minutes"}, {"workflow_stages", "per_item"},
 		{"tasks", "dispatch_mode"}, {"tasks", "action_class"}, {"tasks", "sla_minutes"},
+		// 0011 tasks 重建带入的列。
+		{"tasks", "item_key"}, {"tasks", "fail_reason"}, {"tasks", "last_activity_at"},
+		{"tasks", "overdue_notified_at"}, {"tasks", "rework_pending"},
 	} {
 		var c int
 		if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, tc.table, tc.col).Scan(&c); err != nil || c != 1 {

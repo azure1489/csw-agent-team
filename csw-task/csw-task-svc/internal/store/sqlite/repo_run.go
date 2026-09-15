@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/domain"
@@ -59,11 +60,11 @@ func (q *Queries) InsertTask(ctx context.Context, t domain.Task) (int64, error) 
 		INSERT INTO tasks
 		  (run_id, stage_code, stage_name, seq, role_code, is_merge, output_type,
 		   instructions, self_check_criteria, acceptance, assignee_id, status, cur_version,
-		   dispatch_mode, action_class, sla_minutes)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   dispatch_mode, action_class, sla_minutes, item_key)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		t.RunID, t.StageCode, t.StageName, t.Seq, t.RoleCode, b2i(t.IsMerge), t.OutputType,
 		t.Instructions, t.SelfCheckCriteria, t.Acceptance, nullI64(t.AssigneeID), string(t.Status), t.CurVersion,
-		nullIfEmpty(string(t.DispatchMode)), actionOrRead(t.ActionClass), nullIfNonPos(t.SLAMinutes))
+		nullIfEmpty(string(t.DispatchMode)), actionOrRead(t.ActionClass), nullIfNonPos(t.SLAMinutes), t.ItemKey)
 	if err != nil {
 		return 0, err
 	}
@@ -72,22 +73,29 @@ func (q *Queries) InsertTask(ctx context.Context, t domain.Task) (int64, error) 
 
 const taskCols = `id, run_id, stage_code, stage_name, seq, role_code, is_merge, output_type,
 	instructions, self_check_criteria, acceptance, assignee_id, status, cur_version,
-	dispatch_mode, action_class, sla_minutes`
+	dispatch_mode, action_class, sla_minutes,
+	item_key, fail_reason, due_at, dispatched_at, started_at, completed_at, last_activity_at, rework_pending`
 
 // 带表别名 t. 的列，用于含 JOIN 的查询（避免 id 等与 runs 列歧义）。
 const taskColsT = `t.id, t.run_id, t.stage_code, t.stage_name, t.seq, t.role_code, t.is_merge, t.output_type,
 	t.instructions, t.self_check_criteria, t.acceptance, t.assignee_id, t.status, t.cur_version,
-	t.dispatch_mode, t.action_class, t.sla_minutes`
+	t.dispatch_mode, t.action_class, t.sla_minutes,
+	t.item_key, t.fail_reason, t.due_at, t.dispatched_at, t.started_at, t.completed_at, t.last_activity_at, t.rework_pending`
 
 func scanTask(s interface{ Scan(...any) error }) (domain.Task, error) {
 	var t domain.Task
 	var merge int
-	var outType, ins, sc, ac, dmode sql.NullString
+	var outType, ins, sc, ac, dmode, failR, due, disp, start, done, act sql.NullString
 	var assignee, sla sql.NullInt64
 	var status string
+	var rework int
 	err := s.Scan(&t.ID, &t.RunID, &t.StageCode, &t.StageName, &t.Seq, &t.RoleCode, &merge, &outType,
-		&ins, &sc, &ac, &assignee, &status, &t.CurVersion, &dmode, &t.ActionClass, &sla)
+		&ins, &sc, &ac, &assignee, &status, &t.CurVersion, &dmode, &t.ActionClass, &sla,
+		&t.ItemKey, &failR, &due, &disp, &start, &done, &act, &rework)
 	t.DispatchMode, t.SLAMinutes = domain.DispatchMode(dmode.String), int(sla.Int64)
+	t.FailReason, t.DueAt, t.DispatchedAt = failR.String, due.String, disp.String
+	t.StartedAt, t.CompletedAt, t.LastActivityAt = start.String, done.String, act.String
+	t.ReworkPending = rework == 1
 	t.IsMerge = merge == 1
 	t.OutputType = outType.String
 	t.Instructions, t.SelfCheckCriteria, t.Acceptance = ins.String, sc.String, ac.String
@@ -119,11 +127,11 @@ func (q *Queries) ListTasksByRun(ctx context.Context, runID int64) ([]domain.Tas
 	return out, rows.Err()
 }
 
-// ListMyTasks 列某 assignee 的任务；openOnly=true 时排除 passed。
+// ListMyTasks 列某 assignee 的任务；openOnly=true 时只列待处理的（排除已通过、已取消、已报告失败）。
 func (q *Queries) ListMyTasks(ctx context.Context, assigneeID int64, openOnly bool) ([]domain.Task, error) {
 	query := `SELECT ` + taskCols + ` FROM tasks WHERE assignee_id=?`
 	if openOnly {
-		query += ` AND status <> 'passed'`
+		query += ` AND status NOT IN ('passed','cancelled','failed')`
 	}
 	query += ` ORDER BY run_id, seq`
 	rows, err := q.ex.QueryContext(ctx, query, assigneeID)
@@ -144,10 +152,15 @@ func (q *Queries) ListMyTasks(ctx context.Context, assigneeID int64, openOnly bo
 
 // ListReadyTasks 列全部 ready 任务（active run），即中枢派工队列。
 func (q *Queries) ListReadyTasks(ctx context.Context) ([]domain.Task, error) {
+	return q.ListActiveRunTasksByStatus(ctx, domain.TaskReady)
+}
+
+// ListActiveRunTasksByStatus 列进行中 run 里某状态的全部任务。
+func (q *Queries) ListActiveRunTasksByStatus(ctx context.Context, status domain.TaskStatus) ([]domain.Task, error) {
 	rows, err := q.ex.QueryContext(ctx, `
 		SELECT `+taskColsT+` FROM tasks t
 		JOIN runs r ON r.id = t.run_id
-		WHERE t.status='ready' AND r.status='active' ORDER BY t.run_id, t.seq`)
+		WHERE t.status=? AND r.status='active' ORDER BY t.run_id, t.seq`, string(status))
 	if err != nil {
 		return nil, err
 	}
@@ -213,6 +226,117 @@ func (q *Queries) SetTaskPassed(ctx context.Context, id int64, curVersion int) e
 			updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
 		WHERE id=?`, curVersion, id)
 	return err
+}
+
+// SetTaskInProgress 接单：dispatched → in_progress，记 started_at 与活动时间。
+func (q *Queries) SetTaskInProgress(ctx context.Context, id int64) error {
+	_, err := q.ex.ExecContext(ctx, `
+		UPDATE tasks SET status='in_progress',
+			started_at=COALESCE(started_at, strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+			last_activity_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+			updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE id=?`, id)
+	return err
+}
+
+// TouchTaskActivity 刷新最近活动时间（接单心跳 / 提交）。
+func (q *Queries) TouchTaskActivity(ctx context.Context, id int64) error {
+	_, err := q.ex.ExecContext(ctx,
+		`UPDATE tasks SET last_activity_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?`, id)
+	return err
+}
+
+// SetTaskFailed 执行者报告无法完成。
+func (q *Queries) SetTaskFailed(ctx context.Context, id int64, reason string) error {
+	_, err := q.ex.ExecContext(ctx, `
+		UPDATE tasks SET status='failed', fail_reason=?,
+			last_activity_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+			updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE id=?`, reason, id)
+	return err
+}
+
+// SetTaskCancelled 中枢取消。
+func (q *Queries) SetTaskCancelled(ctx context.Context, id int64) error {
+	_, err := q.ex.ExecContext(ctx, `
+		UPDATE tasks SET status='cancelled', completed_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+			updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE id=?`, id)
+	return err
+}
+
+// ReopenTask 中枢重开：置 ready 或 blocked，清失败原因与时限（再次派工时重新计时）。
+func (q *Queries) ReopenTask(ctx context.Context, id int64, status domain.TaskStatus) error {
+	_, err := q.ex.ExecContext(ctx, `
+		UPDATE tasks SET status=?, fail_reason=NULL, completed_at=NULL, due_at=NULL, overdue_notified_at=NULL,
+			updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE id=?`, string(status), id)
+	return err
+}
+
+// SetTaskDue 按时限（分钟）从现在起算 due_at，并清逾期提醒标记。
+func (q *Queries) SetTaskDue(ctx context.Context, id int64, minutes int) error {
+	_, err := q.ex.ExecContext(ctx, `
+		UPDATE tasks SET due_at=strftime('%Y-%m-%dT%H:%M:%SZ','now', ?), overdue_notified_at=NULL WHERE id=?`,
+		fmt.Sprintf("+%d minutes", minutes), id)
+	return err
+}
+
+// ClearOverdueNotified 清逾期提醒标记（提交后再逾期可再提醒一次）。
+func (q *Queries) ClearOverdueNotified(ctx context.Context, id int64) error {
+	_, err := q.ex.ExecContext(ctx, `UPDATE tasks SET overdue_notified_at=NULL WHERE id=?`, id)
+	return err
+}
+
+// ListOverdueTasks 列进行中 run 里已逾期且尚未提醒过的执行中任务。
+func (q *Queries) ListOverdueTasks(ctx context.Context) ([]domain.Task, error) {
+	rows, err := q.ex.QueryContext(ctx, `
+		SELECT `+taskColsT+` FROM tasks t
+		JOIN runs r ON r.id = t.run_id
+		WHERE r.status='active' AND t.status IN ('dispatched','in_progress','returned')
+		  AND t.due_at IS NOT NULL AND t.due_at <= strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		  AND t.overdue_notified_at IS NULL
+		ORDER BY t.due_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Task
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// MarkOverdueNotified 记已提醒逾期（同一次逾期只提醒一次）。
+func (q *Queries) MarkOverdueNotified(ctx context.Context, id int64) error {
+	_, err := q.ex.ExecContext(ctx,
+		`UPDATE tasks SET overdue_notified_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?`, id)
+	return err
+}
+
+// ListDirectDownstream 列直接依赖某任务的下游任务。
+func (q *Queries) ListDirectDownstream(ctx context.Context, taskID int64) ([]domain.Task, error) {
+	rows, err := q.ex.QueryContext(ctx, `
+		SELECT `+taskColsT+` FROM task_deps td JOIN tasks t ON t.id = td.task_id
+		WHERE td.depends_on_id=? ORDER BY t.seq`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Task
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // ── task_deps ──
@@ -337,7 +461,7 @@ type RunListItem struct {
 func (q *Queries) ListRuns(ctx context.Context, wfKey, status, datePrefix string, limit int) ([]RunListItem, error) {
 	query := `
 		SELECT r.id, r.workflow_id, w.name, w.wf_key, r.subject, r.status, r.created_at,
-		       (SELECT t.stage_name FROM tasks t WHERE t.run_id=r.id AND t.status<>'passed' ORDER BY t.seq LIMIT 1) AS cur_stage,
+		       (SELECT t.stage_name FROM tasks t WHERE t.run_id=r.id AND t.status NOT IN ('passed','cancelled') ORDER BY t.seq LIMIT 1) AS cur_stage,
 		       (SELECT a.name FROM agents a WHERE a.id = r.created_by) AS trigger_name
 		FROM runs r JOIN workflows w ON w.id = r.workflow_id`
 	var where []string

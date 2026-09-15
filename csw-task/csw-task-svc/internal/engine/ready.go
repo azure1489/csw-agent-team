@@ -80,21 +80,37 @@ func (e *Engine) recomputeReady(ctx context.Context, q *sqlite.Queries, runID in
 		}
 	}
 
-	// 全部 passed → run done（slice 已反映本次刚 passed 的任务；新转就绪的不影响该判定）。
-	allPassed := len(tasks) > 0
+	return e.checkRunDone(ctx, q, runID)
+}
+
+// checkRunDone run 完成判定：全部任务处于终态（passed / cancelled）且至少一个 passed。
+// 依赖就绪判定仍只认 passed——取消的上游不会放行下游。
+func (e *Engine) checkRunDone(ctx context.Context, q *sqlite.Queries, runID int64) error {
+	run, err := q.GetRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if run.Status != domain.RunActive {
+		return nil
+	}
+	tasks, err := q.ListTasksByRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	anyPassed := false
 	for _, t := range tasks {
-		if t.Status != domain.TaskPassed {
-			allPassed = false
-			break
+		if !domain.IsTerminal(t.Status) {
+			return nil
+		}
+		if t.Status == domain.TaskPassed {
+			anyPassed = true
 		}
 	}
-	if allPassed {
-		if err := q.SetRunStatus(ctx, runID, domain.RunDone); err != nil {
-			return err
-		}
-		if err := q.InsertEvent(ctx, domain.Event{RunID: &runID, Type: domain.EvtRunDone}); err != nil {
-			return err
-		}
+	if !anyPassed {
+		return nil
 	}
-	return nil
+	if err := q.SetRunStatus(ctx, runID, domain.RunDone); err != nil {
+		return err
+	}
+	return q.InsertEvent(ctx, domain.Event{RunID: &runID, Type: domain.EvtRunDone})
 }

@@ -98,6 +98,13 @@ type Task struct {
 	Acceptance        string
 	ActionClass       string       // 快照：read | platform_write:<scope>
 	DispatchMode      DispatchMode // 快照：触发时解析的派工模式；空=旧任务，回退工作流级
+	ItemKey           string       // 条目键；非条目级任务为空串
+	FailReason        string       // 执行者报告失败的原因
+	DueAt             string       // 派工（或退回）时按 sla 写入
+	DispatchedAt      string
+	StartedAt         string // 接单或首次提交
+	CompletedAt       string
+	LastActivityAt    string // 接单心跳 / 提交
 	Status            TaskStatus
 	AssigneeID        *int64
 	ID                int64
@@ -106,6 +113,7 @@ type Task struct {
 	CurVersion        int
 	SLAMinutes        int // 快照：派工后时限（分钟），0=不设
 	IsMerge           bool
+	ReworkPending     bool // 上游补件到达，需按新资产返工
 }
 
 // TaskGate 任务审核闸（从 Gate 解析快照）。

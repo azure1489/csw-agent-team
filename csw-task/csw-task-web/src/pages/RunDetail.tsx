@@ -16,6 +16,8 @@ const STAGE_GLYPH: Record<string, { ch: string; tone: Tone }> = {
   ready: { ch: '▸', tone: 'blue' },
   in_progress: { ch: '▸', tone: 'blue' },
   returned: { ch: '↩', tone: 'red' },
+  failed: { ch: '✕', tone: 'red' },
+  cancelled: { ch: '–', tone: 'gray' },
   blocked: { ch: '○', tone: 'gray' },
 }
 
@@ -207,6 +209,7 @@ export function RunDetailPage() {
                             {awaitingAuth(s) && <span style={{ color: 'var(--amber)', fontSize: 11.5, fontWeight: 600 }}>等待授权</span>}
                           </div>
                           <span className="t2 xs">{s.cur_version > 0 ? `当前 v${s.cur_version} · ${STATUS[s.status]?.label || s.status}` : STATUS[s.status]?.label || '未就绪'}</span>
+                          {s.status === 'failed' && s.fail_reason && <span className="xs" style={{ color: 'var(--red)' }}>原因：{s.fail_reason}</span>}
                         </div>
                       </div>
                       <div className="row gap10">

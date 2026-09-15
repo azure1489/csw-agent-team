@@ -58,7 +58,7 @@ func (e *Engine) Grant(ctx context.Context, hub domain.Agent, role domain.Role, 
 		return res, domain.BadRequest("source_quote_required", "授权须附 Van 原话（source_quote）")
 	}
 	err := e.store.Tx(ctx, func(q *sqlite.Queries) error {
-		run, wf, err := hubRun(ctx, q, role, runID)
+		run, wf, err := hubRun(ctx, q, role, runID, "录入授权")
 		if err != nil {
 			return err
 		}
@@ -129,7 +129,7 @@ func (e *Engine) Revoke(ctx context.Context, hub domain.Agent, role domain.Role,
 	}
 	var n int64
 	err := e.store.Tx(ctx, func(q *sqlite.Queries) error {
-		if _, _, err := hubRun(ctx, q, role, runID); err != nil {
+		if _, _, err := hubRun(ctx, q, role, runID, "撤销授权"); err != nil {
 			return err
 		}
 		var err error
@@ -145,8 +145,8 @@ func (e *Engine) Revoke(ctx context.Context, hub domain.Agent, role domain.Role,
 	return n, err
 }
 
-// hubRun 取 run 与其工作流，并校验调用者为该工作流中枢。
-func hubRun(ctx context.Context, q *sqlite.Queries, role domain.Role, runID int64) (domain.Run, domain.Workflow, error) {
+// hubRun 取 run 与其工作流，并校验调用者为该工作流中枢；action 用于错误提示。
+func hubRun(ctx context.Context, q *sqlite.Queries, role domain.Role, runID int64, action string) (domain.Run, domain.Workflow, error) {
 	run, err := q.GetRun(ctx, runID)
 	if isNoRows(err) {
 		return run, domain.Workflow{}, domain.NotFound("run_not_found", "无此实例")
@@ -159,7 +159,7 @@ func hubRun(ctx context.Context, q *sqlite.Queries, role domain.Role, runID int6
 		return run, wf, err
 	}
 	if role.Code != wf.HubRoleCode {
-		return run, wf, domain.Forbidden("not_hub", "仅中枢角色可操作授权")
+		return run, wf, domain.Forbidden("not_hub", "仅中枢角色可"+action)
 	}
 	return run, wf, nil
 }

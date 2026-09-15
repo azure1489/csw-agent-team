@@ -72,6 +72,7 @@ func taskBriefDTO(t domain.Task) gin.H {
 		"seq": t.Seq, "role_code": t.RoleCode, "is_merge": t.IsMerge,
 		"status": string(t.Status), "cur_version": t.CurVersion, "assignee_id": t.AssigneeID,
 		"action_class": t.ActionClass, "dispatch_mode": string(t.DispatchMode), "sla_minutes": t.SLAMinutes,
+		"item_key": t.ItemKey, "fail_reason": t.FailReason, "due_at": t.DueAt, "rework_pending": t.ReworkPending,
 	}
 }
 

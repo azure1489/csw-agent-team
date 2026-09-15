@@ -14,6 +14,8 @@ const (
 	TaskReview     TaskStatus = "review"      // 已提交某版本，闸审核中
 	TaskPassed     TaskStatus = "passed"      // 末闸通过
 	TaskReturned   TaskStatus = "returned"    // 被退回，待升版本重交
+	TaskFailed     TaskStatus = "failed"      // 执行者报告无法完成（附原因），待中枢重开或取消
+	TaskCancelled  TaskStatus = "cancelled"   // 中枢取消（尚未开始的下游一并取消）
 )
 
 // DeliverableStatus 交付物状态（派工单 issued；产出 submitted→...）。
@@ -77,6 +79,12 @@ const (
 	EvtAuthorizationRequired = "authorization_required" // 平台写操作就绪但缺授权，停在 ready
 	EvtAuthorizationGranted  = "authorization_granted"
 	EvtAuthorizationRevoked  = "authorization_revoked"
+
+	EvtTaskAcked     = "task_acked"
+	EvtTaskFailed    = "task_failed"
+	EvtTaskCancelled = "task_cancelled"
+	EvtTaskReopened  = "task_reopened"
+	EvtOverdue       = "overdue"
 )
 
 // ActionRead 普通阶段的动作类别。平台写操作写作 "platform_write:<scope>"。
@@ -151,6 +159,25 @@ func ValidStageDispatchMode(s string) bool {
 func CanSubmit(s TaskStatus) bool {
 	return s == TaskDispatched || s == TaskReturned || s == TaskInProgress
 }
+
+// CanAck 已派工的任务可接单；已接单（in_progress）时再调用视为心跳。
+func CanAck(s TaskStatus) bool { return s == TaskDispatched || s == TaskInProgress }
+
+// CanFail 执行中的任务（已派工 / 已接单 / 被退回待重交）可报告无法完成。
+func CanFail(s TaskStatus) bool {
+	return s == TaskDispatched || s == TaskInProgress || s == TaskReturned
+}
+
+// CanCancel 未通过、未取消的任务可由中枢取消。
+func CanCancel(s TaskStatus) bool { return s != TaskPassed && s != TaskCancelled }
+
+// CanReopen 失败、已取消、已通过的任务可由中枢重开。
+func CanReopen(s TaskStatus) bool {
+	return s == TaskFailed || s == TaskCancelled || s == TaskPassed
+}
+
+// IsTerminal 终态：已通过或已取消（run 完成判定用；failed 仍待中枢处理，不是终态）。
+func IsTerminal(s TaskStatus) bool { return s == TaskPassed || s == TaskCancelled }
 
 // AllPassed 判断一组依赖任务是否全部通过（就绪判定）。
 // 空依赖（入口任务）视为就绪。
