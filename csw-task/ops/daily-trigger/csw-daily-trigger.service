@@ -1,9 +1,10 @@
 [Unit]
-Description=csw-task 日更定时触发（为次日触发 daily_news）
+Description=csw-task 日更定时触发（为当天触发 daily_news）
 After=network-online.target csw-task.service
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 EnvironmentFile=/opt/csw-task/scheduler.env
+EnvironmentFile=-/opt/csw-task/server.env
 ExecStart=/usr/bin/python3 /opt/csw-task/bin/csw-daily-trigger

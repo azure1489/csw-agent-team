@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""csw-daily-trigger：每晚 21:00 由 systemd 定时器调用，为次日（北京时间）触发 daily_news。
+"""csw-daily-trigger：每天 05:30 由 systemd 定时器调用，为当天（北京时间）触发 daily_news。
 
-- 次日不是日更日（周末，或 trigger-days.txt 里标 off 的日期）就跳过；标 on 的日期（调休补班）照常触发。
+- 05:30 触发与引擎现有时限对齐：01 情报 05:30–06:10 → 02 初筛 06:10–06:50 → 03 主编 06:50–07:15 送审。
+- 没带 --date 且已过 09:00（例如服务器宕机后补跑）不自动触发，由主编人工处理。
+- 触发、录授权或取消失败时，经 notifier 机器人在编辑部群 @主编，请他手动触发（凭证取自 server.env）。
+- 当天不是日更日（周末，或 trigger-days.txt 里标 off 的日期）就跳过；标 on 的日期（调休补班）照常触发。
 - 触发用调度器 token（daily_news 的 trigger_roles 含 scheduler）；录授权、取消小红书两个阶段用主编 token（中枢动作）。
 - 幂等：Idempotency-Key = trigger-daily_news-<日期>，同一天重跑返回同一期；授权与取消同样带幂等键。
 - 输入按《资讯日更 · 生产约定》§9：窗口从上一个日更日 07:00 到当天 07:00（周一即覆盖周五以来 72 小时）。
 
 环境变量：CSW_TASK_BASE_URL（缺省 http://127.0.0.1:8080）、CSW_SCHEDULER_TOKEN、CSW_EDITOR_TOKEN、
-CSW_TRIGGER_DAYS_FILE（缺省 /opt/csw-task/trigger-days.txt）。
-用法：csw-daily-trigger [--date YYYY-MM-DD] [--dry-run]
+CSW_TRIGGER_DAYS_FILE（缺省 /opt/csw-task/trigger-days.txt）；告警用 CSW_LARK_APP_ID / CSW_LARK_APP_SECRET、CSW_DB_PATH。
+用法：csw-daily-trigger [--date YYYY-MM-DD] [--dry-run] [--alert-check]
+兼容 Python 3.6（生产服务器）。
 """
 import argparse
 import datetime as dt
@@ -24,6 +28,11 @@ AUTHS = [
     ("wx_draft", "Van 9/15：允许保存 CAMPsomeWHERE 公众号草稿，全文终审获批后保存并回读"),
 ]
 NO_XHS = ("xhs_text", "xhs_pick")
+LATEST_HOUR = 9  # 没带 --date 时，过了这个钟点不再自动触发
+
+
+def parse_date(s):
+    return dt.datetime.strptime(s, "%Y-%m-%d").date()  # date.fromisoformat 要 3.7+
 
 
 def load_days(path):
@@ -33,7 +42,7 @@ def load_days(path):
         for line in open(path, encoding="utf-8"):
             parts = line.split("#", 1)[0].split()
             if len(parts) == 2 and parts[0] in ("off", "on"):
-                (off if parts[0] == "off" else on).add(dt.date.fromisoformat(parts[1]))
+                (off if parts[0] == "off" else on).add(parse_date(parts[1]))
     return off, on
 
 
@@ -84,13 +93,69 @@ def call(base, token, method, path, body=None, idem=None):
         return e.code, data
 
 
+def post_json(url, body, token=None):
+    req = urllib.request.Request(url, method="POST", data=json.dumps(body, ensure_ascii=False).encode(),
+                                 headers={"Content-Type": "application/json; charset=utf-8"})
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read())
+
+
+def alert_target():
+    """告警目标：编辑部群与主编的 @ 标签。读不到返回 (None, 原因)。"""
+    app_id, secret = os.environ.get("CSW_LARK_APP_ID", ""), os.environ.get("CSW_LARK_APP_SECRET", "")
+    if not app_id or not secret:
+        return None, "未配置飞书凭证"
+    import sqlite3
+    con = sqlite3.connect("file:%s?mode=ro" % os.environ.get("CSW_DB_PATH", "/opt/csw-task/data/csw-task.db"), uri=True)
+    chat = con.execute("SELECT chat_key FROM chats ORDER BY id LIMIT 1").fetchone()
+    row = con.execute("SELECT open_id, display_name FROM chat_members WHERE role_code='editor' LIMIT 1").fetchone()
+    if not chat:
+        return None, "花名册未配置群"
+    at = '<at user_id="%s">%s</at> ' % (row[0], row[1] or "主编") if row and row[0] else ""
+    tok = post_json("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+                    {"app_id": app_id, "app_secret": secret}).get("tenant_access_token")
+    if not tok:
+        return None, "取不到飞书 tenant token"
+    return (chat[0], at, tok), ""
+
+
+def alert(text):
+    """定时触发出问题时经 notifier 机器人在编辑部群 @主编（尽力而为，失败只写日志）。"""
+    try:
+        target, why = alert_target()
+        if not target:
+            print("无法告警：%s" % why, file=sys.stderr)
+            return False
+        chat, at, tok = target
+        r = post_json("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+                      {"receive_id": chat, "msg_type": "text", "content": json.dumps({"text": at + text}, ensure_ascii=False)}, tok)
+        return r.get("code") == 0
+    except Exception as e:  # 告警失败不影响退出码
+        print("告警发送失败：%s" % e, file=sys.stderr)
+        return False
+
+
 def main():
-    ap = argparse.ArgumentParser(description="为次日触发 daily_news（工作日前一晚 21:00）")
-    ap.add_argument("--date", help="日更日期 YYYY-MM-DD，缺省为北京时间明天")
+    ap = argparse.ArgumentParser(description="为当天触发 daily_news（每天 05:30）")
+    ap.add_argument("--date", help="日更日期 YYYY-MM-DD，缺省为北京时间今天")
     ap.add_argument("--dry-run", action="store_true", help="只打印将要提交的触发内容")
+    ap.add_argument("--alert-check", action="store_true", help="只检查告警通道（群、@主编、飞书凭证），不发消息")
     a = ap.parse_args()
+    if a.alert_check:
+        try:
+            target, why = alert_target()
+        except Exception as e:
+            target, why = None, str(e)
+        print("告警通道可用：群 %s…，%s" % (target[0][:12], "会 @主编" if target[1] else "花名册里没有主编，不会 @") if target else "告警通道不可用：%s" % why)
+        return 0 if target else 1
     off, on = load_days(os.environ.get("CSW_TRIGGER_DAYS_FILE", "/opt/csw-task/trigger-days.txt"))
-    d = dt.date.fromisoformat(a.date) if a.date else (dt.datetime.now(CST) + dt.timedelta(days=1)).date()
+    now = dt.datetime.now(CST)
+    d = parse_date(a.date) if a.date else now.date()
+    if not a.date and not a.dry_run and now.hour >= LATEST_HOUR:
+        print("已过 %02d:00，不再自动触发 %s；需要时由主编人工触发" % (LATEST_HOUR, d))
+        return 0
     if not is_workday(d, off, on):
         print("%s 不是日更日（周末或节假日），跳过" % d)
         return 0
@@ -103,9 +168,14 @@ def main():
     if not sched or not editor:
         print("缺少 CSW_SCHEDULER_TOKEN / CSW_EDITOR_TOKEN", file=sys.stderr)
         return 2
-    code, r = call(base, sched, "POST", "/workflows/daily_news/runs", body, idem="trigger-daily_news-" + d.isoformat())
+    try:
+        code, r = call(base, sched, "POST", "/workflows/daily_news/runs", body, idem="trigger-daily_news-" + d.isoformat())
+    except Exception as e:  # 引擎不可达等
+        code, r = 0, {"error": str(e)}
     if code not in (200, 201):
         print("触发失败：HTTP %s %s" % (code, r), file=sys.stderr)
+        alert("【日更定时触发失败 · %s】HTTP %s %s。请按 csw-task skill §4.1 手动触发（inputs 按《生产约定》§9），"
+              "并录本地演练与公众号草稿授权、取消 10/11。" % (d, code, str(r)[:120]))
         return 1
     run = r["run_id"]
     w = body["inputs"]["窗口"]
@@ -132,6 +202,9 @@ def main():
         print("授权 %s；01=%s；10=%s；11=%s；12=%s；13=%s" % (
             rd["run"].get("authorizations"), st.get("intake"), st.get("xhs_text"), st.get("xhs_pick"),
             st.get("xhs_package"), st.get("xhs_save")))
+    if failed:
+        alert("【日更定时触发 · %s】r%s 已触发，但有 %d 项授权或取消未完成（见服务器日志 journalctl -u csw-daily-trigger）。"
+              "请在引擎里补录本地演练与公众号草稿授权、取消 10/11。" % (d, run, failed))
     return 1 if failed else 0
 
 
