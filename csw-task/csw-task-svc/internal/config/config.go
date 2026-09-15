@@ -98,7 +98,7 @@ func Load() Config {
 		LarkAppID:       env("CSW_LARK_APP_ID", ""),
 		LarkAppSecret:   env("CSW_LARK_APP_SECRET", ""),
 		LarkBaseURL:     strings.TrimRight(env("CSW_LARK_BASE_URL", "https://open.feishu.cn"), "/"),
-		SkillMinVersion: env("CSW_SKILL_MIN_VERSION", "3.1.0"),
+		SkillMinVersion: env("CSW_SKILL_MIN_VERSION", "3.3.0"),
 		SyncWxCmd:       env("CSW_SYNC_WX_CMD", ""),
 		SyncXhsCmd:      env("CSW_SYNC_XHS_CMD", ""),
 		SyncWxAccount:   env("CSW_SYNC_WX_ACCOUNT", "营事编集室"),

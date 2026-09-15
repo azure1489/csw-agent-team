@@ -21,7 +21,7 @@ server:
     - application/zip
     - application/x-zip-compressed
     - application/octet-stream
-  skill_min_version: "3.1.0"        # CSW_SKILL_MIN_VERSION    agent 侧 csw-task skill 最低版本（task / my-tasks 响应回显）
+  skill_min_version: "3.3.0"        # CSW_SKILL_MIN_VERSION    agent 侧 csw-task skill 最低版本（task / my-tasks 响应回显）
 
 # ── 事件通知（server 进程内 notifier：引擎单写编辑部群播报，直连飞书 Open API）──
 notifier:

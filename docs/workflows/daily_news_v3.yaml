@@ -1,0 +1,239 @@
+# 工作流定义文件（csw-workflow/v1）。由 wfctl export 生成；改完用 wfctl lint / diff 检查，再 wfctl push --draft。
+schema: csw-workflow/v1
+meta:
+  wf_key: daily_news
+  name: 资讯日更
+  version: 3
+  hub_role: editor
+  dispatch_mode: auto
+  trigger_roles: [editor, scheduler]
+common:
+  instructions:
+    file: daily_news_v3/common.instructions.md
+  acceptance:
+    file: daily_news_v3/common.acceptance.md
+default_gates: []
+stages:
+  - code: intake
+    name: 01-情报逐条
+    role: collector
+    output_type: 情报记录
+    deps: []
+    gates: []
+    sla_minutes: 40
+    ack_minutes: 5
+    idle_minutes: 10
+    instructions:
+      file: daily_news_v3/intake.instructions.md
+    self_check:
+      file: daily_news_v3/intake.self_check.md
+    acceptance:
+      file: daily_news_v3/intake.acceptance.md
+  - code: shortlist
+    name: 02-价值初筛
+    role: researcher
+    output_type: 短名单
+    deps: [intake]
+    gates: []
+    sla_minutes: 40
+    ack_minutes: 5
+    idle_minutes: 10
+    instructions:
+      file: daily_news_v3/shortlist.instructions.md
+    self_check:
+      file: daily_news_v3/shortlist.self_check.md
+    acceptance:
+      file: daily_news_v3/shortlist.acceptance.md
+  - code: topic
+    name: 03-选题方案
+    role: editor
+    output_type: 选题方案
+    is_merge: true
+    deps: [shortlist]
+    gates:
+      - reviewer: editor
+        name: 主编自审
+      - reviewer: van
+        name: Van选题
+        relayed: true
+    sla_minutes: 15
+    ack_minutes: 5
+    idle_minutes: 10
+    instructions:
+      file: daily_news_v3/topic.instructions.md
+    self_check:
+      file: daily_news_v3/topic.self_check.md
+    acceptance:
+      file: daily_news_v3/topic.acceptance.md
+  - code: write
+    name: 04-公众号写作
+    role: writer
+    output_type: 文章
+    deps: [topic]
+    gates:
+      - reviewer: editor
+        name: 主编审
+    sla_minutes: 50
+    ack_minutes: 5
+    idle_minutes: 10
+    per_item: true
+    instructions:
+      file: daily_news_v3/write.instructions.md
+    self_check:
+      file: daily_news_v3/write.self_check.md
+    acceptance:
+      file: daily_news_v3/write.acceptance.md
+  - code: material
+    name: 05-配图与素材核
+    role: collector
+    output_type: 素材包
+    deps: [topic]
+    gates: []
+    sla_minutes: 45
+    ack_minutes: 5
+    idle_minutes: 10
+    per_item: true
+    instructions:
+      file: daily_news_v3/material.instructions.md
+    self_check:
+      file: daily_news_v3/material.self_check.md
+    acceptance:
+      file: daily_news_v3/material.acceptance.md
+  - code: design_prep
+    name: 06-版式与模板准备
+    role: designer
+    output_type: 模板
+    deps: [topic]
+    gates: []
+    sla_minutes: 30
+    ack_minutes: 5
+    idle_minutes: 10
+    instructions:
+      file: daily_news_v3/design_prep.instructions.md
+    self_check:
+      file: daily_news_v3/design_prep.self_check.md
+    acceptance:
+      file: daily_news_v3/design_prep.acceptance.md
+  - code: fulltext
+    name: 07-内容整合稿
+    role: editor
+    output_type: 整合稿
+    is_merge: true
+    deps: [material, write]
+    gates:
+      - reviewer: editor
+        name: 主编整合审
+    sla_minutes: 15
+    ack_minutes: 5
+    idle_minutes: 10
+    instructions:
+      file: daily_news_v3/fulltext.instructions.md
+    self_check:
+      file: daily_news_v3/fulltext.self_check.md
+    acceptance:
+      file: daily_news_v3/fulltext.acceptance.md
+  - code: wx_layout
+    name: 08-公众号完整审核稿
+    role: publisher
+    output_type: 完整推文
+    deps: [design_prep, fulltext]
+    gates:
+      - reviewer: editor
+        name: 主编核版
+      - reviewer: van
+        name: Van全文终审
+        relayed: true
+    sla_minutes: 15
+    ack_minutes: 5
+    idle_minutes: 5
+    instructions:
+      file: daily_news_v3/wx_layout.instructions.md
+    self_check:
+      file: daily_news_v3/wx_layout.self_check.md
+    acceptance:
+      file: daily_news_v3/wx_layout.acceptance.md
+  - code: wx_save
+    name: 09-公众号草稿保存
+    role: publisher
+    output_type: 发布物
+    deps: [wx_layout]
+    gates: []
+    action_class: platform_write:wx_draft
+    sla_minutes: 20
+    ack_minutes: 5
+    idle_minutes: 5
+    instructions:
+      file: daily_news_v3/wx_save.instructions.md
+    self_check:
+      file: daily_news_v3/wx_save.self_check.md
+    acceptance:
+      file: daily_news_v3/wx_save.acceptance.md
+  - code: xhs_text
+    name: 10-小红书改编
+    role: xhswriter
+    output_type: 小红书文本
+    deps: [wx_layout]
+    gates:
+      - reviewer: editor
+        name: 主编审
+    dispatch_mode: manual
+    sla_minutes: 30
+    ack_minutes: 5
+    idle_minutes: 10
+    instructions:
+      file: daily_news_v3/xhs_text.instructions.md
+    self_check:
+      file: daily_news_v3/xhs_text.self_check.md
+    acceptance:
+      file: daily_news_v3/xhs_text.acceptance.md
+  - code: xhs_pick
+    name: 11-小红书选图包
+    role: collector
+    output_type: 选图包
+    deps: [wx_layout]
+    gates: []
+    dispatch_mode: manual
+    sla_minutes: 20
+    ack_minutes: 5
+    idle_minutes: 10
+    instructions:
+      file: daily_news_v3/xhs_pick.instructions.md
+    self_check:
+      file: daily_news_v3/xhs_pick.self_check.md
+    acceptance:
+      file: daily_news_v3/xhs_pick.acceptance.md
+  - code: xhs_package
+    name: 12-小红书图文包
+    role: publisher
+    output_type: 图文包
+    deps: [xhs_pick, xhs_text]
+    gates:
+      - reviewer: editor
+        name: 主编审图文
+      - reviewer: van
+        name: Van小红书终审
+        relayed: true
+    sla_minutes: 10
+    ack_minutes: 5
+    idle_minutes: 5
+    instructions:
+      file: daily_news_v3/xhs_package.instructions.md
+    self_check:
+      file: daily_news_v3/xhs_package.self_check.md
+    acceptance:
+      file: daily_news_v3/xhs_package.acceptance.md
+  - code: xhs_save
+    name: 13-小红书草稿与发布
+    role: publisher
+    output_type: 发布物
+    deps: [xhs_package]
+    gates: []
+    action_class: platform_write:xhs_draft
+    ack_minutes: 5
+    idle_minutes: 5
+    instructions:
+      file: daily_news_v3/xhs_save.instructions.md
+    self_check:
+      file: daily_news_v3/xhs_save.self_check.md
+    acceptance:
+      file: daily_news_v3/xhs_save.acceptance.md
