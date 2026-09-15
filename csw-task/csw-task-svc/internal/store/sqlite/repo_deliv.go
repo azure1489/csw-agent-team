@@ -44,11 +44,19 @@ func (q *Queries) InsertFile(ctx context.Context, f domain.File) (int64, error) 
 
 // ── deliverables ──
 
-// MaxDeliverableVersion 取 task 下某类交付物（派工单/产出）的最大版本号，无则 0。
-func (q *Queries) MaxDeliverableVersion(ctx context.Context, taskID int64, isDispatch bool) (int, error) {
+// MaxDeliverableVersion 取 task 下某条版本流的最大版本号，无则 0。
+// 版本流：派工单 / 产出（output 与 edit 共用）/ 补件。
+func (q *Queries) MaxDeliverableVersion(ctx context.Context, taskID int64, kind domain.DeliverableKind) (int, error) {
+	kinds := `('output','edit')`
+	switch kind {
+	case domain.KindDispatch:
+		kinds = `('dispatch')`
+	case domain.KindSupplement:
+		kinds = `('supplement')`
+	}
 	var v sql.NullInt64
 	err := q.ex.QueryRowContext(ctx,
-		`SELECT MAX(version) FROM deliverables WHERE task_id=? AND is_dispatch=?`, taskID, b2i(isDispatch)).Scan(&v)
+		`SELECT MAX(version) FROM deliverables WHERE task_id=? AND kind IN `+kinds, taskID).Scan(&v)
 	if err != nil {
 		return 0, err
 	}
@@ -59,17 +67,22 @@ func (q *Queries) MaxDeliverableVersion(ctx context.Context, taskID int64, isDis
 }
 
 const delivCols = `id, task_id, is_dispatch, version, doc_type, producer_id, file_id, download_url,
-	filename, title, summary, meta_json, self_check, editor_note, cur_gate, returned_at_gate, status`
+	filename, title, summary, meta_json, self_check, editor_note, cur_gate, returned_at_gate, status,
+	kind, affects_deliverable_id, edit_of, diff_summary, collab`
 
 func scanDeliverable(s interface{ Scan(...any) error }) (domain.Deliverable, error) {
 	var d domain.Deliverable
 	var isDispatch int
 	var producer, fileID sql.NullInt64
 	var url, fn, title, sum, meta, sc, note sql.NullString
-	var retGate sql.NullInt64
-	var status string
+	var retGate, affects, editOf sql.NullInt64
+	var status, kind string
+	var diff sql.NullString
+	var collab int
 	err := s.Scan(&d.ID, &d.TaskID, &isDispatch, &d.Version, &d.DocType, &producer, &fileID, &url,
-		&fn, &title, &sum, &meta, &sc, &note, &d.CurGate, &retGate, &status)
+		&fn, &title, &sum, &meta, &sc, &note, &d.CurGate, &retGate, &status,
+		&kind, &affects, &editOf, &diff, &collab)
+	d.Kind, d.AffectsID, d.EditOf, d.DiffSummary, d.Collab = domain.DeliverableKind(kind), ptrI64(affects), ptrInt(editOf), diff.String, collab == 1
 	d.IsDispatch = isDispatch == 1
 	d.ProducerID, d.FileID = ptrI64(producer), ptrI64(fileID)
 	d.DownloadURL, d.Filename, d.Title, d.Summary = url.String, fn.String, title.String, sum.String
@@ -79,15 +92,23 @@ func scanDeliverable(s interface{ Scan(...any) error }) (domain.Deliverable, err
 	return d, err
 }
 
-// InsertDeliverable 写交付物，返回 id。
+// InsertDeliverable 写交付物，返回 id。Kind 为空时按 IsDispatch 推断（派工单 / 产出）。
 func (q *Queries) InsertDeliverable(ctx context.Context, d domain.Deliverable) (int64, error) {
+	if d.Kind == "" {
+		d.Kind = domain.KindOutput
+		if d.IsDispatch {
+			d.Kind = domain.KindDispatch
+		}
+	}
 	res, err := q.ex.ExecContext(ctx, `
 		INSERT INTO deliverables
 		  (task_id, is_dispatch, version, doc_type, producer_id, file_id, download_url,
-		   filename, title, summary, meta_json, self_check, editor_note, cur_gate, returned_at_gate, status)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		d.TaskID, b2i(d.IsDispatch), d.Version, d.DocType, nullI64(d.ProducerID), nullI64(d.FileID), d.DownloadURL,
-		d.Filename, d.Title, d.Summary, d.MetaJSON, d.SelfCheck, d.EditorNote, d.CurGate, nullInt(d.ReturnedAtGate), string(d.Status))
+		   filename, title, summary, meta_json, self_check, editor_note, cur_gate, returned_at_gate, status,
+		   kind, affects_deliverable_id, edit_of, diff_summary, collab)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		d.TaskID, b2i(d.Kind == domain.KindDispatch), d.Version, d.DocType, nullI64(d.ProducerID), nullI64(d.FileID), d.DownloadURL,
+		d.Filename, d.Title, d.Summary, d.MetaJSON, d.SelfCheck, d.EditorNote, d.CurGate, nullInt(d.ReturnedAtGate), string(d.Status),
+		string(d.Kind), nullI64(d.AffectsID), nullInt(d.EditOf), nullIfEmpty(d.DiffSummary), b2i(d.Collab))
 	if err != nil {
 		return 0, err
 	}
@@ -117,11 +138,49 @@ func (q *Queries) ListDeliverablesByTask(ctx context.Context, taskID int64) ([]d
 	return out, rows.Err()
 }
 
-// LatestPassedDeliverable 取 task 已通过的最新产出（is_dispatch=0, passed, 最大 version）——用于上游预填。
+// LatestPassedDeliverable 取 task 已通过的最新产出（产出或定点编辑版本，passed，最大 version）——用于上游预填。
 func (q *Queries) LatestPassedDeliverable(ctx context.Context, taskID int64) (domain.Deliverable, error) {
 	return scanDeliverable(q.ex.QueryRowContext(ctx, `SELECT `+delivCols+`
-		FROM deliverables WHERE task_id=? AND is_dispatch=0 AND status='passed'
+		FROM deliverables WHERE task_id=? AND kind IN ('output','edit') AND status='passed'
 		ORDER BY version DESC LIMIT 1`, taskID))
+}
+
+// OutputByVersion 取 task 某版本的产出（产出或定点编辑版本）。
+func (q *Queries) OutputByVersion(ctx context.Context, taskID int64, version int) (domain.Deliverable, error) {
+	return scanDeliverable(q.ex.QueryRowContext(ctx, `SELECT `+delivCols+`
+		FROM deliverables WHERE task_id=? AND kind IN ('output','edit') AND version=?`, taskID, version))
+}
+
+// ListSupplementsByTask 列 task 的全部补件（按版本）。
+func (q *Queries) ListSupplementsByTask(ctx context.Context, taskID int64) ([]domain.Deliverable, error) {
+	rows, err := q.ex.QueryContext(ctx, `SELECT `+delivCols+`
+		FROM deliverables WHERE task_id=? AND kind='supplement' ORDER BY version`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Deliverable
+	for rows.Next() {
+		d, err := scanDeliverable(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// SetDeliverableStatus 只改交付物状态（如首稿被定点编辑取代）。
+func (q *Queries) SetDeliverableStatus(ctx context.Context, id int64, status domain.DeliverableStatus) error {
+	_, err := q.ex.ExecContext(ctx, `UPDATE deliverables SET status=? WHERE id=?`, string(status), id)
+	return err
+}
+
+// SetTaskReworkPending 标记 / 清除任务「上游补件待返工」。
+func (q *Queries) SetTaskReworkPending(ctx context.Context, taskID int64, pending bool) error {
+	_, err := q.ex.ExecContext(ctx,
+		`UPDATE tasks SET rework_pending=?, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?`, b2i(pending), taskID)
+	return err
 }
 
 // SetDeliverableGate 更新交付物闸进度/状态/退回闸位。
@@ -169,9 +228,11 @@ func (q *Queries) ListUpstreams(ctx context.Context, deliverableID int64) ([]dom
 // InsertReview 写一条审核，返回 id。
 func (q *Queries) InsertReview(ctx context.Context, r domain.Review) (int64, error) {
 	res, err := q.ex.ExecContext(ctx, `
-		INSERT INTO reviews (deliverable_id, task_gate_id, reviewer_id, verdict, comment, return_direction, return_location)
-		VALUES (?,?,?,?,?,?,?)`,
-		r.DeliverableID, r.TaskGateID, nullI64(r.ReviewerID), string(r.Verdict), r.Comment, r.ReturnDirection, r.ReturnLocation)
+		INSERT INTO reviews (deliverable_id, task_gate_id, reviewer_id, verdict, comment, return_direction, return_location,
+		                     decision_type, source_quote, items_json, expected_version)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		r.DeliverableID, r.TaskGateID, nullI64(r.ReviewerID), string(r.Verdict), r.Comment, r.ReturnDirection, r.ReturnLocation,
+		nullIfEmpty(r.DecisionType), nullIfEmpty(r.SourceQuote), nullIfEmpty(r.ItemsJSON), nullInt(r.ExpectedVersion))
 	if err != nil {
 		return 0, err
 	}
@@ -181,7 +242,8 @@ func (q *Queries) InsertReview(ctx context.Context, r domain.Review) (int64, err
 // ListReviewsByDeliverable 列某交付物的审核记录。
 func (q *Queries) ListReviewsByDeliverable(ctx context.Context, deliverableID int64) ([]domain.Review, error) {
 	rows, err := q.ex.QueryContext(ctx, `
-		SELECT id, deliverable_id, task_gate_id, reviewer_id, verdict, comment, return_direction, return_location
+		SELECT id, deliverable_id, task_gate_id, reviewer_id, verdict, comment, return_direction, return_location,
+		       decision_type, source_quote, items_json, expected_version
 		FROM reviews WHERE deliverable_id=? ORDER BY id`, deliverableID)
 	if err != nil {
 		return nil, err
@@ -191,11 +253,14 @@ func (q *Queries) ListReviewsByDeliverable(ctx context.Context, deliverableID in
 	for rows.Next() {
 		var r domain.Review
 		var reviewer sql.NullInt64
-		var comment, dir, loc sql.NullString
+		var comment, dir, loc, dec, quote, items sql.NullString
+		var expected sql.NullInt64
 		var verdict string
-		if err := rows.Scan(&r.ID, &r.DeliverableID, &r.TaskGateID, &reviewer, &verdict, &comment, &dir, &loc); err != nil {
+		if err := rows.Scan(&r.ID, &r.DeliverableID, &r.TaskGateID, &reviewer, &verdict, &comment, &dir, &loc,
+			&dec, &quote, &items, &expected); err != nil {
 			return nil, err
 		}
+		r.DecisionType, r.SourceQuote, r.ItemsJSON, r.ExpectedVersion = dec.String, quote.String, items.String, ptrInt(expected)
 		r.ReviewerID = ptrI64(reviewer)
 		r.Verdict = domain.Verdict(verdict)
 		r.Comment, r.ReturnDirection, r.ReturnLocation = comment.String, dir.String, loc.String
@@ -318,7 +383,7 @@ func (q *Queries) ListPendingReviews(ctx context.Context) ([]PendingReview, erro
 		JOIN tasks t ON t.id = d.task_id
 		JOIN runs  r ON r.id = t.run_id
 		JOIN task_gates tg ON tg.task_id = d.task_id AND tg.gate_order = d.cur_gate + 1
-		WHERE d.is_dispatch = 0
+		WHERE d.kind IN ('output','edit')
 		  AND d.status IN ('submitted','in_review')
 		  AND t.status = 'review'
 		  AND r.status = 'active'

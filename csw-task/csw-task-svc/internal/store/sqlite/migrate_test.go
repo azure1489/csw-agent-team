@@ -36,6 +36,10 @@ func TestMigrate(t *testing.T) {
 		// 0011 tasks 重建带入的列。
 		{"tasks", "item_key"}, {"tasks", "fail_reason"}, {"tasks", "last_activity_at"},
 		{"tasks", "overdue_notified_at"}, {"tasks", "rework_pending"},
+		// 0012 deliverables 重建、0013 reviews 扩列。
+		{"deliverables", "kind"}, {"deliverables", "affects_deliverable_id"}, {"deliverables", "edit_of"},
+		{"deliverables", "diff_summary"}, {"deliverables", "collab"},
+		{"reviews", "decision_type"}, {"reviews", "source_quote"}, {"reviews", "items_json"}, {"reviews", "expected_version"},
 	} {
 		var c int
 		if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, tc.table, tc.col).Scan(&c); err != nil || c != 1 {

@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/domain"
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/store/sqlite"
@@ -17,12 +19,43 @@ func evtDetail(m map[string]any) string {
 	return string(b)
 }
 
-// ReviewInput 审核入参。
+// ReviewInput 审核入参。人工闸（Van）须附原话：SourceQuote，或 Comment 以「Van：」开头（兼容现行代录写法）。
 type ReviewInput struct {
 	Verdict         domain.Verdict
 	Comment         string
 	ReturnDirection string
 	ReturnLocation  string
+	DecisionType    string
+	SourceQuote     string
+	ItemsJSON       string // 条目范围：JSON 字符串数组
+	ExpectedVersion *int   // 审核人以为的当前版本；与任务当前版本不符则 409
+}
+
+// vanQuote 现行代录写法 comment「Van：…」视为已附原话。
+func vanQuote(comment string) string {
+	c := strings.TrimSpace(comment)
+	for _, p := range []string{"Van：", "Van:", "van：", "van:"} {
+		if strings.HasPrefix(c, p) && strings.TrimSpace(strings.TrimPrefix(c, p)) != "" {
+			return c
+		}
+	}
+	return ""
+}
+
+// decorateDecision 把业务决定写进事件 detail（有值才写）。
+func decorateDecision(m map[string]any, in ReviewInput, quote string) map[string]any {
+	if in.DecisionType != "" {
+		m["decision_type"] = in.DecisionType
+	}
+	if quote != "" {
+		m["source_quote"] = quote
+	}
+	if in.ItemsJSON != "" {
+		var items []string
+		_ = json.Unmarshal([]byte(in.ItemsJSON), &items)
+		m["items"] = items
+	}
+	return m
 }
 
 // ReviewResult 审核结果。
@@ -43,6 +76,15 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 	if in.Verdict == domain.VerdictReject && (in.ReturnDirection == "" || in.ReturnLocation == "") {
 		return ReviewResult{}, domain.BadRequest("return_required", "退回必填 return_direction 和 return_location")
 	}
+	if in.DecisionType != "" && !domain.ValidDecisionType(in.DecisionType) {
+		return ReviewResult{}, domain.BadRequest("bad_decision_type", "decision_type 取值不合法："+in.DecisionType)
+	}
+	if in.ItemsJSON != "" {
+		var items []string
+		if err := json.Unmarshal([]byte(in.ItemsJSON), &items); err != nil {
+			return ReviewResult{}, domain.BadRequest("bad_items_json", "items_json 须为条目键的 JSON 字符串数组")
+		}
+	}
 
 	var res ReviewResult
 	err := e.store.Tx(ctx, func(q *sqlite.Queries) error {
@@ -53,8 +95,8 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 		if err != nil {
 			return err
 		}
-		if d.IsDispatch {
-			return domain.BadRequest("not_reviewable", "派工单不参与审核")
+		if d.Kind == domain.KindDispatch || d.Kind == domain.KindSupplement {
+			return domain.BadRequest("not_reviewable", "派工单与补件不参与审核")
 		}
 		if d.Status != domain.DelSubmitted && d.Status != domain.DelInReview {
 			return domain.Conflict("not_in_review", "交付物不在待审状态："+string(d.Status))
@@ -69,6 +111,10 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 		}
 		if task.Status != domain.TaskReview {
 			return domain.Conflict("not_in_review", "任务不在审核中："+string(task.Status))
+		}
+		if in.ExpectedVersion != nil && *in.ExpectedVersion != task.CurVersion {
+			return domain.Conflict("expected_version_mismatch",
+				fmt.Sprintf("审核针对 v%d，任务当前是 v%d，请先读最新版本", *in.ExpectedVersion, task.CurVersion))
 		}
 		run, err := q.GetRun(ctx, task.RunID)
 		if err != nil {
@@ -96,6 +142,12 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 		} else if role.Code != tg.ReviewerRole {
 			return domain.Forbidden("not_reviewer", "当前角色非该闸审核角色")
 		}
+		quote := strings.TrimSpace(in.SourceQuote)
+		if tg.RelayedByHub && quote == "" {
+			if quote = vanQuote(in.Comment); quote == "" {
+				return domain.BadRequest("source_quote_required", "人工闸结论须附 Van 原话：source_quote，或 comment 以「Van：」开头")
+			}
+		}
 
 		reviewerID := actor.ID
 		if _, err := q.InsertReview(ctx, domain.Review{
@@ -106,6 +158,10 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 			Comment:         in.Comment,
 			ReturnDirection: in.ReturnDirection,
 			ReturnLocation:  in.ReturnLocation,
+			DecisionType:    in.DecisionType,
+			SourceQuote:     quote,
+			ItemsJSON:       in.ItemsJSON,
+			ExpectedVersion: in.ExpectedVersion,
 		}); err != nil {
 			return err
 		}
@@ -115,9 +171,9 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 			if err != nil {
 				return err
 			}
-			passDetail := evtDetail(map[string]any{
+			passDetail := evtDetail(decorateDecision(map[string]any{
 				"gate": nextGate, "gate_name": tg.Name, "comment": in.Comment, "final": nextGate >= len(gates),
-			})
+			}, in, quote))
 			if nextGate >= len(gates) {
 				// 末闸通过：task/deliverable passed，重算下游。
 				if err := q.SetDeliverableGate(ctx, deliverableID, nextGate, domain.DelPassed, nil); err != nil {
@@ -160,10 +216,10 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 					return err
 				}
 			}
-			rejDetail := evtDetail(map[string]any{
+			rejDetail := evtDetail(decorateDecision(map[string]any{
 				"gate": nextGate, "gate_name": tg.Name,
 				"return_direction": in.ReturnDirection, "return_location": in.ReturnLocation, "comment": in.Comment,
-			})
+			}, in, quote))
 			if err := q.InsertEvent(ctx, domain.Event{RunID: &run.ID, TaskID: &task.ID, DeliverableID: &deliverableID, ActorID: &reviewerID, Type: domain.EvtGateReturned, DetailJSON: rejDetail}); err != nil {
 				return err
 			}

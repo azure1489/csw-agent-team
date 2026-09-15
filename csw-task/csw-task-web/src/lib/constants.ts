@@ -120,6 +120,7 @@ export const EVENT_TONE: Record<string, string> = {
   task_cancelled: 'var(--gray)',
   task_reopened: 'var(--amber)',
   overdue: 'var(--red)',
+  supplement_arrived: 'var(--amber)',
 }
 
 // 事件类型 → 人类可读模板（缺省回退到原始 type）
@@ -141,6 +142,7 @@ export const EVENT_LABEL: Record<string, string> = {
   task_cancelled: '任务取消',
   task_reopened: '任务重开',
   overdue: '任务逾期',
+  supplement_arrived: '补件到达',
 }
 
 // run 授权范围 → 中文

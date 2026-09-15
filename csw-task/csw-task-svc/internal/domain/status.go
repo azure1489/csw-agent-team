@@ -22,12 +22,59 @@ const (
 type DeliverableStatus string
 
 const (
-	DelIssued    DeliverableStatus = "issued"    // 派工单
-	DelSubmitted DeliverableStatus = "submitted" // 产出刚提交
-	DelInReview  DeliverableStatus = "in_review" // 审核中
-	DelPassed    DeliverableStatus = "passed"
-	DelReturned  DeliverableStatus = "returned"
+	DelIssued     DeliverableStatus = "issued"    // 派工单
+	DelSubmitted  DeliverableStatus = "submitted" // 产出刚提交
+	DelInReview   DeliverableStatus = "in_review" // 审核中
+	DelPassed     DeliverableStatus = "passed"
+	DelReturned   DeliverableStatus = "returned"
+	DelSuperseded DeliverableStatus = "superseded" // 被主编定点编辑版本取代的首稿（原样保留）
 )
+
+// DeliverableKind 交付物类别。
+type DeliverableKind string
+
+const (
+	KindDispatch   DeliverableKind = "dispatch"   // 派工单
+	KindOutput     DeliverableKind = "output"     // 执行者产出
+	KindSupplement DeliverableKind = "supplement" // 补件：挂在已通过任务上，不重开审核
+	KindEdit       DeliverableKind = "edit"       // 主编定点编辑版本（与产出共用版本流）
+)
+
+// CanAccept 某类交付物在任务当前状态下能否提交：产出同 CanSubmit；补件要求已通过；定点编辑要求审核中。
+func CanAccept(kind DeliverableKind, s TaskStatus) bool {
+	switch kind {
+	case "", KindOutput:
+		return CanSubmit(s)
+	case KindSupplement:
+		return s == TaskPassed
+	case KindEdit:
+		return s == TaskReview
+	}
+	return false
+}
+
+// DecisionType 审核决定类别。edit_pass 由引擎在主编定点编辑时自动写入，调用方不能提交。
+type DecisionType string
+
+const (
+	DecResearchOK      DecisionType = "research_ok"
+	DecTopicApprove    DecisionType = "topic_approve"
+	DecFulltextApprove DecisionType = "fulltext_approve"
+	DecTemplateApprove DecisionType = "template_approve"
+	DecLocalVerify     DecisionType = "local_verify"
+	DecDraftSaveOK     DecisionType = "draft_save_ok"
+	DecPublishOK       DecisionType = "publish_ok"
+	DecEditPass        DecisionType = "edit_pass"
+)
+
+// ValidDecisionType 调用方可提交的决定类别（不含 edit_pass）。
+func ValidDecisionType(s string) bool {
+	switch DecisionType(s) {
+	case DecResearchOK, DecTopicApprove, DecFulltextApprove, DecTemplateApprove, DecLocalVerify, DecDraftSaveOK, DecPublishOK:
+		return true
+	}
+	return false
+}
 
 // RunStatus 实例状态。
 type RunStatus string
@@ -85,6 +132,8 @@ const (
 	EvtTaskCancelled = "task_cancelled"
 	EvtTaskReopened  = "task_reopened"
 	EvtOverdue       = "overdue"
+
+	EvtSupplementArrived = "supplement_arrived"
 )
 
 // ActionRead 普通阶段的动作类别。平台写操作写作 "platform_write:<scope>"。

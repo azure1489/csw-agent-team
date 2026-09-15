@@ -46,8 +46,13 @@ func TestFullFlowV2(t *testing.T) {
 			}
 			return
 		}
+		tgs, _ := st.Q().ListTaskGates(ctx, d.TaskID)
 		for i := 1; i <= gates; i++ {
-			r, err := e.Review(ctx, editor, editorRole, d.ID, ReviewInput{Verdict: domain.VerdictPass, Comment: "ok"})
+			in := ReviewInput{Verdict: domain.VerdictPass, Comment: "ok"}
+			if tgs[i-1].RelayedByHub {
+				in.SourceQuote = "Van：可以"
+			}
+			r, err := e.Review(ctx, editor, editorRole, d.ID, in)
 			if err != nil {
 				t.Fatalf("review %s gate %d: %v", code, i, err)
 			}

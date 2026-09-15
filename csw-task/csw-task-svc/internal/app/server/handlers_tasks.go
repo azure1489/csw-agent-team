@@ -63,20 +63,21 @@ func (s *Server) handleTaskDetail(c *gin.Context) {
 	}
 	var latestDispatch *deliverableDTO
 	produced := make([]deliverableDTO, 0)
+	supplements := make([]deliverableDTO, 0)
 	for _, d := range delivs {
 		ups, _ := q.ListUpstreams(ctx, d.ID)
 		dto := toDeliverableDTO(d, ups)
-		if d.IsDispatch {
+		switch d.Kind {
+		case domain.KindDispatch:
 			cp := dto
 			latestDispatch = &cp // 按 id 递增，最后一条即最新派工单
-		} else {
+		case domain.KindSupplement:
+			supplements = append(supplements, dto)
+		default:
 			// 附最新一条审核记录：被退回的版本由此自助读到方向/位置，不依赖群消息原文。
 			if rs, err := q.ListReviewsByDeliverable(ctx, d.ID); err == nil && len(rs) > 0 {
 				last := rs[len(rs)-1]
-				rd := reviewDTO{
-					Verdict: string(last.Verdict), Comment: last.Comment,
-					ReturnDirection: last.ReturnDirection, ReturnLocation: last.ReturnLocation,
-				}
+				rd := toReviewDTO(last)
 				if g, ok := gateByID[last.TaskGateID]; ok {
 					rd.GateOrder, rd.GateName = g.GateOrder, g.Name
 				}
@@ -94,6 +95,7 @@ func (s *Server) handleTaskDetail(c *gin.Context) {
 		"gates":               gateDTOs,
 		"dispatch":            latestDispatch,
 		"deliverables":        produced,
+		"supplements":         supplements,
 	})
 }
 
@@ -104,6 +106,10 @@ type submitUpstream struct {
 }
 
 type submitReq struct {
+	Kind        string           `json:"kind"`                   // 空=output / supplement / edit
+	AffectsID   *int64           `json:"affects_deliverable_id"` // supplement 必填
+	EditOf      *int             `json:"edit_of"`                // edit 必填
+	DiffSummary string           `json:"diff_summary"`           // edit 必填
 	DocType     string           `json:"doc_type"`
 	DownloadURL string           `json:"download_url"`
 	Filename    string           `json:"filename"`
@@ -147,6 +153,7 @@ func (s *Server) handleSubmit(c *gin.Context) {
 	in := engine.SubmitInput{
 		DocType: req.DocType, DownloadURL: req.DownloadURL, Filename: req.Filename,
 		Title: req.Title, Summary: req.Summary, MetaJSON: req.MetaJSON, SelfCheck: req.SelfCheck, FileID: req.FileID,
+		Kind: domain.DeliverableKind(req.Kind), AffectsID: req.AffectsID, EditOf: req.EditOf, DiffSummary: req.DiffSummary,
 	}
 	for _, u := range req.Upstreams {
 		in.Upstreams = append(in.Upstreams, engine.UpstreamInput{Label: u.Label, URL: u.URL, UpstreamID: u.UpstreamID})
@@ -167,19 +174,42 @@ func (s *Server) handleSubmitMultipart(c *gin.Context, taskID int64) {
 	ctx := c.Request.Context()
 	q := s.store.Q()
 
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, s.cfg.MaxUploadBytes+(1<<20))
+	kind := domain.DeliverableKind(c.PostForm("kind"))
+	switch kind {
+	case "":
+		kind = domain.KindOutput
+	case domain.KindOutput, domain.KindSupplement, domain.KindEdit:
+	default:
+		s.renderErr(c, domain.BadRequest("bad_kind", "kind 须为 output / supplement / edit"))
+		return
+	}
+	affects, err := optInt64(c.PostForm("affects_deliverable_id"))
+	if err != nil {
+		s.renderErr(c, domain.BadRequest("bad_affects", "affects_deliverable_id 须为整数"))
+		return
+	}
+	editOf, err := optInt64(c.PostForm("edit_of"))
+	if err != nil {
+		s.renderErr(c, domain.BadRequest("bad_edit_of", "edit_of 须为整数"))
+		return
+	}
+
 	task, err := q.GetTask(ctx, taskID)
 	if err != nil {
 		s.renderErr(c, domain.NotFound("task_not_found", "无此任务"))
 		return
 	}
 	// 前置守卫（引擎事务内还会再守）：避免明知不可提交还白传一份 blob。
-	if !domain.CanSubmit(task.Status) {
-		s.renderErr(c, domain.Conflict("cannot_submit", "任务当前状态不可提交："+string(task.Status)))
-		return
-	}
-	if err := engine.RequireAuthorization(ctx, q, task); err != nil {
+	if err := engine.CheckAccept(kind, task.Status); err != nil {
 		s.renderErr(c, err)
 		return
+	}
+	if kind == domain.KindOutput {
+		if err := engine.RequireAuthorization(ctx, q, task); err != nil {
+			s.renderErr(c, err)
+			return
+		}
 	}
 	run, err := q.GetRun(ctx, task.RunID)
 	if err != nil {
@@ -200,15 +230,17 @@ func (s *Server) handleSubmitMultipart(c *gin.Context, taskID int64) {
 	if task.IsMerge && task.OutputType != "" {
 		owner = task.OutputType
 	}
+	if kind == domain.KindSupplement {
+		owner += "补件" // 补件单独一条版本流，文件名与产出区分
+	}
 
-	ver, err := q.MaxDeliverableVersion(ctx, taskID, false)
+	ver, err := q.MaxDeliverableVersion(ctx, taskID, kind)
 	if err != nil {
 		s.renderErr(c, err)
 		return
 	}
 	ver++
 
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, s.cfg.MaxUploadBytes+(1<<20))
 	fh, err := c.FormFile("file")
 	if err != nil {
 		s.renderErr(c, domain.BadRequest("no_file", "缺少 multipart 字段 file"))
@@ -261,6 +293,11 @@ func (s *Server) handleSubmitMultipart(c *gin.Context, taskID int64) {
 		DocType: c.PostForm("doc_type"), DownloadURL: s.downloadURL(storagePath, fileID), Filename: filename,
 		Title: c.PostForm("title"), Summary: c.PostForm("summary"),
 		MetaJSON: c.PostForm("meta_json"), SelfCheck: c.PostForm("self_check"), FileID: &fileID,
+		Kind: kind, AffectsID: affects, DiffSummary: c.PostForm("diff_summary"),
+	}
+	if editOf != nil {
+		v := int(*editOf)
+		in.EditOf = &v
 	}
 	for _, u := range upstreams {
 		in.Upstreams = append(in.Upstreams, engine.UpstreamInput{Label: u.Label, URL: u.URL, UpstreamID: u.UpstreamID})

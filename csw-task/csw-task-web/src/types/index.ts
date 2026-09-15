@@ -263,12 +263,19 @@ export interface Review {
   comment?: string
   return_direction?: string | null
   return_location?: string | null
+  decision_type?: string
+  source_quote?: string
 }
 
 export interface Deliverable {
   id: number
   task_id: number
   is_dispatch: boolean
+  kind?: string // dispatch | output | supplement | edit
+  affects_deliverable_id?: number | null
+  edit_of?: number | null
+  diff_summary?: string
+  collab?: boolean
   version: number
   doc_type: string
   download_url?: string

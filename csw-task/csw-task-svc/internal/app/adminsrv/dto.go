@@ -86,6 +86,7 @@ func deliverableDetailDTO(d domain.Deliverable, ups []domain.Upstream, reviews [
 		rs = append(rs, gin.H{
 			"id": r.ID, "task_gate_id": r.TaskGateID, "reviewer_id": r.ReviewerID, "verdict": string(r.Verdict),
 			"comment": r.Comment, "return_direction": r.ReturnDirection, "return_location": r.ReturnLocation,
+			"decision_type": r.DecisionType, "source_quote": r.SourceQuote, "items_json": r.ItemsJSON,
 		})
 	}
 	return gin.H{
@@ -93,6 +94,8 @@ func deliverableDetailDTO(d domain.Deliverable, ups []domain.Upstream, reviews [
 		"doc_type": d.DocType, "download_url": d.DownloadURL, "filename": d.Filename, "title": d.Title,
 		"summary": d.Summary, "self_check": d.SelfCheck, "editor_note": d.EditorNote,
 		"cur_gate": d.CurGate, "returned_at_gate": d.ReturnedAtGate, "status": string(d.Status),
+		"kind": string(d.Kind), "affects_deliverable_id": d.AffectsID, "edit_of": d.EditOf,
+		"diff_summary": d.DiffSummary, "collab": d.Collab,
 		"upstreams": us, "reviews": rs,
 	}
 }

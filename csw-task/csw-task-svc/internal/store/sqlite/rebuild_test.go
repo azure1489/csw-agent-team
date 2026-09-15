@@ -31,6 +31,9 @@ func TestTasksRebuildKeepsData(t *testing.T) {
 		`INSERT INTO task_deps (task_id, depends_on_id) VALUES (42, 41)`,
 		`INSERT INTO task_gates (task_id, gate_order, reviewer_role, name) VALUES (42, 1, 'editor', '主编审')`,
 		`INSERT INTO deliverables (id, task_id, version, doc_type, status) VALUES (90, 42, 1, '选题成品', 'submitted')`,
+		`INSERT INTO deliverables (id, task_id, is_dispatch, version, doc_type, status) VALUES (91, 42, 1, 1, '派工单', 'issued')`,
+		`INSERT INTO deliverable_upstreams (deliverable_id, label, upstream_url, upstream_id) VALUES (91, '01-采集', 'http://x/1', 90)`,
+		`INSERT INTO reviews (deliverable_id, task_gate_id, verdict) SELECT 90, id, 'pass' FROM task_gates WHERE task_id=42`,
 		`INSERT INTO events (run_id, task_id, type) VALUES (7, 42, 'submitted')`,
 	} {
 		if _, err := db.Exec(q); err != nil {
@@ -71,6 +74,18 @@ func TestTasksRebuildKeepsData(t *testing.T) {
 	var fk int
 	if err := db.QueryRow(`PRAGMA foreign_keys`).Scan(&fk); err != nil || fk != 1 {
 		t.Fatalf("foreign_keys should be back on, got %d", fk)
+	}
+
+	// 0012：kind 由 is_dispatch 推出；三条版本流各自唯一。
+	var k90, k91 string
+	if err := db.QueryRow(`SELECT (SELECT kind FROM deliverables WHERE id=90), (SELECT kind FROM deliverables WHERE id=91)`).Scan(&k90, &k91); err != nil || k90 != "output" || k91 != "dispatch" {
+		t.Fatalf("kinds: %s %s %v", k90, k91, err)
+	}
+	if _, err := db.Exec(`INSERT INTO deliverables (task_id, kind, version, doc_type, status, affects_deliverable_id) VALUES (41, 'supplement', 1, '资讯包', 'passed', NULL)`); err != nil {
+		t.Fatalf("supplement v1 should coexist with output v1: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO deliverables (task_id, kind, version, doc_type) VALUES (42, 'edit', 1, '选题成品')`); err == nil {
+		t.Fatalf("edit shares the output version stream: v1 should conflict")
 	}
 
 	// 新约束：同 run 同阶段按 item_key 区分；新状态可写入；非法状态被拒。

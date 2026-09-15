@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/domain"
@@ -78,12 +79,27 @@ func toAuthorizationDTO(a domain.RunAuthorization, now string) authorizationDTO 
 
 // reviewDTO 一条审核记录（task 详情随交付物带出最新一条，返工不再依赖群消息原文）。
 type reviewDTO struct {
-	Verdict         string `json:"verdict"`
-	Comment         string `json:"comment,omitempty"`
-	ReturnDirection string `json:"return_direction,omitempty"`
-	ReturnLocation  string `json:"return_location,omitempty"`
-	GateName        string `json:"gate_name,omitempty"`
-	GateOrder       int    `json:"gate_order"`
+	Verdict         string   `json:"verdict"`
+	Comment         string   `json:"comment,omitempty"`
+	ReturnDirection string   `json:"return_direction,omitempty"`
+	ReturnLocation  string   `json:"return_location,omitempty"`
+	GateName        string   `json:"gate_name,omitempty"`
+	DecisionType    string   `json:"decision_type,omitempty"`
+	SourceQuote     string   `json:"source_quote,omitempty"`
+	Items           []string `json:"items,omitempty"`
+	GateOrder       int      `json:"gate_order"`
+}
+
+func toReviewDTO(r domain.Review) reviewDTO {
+	rd := reviewDTO{
+		Verdict: string(r.Verdict), Comment: r.Comment,
+		ReturnDirection: r.ReturnDirection, ReturnLocation: r.ReturnLocation,
+		DecisionType: r.DecisionType, SourceQuote: r.SourceQuote,
+	}
+	if r.ItemsJSON != "" {
+		_ = json.Unmarshal([]byte(r.ItemsJSON), &rd.Items)
+	}
+	return rd
 }
 
 type upstreamDTO struct {
@@ -93,6 +109,8 @@ type upstreamDTO struct {
 }
 
 type deliverableDTO struct {
+	Kind           string        `json:"kind"`
+	DiffSummary    string        `json:"diff_summary,omitempty"`
 	DocType        string        `json:"doc_type"`
 	DownloadURL    string        `json:"download_url"`
 	Filename       string        `json:"filename"`
@@ -104,11 +122,14 @@ type deliverableDTO struct {
 	Upstreams      []upstreamDTO `json:"upstreams,omitempty"`
 	LatestReview   *reviewDTO    `json:"latest_review,omitempty"`
 	ReturnedAtGate *int          `json:"returned_at_gate"`
+	EditOf         *int          `json:"edit_of,omitempty"`
+	AffectsID      *int64        `json:"affects_deliverable_id,omitempty"`
 	FileID         *int64        `json:"file_id"`
 	ID             int64         `json:"id"`
 	Version        int           `json:"version"`
 	CurGate        int           `json:"cur_gate"`
 	IsDispatch     bool          `json:"is_dispatch"`
+	Collab         bool          `json:"collab"`
 }
 
 func toDeliverableDTO(d domain.Deliverable, ups []domain.Upstream) deliverableDTO {
@@ -117,6 +138,7 @@ func toDeliverableDTO(d domain.Deliverable, ups []domain.Upstream) deliverableDT
 		FileID: d.FileID, DownloadURL: d.DownloadURL, Filename: d.Filename, Title: d.Title,
 		Summary: d.Summary, SelfCheck: d.SelfCheck, EditorNote: d.EditorNote,
 		CurGate: d.CurGate, ReturnedAtGate: d.ReturnedAtGate, Status: string(d.Status),
+		Kind: string(d.Kind), DiffSummary: d.DiffSummary, EditOf: d.EditOf, AffectsID: d.AffectsID, Collab: d.Collab,
 	}
 	for _, u := range ups {
 		dto.Upstreams = append(dto.Upstreams, upstreamDTO{Label: u.Label, URL: u.UpstreamURL, UpstreamID: u.UpstreamID})

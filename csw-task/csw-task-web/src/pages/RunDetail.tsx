@@ -53,8 +53,8 @@ function StageBody({ taskId }: { taskId: number }) {
         {dels.map((d: Deliverable) => (
           <DownloadChip
             key={d.id}
-            label={d.is_dispatch ? '派工单' : `产出 v${d.version}`}
-            sub={d.filename || d.doc_type || '—'}
+            label={d.is_dispatch ? '派工单' : d.kind === 'supplement' ? `补件 #${d.version}` : d.kind === 'edit' ? `协作稿 v${d.version}` : `产出 v${d.version}`}
+            sub={(d.status === 'superseded' ? '已被协作稿取代 · ' : '') + (d.filename || d.doc_type || '—')}
             dispatch={d.is_dispatch}
             url={d.download_url}
           />
@@ -69,6 +69,7 @@ function StageBody({ taskId }: { taskId: number }) {
               </div>
               {(r.return_direction || r.return_location) && <div className="t2 xs">方向：{r.return_direction || '—'} · 位置：{r.return_location || '—'}</div>}
               {r.comment && <div className="t2 xs">意见：{r.comment}</div>}
+              {r.source_quote && r.source_quote !== r.comment && <div className="t2 xs">原话：{r.source_quote}</div>}
             </div>
           ))}
         </div>
@@ -207,6 +208,7 @@ export function RunDetailPage() {
                             {s.is_merge && <span className="t3 xs">· 合流</span>}
                             {writeScope(s) && <span className="t3 xs">· 平台写 · {SCOPE_LABEL[writeScope(s)] || writeScope(s)}</span>}
                             {awaitingAuth(s) && <span style={{ color: 'var(--amber)', fontSize: 11.5, fontWeight: 600 }}>等待授权</span>}
+                            {s.rework_pending && <span style={{ color: 'var(--amber)', fontSize: 11.5, fontWeight: 600 }}>补件待返工</span>}
                           </div>
                           <span className="t2 xs">{s.cur_version > 0 ? `当前 v${s.cur_version} · ${STATUS[s.status]?.label || s.status}` : STATUS[s.status]?.label || '未就绪'}</span>
                           {s.status === 'failed' && s.fail_reason && <span className="xs" style={{ color: 'var(--red)' }}>原因：{s.fail_reason}</span>}

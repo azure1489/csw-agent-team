@@ -7,8 +7,12 @@ import (
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/store/sqlite"
 )
 
-// SubmitInput agent 提交产出入参。
+// SubmitInput agent 提交产出入参。Kind 为空即产出；补件与定点编辑各有必填项。
 type SubmitInput struct {
+	Kind        domain.DeliverableKind
+	DiffSummary string // edit 必填：修改摘要
+	AffectsID   *int64 // supplement 必填：受影响的产出交付物
+	EditOf      *int   // edit 必填：基于的版本（须为当前版本）
 	DocType     string
 	DownloadURL string
 	Filename    string
@@ -22,6 +26,15 @@ type SubmitInput struct {
 
 // Submit agent 提交产出：守卫状态 → version+1 → 0 闸直 passed，否则入 review。
 func (e *Engine) Submit(ctx context.Context, agent domain.Agent, taskID int64, in SubmitInput) (domain.Deliverable, error) {
+	switch in.Kind {
+	case "", domain.KindOutput:
+	case domain.KindSupplement:
+		return e.submitSupplement(ctx, agent, taskID, in)
+	case domain.KindEdit:
+		return e.submitEdit(ctx, agent, taskID, in)
+	default:
+		return domain.Deliverable{}, domain.BadRequest("bad_kind", "kind 须为 output / supplement / edit")
+	}
 	var out domain.Deliverable
 	err := e.store.Tx(ctx, func(q *sqlite.Queries) error {
 		task, err := q.GetTask(ctx, taskID)
@@ -36,8 +49,8 @@ func (e *Engine) Submit(ctx context.Context, agent domain.Agent, taskID int64, i
 		if err := checkAssignee(task, agent, "提交产出"); err != nil {
 			return err
 		}
-		if !domain.CanSubmit(task.Status) {
-			return domain.Conflict("cannot_submit", "任务当前状态不可提交："+string(task.Status))
+		if err := CheckAccept(domain.KindOutput, task.Status); err != nil {
+			return err
 		}
 		if err := RequireAuthorization(ctx, q, task); err != nil {
 			return err
@@ -51,7 +64,7 @@ func (e *Engine) Submit(ctx context.Context, agent domain.Agent, taskID int64, i
 			return domain.BadRequest("doc_type_required", "doc_type 缺失且该阶段未定义产出类型")
 		}
 
-		ver, err := q.MaxDeliverableVersion(ctx, taskID, false)
+		ver, err := q.MaxDeliverableVersion(ctx, taskID, domain.KindOutput)
 		if err != nil {
 			return err
 		}
@@ -60,7 +73,7 @@ func (e *Engine) Submit(ctx context.Context, agent domain.Agent, taskID int64, i
 		producer := agent.ID
 		id, err := q.InsertDeliverable(ctx, domain.Deliverable{
 			TaskID:      taskID,
-			IsDispatch:  false,
+			Kind:        domain.KindOutput,
 			Version:     ver,
 			DocType:     in.DocType,
 			ProducerID:  &producer,
@@ -96,6 +109,10 @@ func (e *Engine) Submit(ctx context.Context, agent domain.Agent, taskID int64, i
 			return err
 		}
 		if err := q.ClearOverdueNotified(ctx, taskID); err != nil {
+			return err
+		}
+		// 交了新版本即视为已按补件返工。
+		if err := q.SetTaskReworkPending(ctx, taskID, false); err != nil {
 			return err
 		}
 

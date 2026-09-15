@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -140,10 +141,14 @@ func (s *Server) handleDispatch(c *gin.Context) {
 }
 
 type reviewReq struct {
-	Verdict         string `json:"verdict" binding:"required"`
-	Comment         string `json:"comment"`
-	ReturnDirection string `json:"return_direction"`
-	ReturnLocation  string `json:"return_location"`
+	Verdict         string   `json:"verdict" binding:"required"`
+	Comment         string   `json:"comment"`
+	ReturnDirection string   `json:"return_direction"`
+	ReturnLocation  string   `json:"return_location"`
+	DecisionType    string   `json:"decision_type"`
+	SourceQuote     string   `json:"source_quote"` // Van 原话（人工闸必填，或 comment 以「Van：」开头）
+	Items           []string `json:"items"`        // 条目范围
+	ExpectedVersion *int     `json:"expected_version"`
 }
 
 // POST /deliverables/:id/reviews —— 审核（按闸推进；人工闸代录）
@@ -160,12 +165,20 @@ func (s *Server) handleReview(c *gin.Context) {
 	}
 	agent, role := mwAgent(c)
 
-	res, err := s.eng.Review(c.Request.Context(), agent, role, id, engine.ReviewInput{
+	in := engine.ReviewInput{
 		Verdict:         domain.Verdict(req.Verdict),
 		Comment:         req.Comment,
 		ReturnDirection: req.ReturnDirection,
 		ReturnLocation:  req.ReturnLocation,
-	})
+		DecisionType:    req.DecisionType,
+		SourceQuote:     req.SourceQuote,
+		ExpectedVersion: req.ExpectedVersion,
+	}
+	if len(req.Items) > 0 {
+		b, _ := json.Marshal(req.Items)
+		in.ItemsJSON = string(b)
+	}
+	res, err := s.eng.Review(c.Request.Context(), agent, role, id, in)
 	if err != nil {
 		s.renderErr(c, err)
 		return

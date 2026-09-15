@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/domain"
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/store/sqlite"
@@ -59,7 +60,7 @@ func (e *Engine) Dispatch(ctx context.Context, hub domain.Agent, role domain.Rol
 
 // dispatchInternal 建派工单交付物 + 预填上游 + task→dispatched + 事件。供手动派工与自动派工复用。
 func (e *Engine) dispatchInternal(ctx context.Context, q *sqlite.Queries, task domain.Task, wf domain.Workflow, editorNote string, explicit []UpstreamInput, producerID *int64) (domain.Deliverable, error) {
-	ver, err := q.MaxDeliverableVersion(ctx, task.ID, true)
+	ver, err := q.MaxDeliverableVersion(ctx, task.ID, domain.KindDispatch)
 	if err != nil {
 		return domain.Deliverable{}, err
 	}
@@ -67,6 +68,7 @@ func (e *Engine) dispatchInternal(ctx context.Context, q *sqlite.Queries, task d
 
 	id, err := q.InsertDeliverable(ctx, domain.Deliverable{
 		TaskID:     task.ID,
+		Kind:       domain.KindDispatch,
 		IsDispatch: true,
 		Version:    ver,
 		DocType:    dispatchDocType,
@@ -105,7 +107,7 @@ func (e *Engine) dispatchInternal(ctx context.Context, q *sqlite.Queries, task d
 	return q.GetDeliverable(ctx, id)
 }
 
-// autoPrefill 自动预填上游：各依赖任务的已通过产出 download_url。
+// autoPrefill 自动预填上游：各依赖任务已通过的最新产出，以及该任务的全部补件（「补件#n」）。
 func (e *Engine) autoPrefill(ctx context.Context, q *sqlite.Queries, task domain.Task) ([]UpstreamInput, error) {
 	depIDs, err := q.TaskDepIDs(ctx, task.ID)
 	if err != nil {
@@ -113,22 +115,30 @@ func (e *Engine) autoPrefill(ctx context.Context, q *sqlite.Queries, task domain
 	}
 	var ups []UpstreamInput
 	for _, depID := range depIDs {
-		dd, err := q.LatestPassedDeliverable(ctx, depID)
-		if isNoRows(err) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		if dd.DownloadURL == "" {
-			continue
-		}
 		dt, err := q.GetTask(ctx, depID)
 		if err != nil {
 			return nil, err
 		}
-		upID := dd.ID
-		ups = append(ups, UpstreamInput{Label: dt.StageName, URL: dd.DownloadURL, UpstreamID: &upID})
+		dd, err := q.LatestPassedDeliverable(ctx, depID)
+		switch {
+		case isNoRows(err):
+		case err != nil:
+			return nil, err
+		case dd.DownloadURL != "":
+			upID := dd.ID
+			ups = append(ups, UpstreamInput{Label: dt.StageName, URL: dd.DownloadURL, UpstreamID: &upID})
+		}
+		sups, err := q.ListSupplementsByTask(ctx, depID)
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range sups {
+			if s.DownloadURL == "" {
+				continue
+			}
+			sid := s.ID
+			ups = append(ups, UpstreamInput{Label: fmt.Sprintf("%s 补件#%d", dt.StageName, s.Version), URL: s.DownloadURL, UpstreamID: &sid})
+		}
 	}
 	return ups, nil
 }

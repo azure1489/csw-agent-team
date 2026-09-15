@@ -137,8 +137,10 @@ type File struct {
 	UploadedBy  *int64
 }
 
-// Deliverable 交付物（派工单 IsDispatch=1 / agent 产出 =0），版本化。
+// Deliverable 交付物，版本化。Kind 区分派工单 / 产出 / 补件 / 定点编辑；IsDispatch 与 Kind==dispatch 同义（兼容）。
 type Deliverable struct {
+	Kind           DeliverableKind
+	DiffSummary    string // 定点编辑的修改摘要
 	DocType        string
 	DownloadURL    string
 	Filename       string
@@ -149,13 +151,16 @@ type Deliverable struct {
 	EditorNote     string
 	Status         DeliverableStatus
 	ReturnedAtGate *int
+	EditOf         *int // 定点编辑基于的版本
 	ProducerID     *int64
 	FileID         *int64
+	AffectsID      *int64 // 补件影响的产出交付物
 	ID             int64
 	TaskID         int64
 	Version        int
 	CurGate        int
 	IsDispatch     bool
+	Collab         bool // 协作版本（主编定点编辑）
 }
 
 // Chat 飞书群（花名册容器）。
@@ -197,6 +202,10 @@ type Review struct {
 	Comment         string
 	ReturnDirection string
 	ReturnLocation  string
+	DecisionType    string // 业务决定类别，见 DecisionType
+	SourceQuote     string // Van 原话（人工闸必填）
+	ItemsJSON       string // 条目范围：JSON 字符串数组
+	ExpectedVersion *int
 	DeliverableID   int64
 	TaskGateID      int64
 	ReviewerID      *int64

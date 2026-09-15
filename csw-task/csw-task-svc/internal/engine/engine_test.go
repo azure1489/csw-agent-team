@@ -123,7 +123,7 @@ func TestFullFlow(t *testing.T) {
 		if _, err := e.Review(ctx, editor, editorRole, d.ID, ReviewInput{Verdict: domain.VerdictPass, Comment: "ok"}); err != nil {
 			t.Fatalf("review gate1 %s: %v", stageCode, err)
 		}
-		r2, err := e.Review(ctx, editor, editorRole, d.ID, ReviewInput{Verdict: domain.VerdictPass, Comment: "van ok"})
+		r2, err := e.Review(ctx, editor, editorRole, d.ID, ReviewInput{Verdict: domain.VerdictPass, Comment: "Van：ok"})
 		if err != nil {
 			t.Fatalf("review gate2 %s: %v", stageCode, err)
 		}
@@ -161,7 +161,7 @@ func TestFullFlow(t *testing.T) {
 	if _, err := e.Review(ctx, editor, editorRole, d1.ID, ReviewInput{Verdict: domain.VerdictReject}); err == nil {
 		t.Fatalf("reject without direction/location should 400")
 	}
-	rr, err := e.Review(ctx, editor, editorRole, d1.ID, ReviewInput{Verdict: domain.VerdictReject, ReturnDirection: "补足15张", ReturnLocation: "第3则"})
+	rr, err := e.Review(ctx, editor, editorRole, d1.ID, ReviewInput{Verdict: domain.VerdictReject, ReturnDirection: "补足15张", ReturnLocation: "第3则", Comment: "Van：补足15张"})
 	if err != nil {
 		t.Fatalf("02 v1 gate2 reject: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestFullFlow(t *testing.T) {
 	if _, err := e.Review(ctx, editor, editorRole, d2.ID, ReviewInput{Verdict: domain.VerdictPass}); err != nil {
 		t.Fatalf("02 v2 gate1: %v", err)
 	}
-	r2, err := e.Review(ctx, editor, editorRole, d2.ID, ReviewInput{Verdict: domain.VerdictPass})
+	r2, err := e.Review(ctx, editor, editorRole, d2.ID, ReviewInput{Verdict: domain.VerdictPass, SourceQuote: "Van：通过"})
 	if err != nil {
 		t.Fatalf("02 v2 gate2: %v", err)
 	}
