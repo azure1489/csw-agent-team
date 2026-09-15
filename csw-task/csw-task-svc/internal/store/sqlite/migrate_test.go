@@ -24,9 +24,9 @@ func TestMigrate(t *testing.T) {
 	).Scan(&n); err != nil {
 		t.Fatalf("count tables: %v", err)
 	}
-	// 0014 outbox。
-	if n != 24 {
-		t.Fatalf("want 24 tables, got %d", n)
+	// 0014 outbox、0015 run_items。
+	if n != 25 {
+		t.Fatalf("want 25 tables, got %d", n)
 	}
 
 	// 0009 新增列：阶段四列 + 任务快照三列。
@@ -41,6 +41,7 @@ func TestMigrate(t *testing.T) {
 		{"deliverables", "kind"}, {"deliverables", "affects_deliverable_id"}, {"deliverables", "edit_of"},
 		{"deliverables", "diff_summary"}, {"deliverables", "collab"},
 		{"reviews", "decision_type"}, {"reviews", "source_quote"}, {"reviews", "items_json"}, {"reviews", "expected_version"},
+		{"runs", "target_count"}, {"tasks", "wait_item_stages"},
 	} {
 		var c int
 		if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, tc.table, tc.col).Scan(&c); err != nil || c != 1 {

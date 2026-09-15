@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/domain"
+	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/engine"
 )
 
 // utcNow 与库内时间戳同格式（UTC 秒级 ISO8601），可直接字符串比较。
@@ -48,7 +49,7 @@ func (s *Server) handleRunDetail(c *gin.Context) {
 		"run": gin.H{
 			"id": run.ID, "workflow_id": run.WorkflowID, "workflow_ver": run.WorkflowVer,
 			"subject": run.Subject, "title": run.Title, "status": string(run.Status),
-			"authorizations": scopes,
+			"authorizations": scopes, "target_count": run.TargetCount,
 		},
 		"tasks": taskDTOs,
 	})
@@ -183,4 +184,146 @@ func (s *Server) handleProgress(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, p)
+}
+
+type itemDTO struct {
+	ItemKey        string `json:"item_key"`
+	Title          string `json:"title"`
+	Brand          string `json:"brand,omitempty"`
+	Product        string `json:"product,omitempty"`
+	SourceURL      string `json:"source_url,omitempty"`
+	PublishedAt    string `json:"published_at,omitempty"`
+	Status         string `json:"status"`
+	DecidedAt      string `json:"decided_at,omitempty"`
+	DecisionSource string `json:"decision_source,omitempty"`
+}
+
+func toItemDTOs(items []domain.RunItem) []itemDTO {
+	out := make([]itemDTO, 0, len(items))
+	for _, it := range items {
+		out = append(out, itemDTO{ItemKey: it.ItemKey, Title: it.Title, Brand: it.Brand, Product: it.Product,
+			SourceURL: it.SourceURL, PublishedAt: it.PublishedAt, Status: string(it.Status),
+			DecidedAt: it.DecidedAt, DecisionSource: it.DecisionSource})
+	}
+	return out
+}
+
+// GET /runs/:id/items —— 条目与整期目标
+func (s *Server) handleListItems(c *gin.Context) {
+	id, err := pathID(c, "id")
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	ctx := c.Request.Context()
+	run, err := s.store.Q().GetRun(ctx, id)
+	if err != nil {
+		s.renderErr(c, domain.NotFound("run_not_found", "无此实例"))
+		return
+	}
+	items, err := s.store.Q().ListItems(ctx, id)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	written := 0
+	for _, it := range items {
+		if domain.ItemCounted(it.Status) {
+			written++
+		}
+	}
+	gap := run.TargetCount - written
+	if gap < 0 {
+		gap = 0
+	}
+	c.JSON(http.StatusOK, gin.H{"items": toItemDTOs(items), "target_count": run.TargetCount, "written": written, "gap": gap})
+}
+
+type upsertItemsReq struct {
+	Items []struct {
+		ItemKey     string `json:"item_key"`
+		Title       string `json:"title"`
+		Brand       string `json:"brand"`
+		Product     string `json:"product"`
+		SourceURL   string `json:"source_url"`
+		PublishedAt string `json:"published_at"`
+		Status      string `json:"status"`
+	} `json:"items"`
+}
+
+// PUT /runs/:id/items —— 登记 / 更新条目（参与角色或中枢；只能写 candidate / shortlisted）
+func (s *Server) handleUpsertItems(c *gin.Context) {
+	id, err := pathID(c, "id")
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	var req upsertItemsReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		s.renderErr(c, domain.BadRequest("bad_body", "请求体非法："+err.Error()))
+		return
+	}
+	in := make([]engine.ItemInput, 0, len(req.Items))
+	for _, it := range req.Items {
+		in = append(in, engine.ItemInput{Key: it.ItemKey, Title: it.Title, Brand: it.Brand, Product: it.Product,
+			SourceURL: it.SourceURL, PublishedAt: it.PublishedAt, Status: it.Status})
+	}
+	agent, role := mwAgent(c)
+	items, err := s.eng.UpsertItems(c.Request.Context(), agent, role, id, in)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": toItemDTOs(items)})
+}
+
+type itemDecisionReq struct {
+	Decision    string `json:"decision" binding:"required"`
+	SourceQuote string `json:"source_quote"`
+}
+
+// POST /runs/:id/items/:key/decision —— 中枢按 Van 原话决定条目
+func (s *Server) handleItemDecision(c *gin.Context) {
+	id, err := pathID(c, "id")
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	var req itemDecisionReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		s.renderErr(c, domain.BadRequest("bad_body", "请求体非法："+err.Error()))
+		return
+	}
+	agent, role := mwAgent(c)
+	res, err := s.eng.DecideItem(c.Request.Context(), agent, role, id, c.Param("key"), req.Decision, req.SourceQuote)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	spawned := res.Spawned
+	if spawned == nil {
+		spawned = []int64{}
+	}
+	c.JSON(http.StatusOK, gin.H{"item": toItemDTOs([]domain.RunItem{res.Item})[0], "spawned_task_ids": spawned})
+}
+
+// POST /runs/:id/close {reason} —— 中枢接受缺口结束 run
+func (s *Server) handleCloseRun(c *gin.Context) {
+	id, err := pathID(c, "id")
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	reason, err := bindReason(c)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	agent, role := mwAgent(c)
+	run, err := s.eng.CloseRun(c.Request.Context(), agent, role, id, reason)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"run": gin.H{"id": run.ID, "status": string(run.Status), "target_count": run.TargetCount}})
 }

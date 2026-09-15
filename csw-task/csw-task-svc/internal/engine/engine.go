@@ -5,6 +5,7 @@ package engine
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -82,6 +83,23 @@ func stageDispatchMode(st domain.Stage, wf domain.Workflow) domain.DispatchMode 
 	return wf.DispatchMode
 }
 
+// targetFromInputs 从触发 inputs 取整期目标条数：{"target_count":N} 或生产约定的 {"目标":{"主选":N}}。
+func targetFromInputs(inputs string) int {
+	var m map[string]any
+	if json.Unmarshal([]byte(inputs), &m) != nil {
+		return 0
+	}
+	if v, ok := m["target_count"].(float64); ok {
+		return int(v)
+	}
+	if g, ok := m["目标"].(map[string]any); ok {
+		if v, ok := g["主选"].(float64); ok {
+			return int(v)
+		}
+	}
+	return 0
+}
+
 // resolveAssignee 按角色取唯一活跃 agent；无则 nil。
 func resolveAssignee(ctx context.Context, q *sqlite.Queries, roleCode string) *int64 {
 	a, err := q.ActiveAgentByRole(ctx, roleCode)
@@ -133,12 +151,31 @@ func (e *Engine) Trigger(ctx context.Context, actor domain.Agent, role domain.Ro
 		}
 
 		// 建任务（快照阶段内容；acceptance = 通用合规项 + 本阶段；instructions = 通用约定 + 本阶段）。
+		// 逐条阶段（per_item）不建模板任务：条目批准可写时由 spawnItemTasks 按条生成；
+		// 依赖逐条阶段的任务快照 wait_item_stages，等条目任务通过才就绪。
 		stageToTask := make(map[int64]int64, len(stages))
 		hasDep := make(map[int64]bool, len(stages))
-		for _, d := range deps {
-			hasDep[d.StageID] = true
+		perItem := make(map[int64]bool, len(stages))
+		codeOf := make(map[int64]string, len(stages))
+		for _, st := range stages {
+			perItem[st.ID], codeOf[st.ID] = st.PerItem, st.Code
+		}
+		waits := map[int64][]string{}
+		for _, st := range stages { // 按 seq 遍历上游，快照顺序稳定
+			for _, d := range deps {
+				if d.DependsOnID != st.ID {
+					continue
+				}
+				hasDep[d.StageID] = true
+				if st.PerItem && !perItem[d.StageID] {
+					waits[d.StageID] = append(waits[d.StageID], st.Code)
+				}
+			}
 		}
 		for _, st := range stages {
+			if st.PerItem {
+				continue
+			}
 			t := domain.Task{
 				RunID:             runID,
 				StageCode:         st.Code,
@@ -153,6 +190,7 @@ func (e *Engine) Trigger(ctx context.Context, actor domain.Agent, role domain.Ro
 				DispatchMode:      stageDispatchMode(st, wf),
 				ActionClass:       st.ActionClass,
 				SLAMinutes:        st.SLAMinutes,
+				WaitItemStages:    strings.Join(waits[st.ID], ","),
 				AssigneeID:        resolveAssignee(ctx, q, st.RoleCode),
 				Status:            domain.TaskBlocked,
 			}
@@ -162,14 +200,20 @@ func (e *Engine) Trigger(ctx context.Context, actor domain.Agent, role domain.Ro
 			}
 			stageToTask[st.ID] = id
 		}
-		// 依赖边。
+		// 依赖边（涉及逐条阶段的边在条目任务生成时补）。
 		for _, d := range deps {
+			if perItem[d.StageID] || perItem[d.DependsOnID] {
+				continue
+			}
 			if err := q.InsertTaskDep(ctx, stageToTask[d.StageID], stageToTask[d.DependsOnID]); err != nil {
 				return err
 			}
 		}
 		// 审核闸（解析默认+覆盖，落到每个任务）。
 		for _, st := range stages {
+			if st.PerItem {
+				continue
+			}
 			for _, g := range resolveGates(gates, st.ID) {
 				if err := q.InsertTaskGate(ctx, stageToTask[st.ID], g.GateOrder, g.ReviewerRole, g.RelayedByHub, g.Name); err != nil {
 					return err
@@ -180,10 +224,15 @@ func (e *Engine) Trigger(ctx context.Context, actor domain.Agent, role domain.Ro
 		if err := q.InsertEvent(ctx, domain.Event{RunID: &runID, ActorID: &actor.ID, Type: domain.EvtRunCreated, DetailJSON: inputsJSON}); err != nil {
 			return err
 		}
+		if n := targetFromInputs(inputsJSON); n > 0 {
+			if err := q.SetRunTargetCount(ctx, runID, n); err != nil {
+				return err
+			}
+		}
 
 		// 入口任务（无依赖）就绪；按 dispatch_mode / 合流决定是否自动派工。
 		for _, st := range stages {
-			if hasDep[st.ID] {
+			if hasDep[st.ID] || st.PerItem {
 				continue
 			}
 			t, err := q.GetTask(ctx, stageToTask[st.ID])

@@ -162,7 +162,7 @@ internal/
 
 技术栈：`gin` · `modernc.org/sqlite`（纯 Go 免 cgo）· `goose/v3`（迁移 embed）· `slog`。并发模型：WAL + `busy_timeout` + `foreign_keys` + `SetMaxOpenConns(1)`（写串行）。
 
-引擎要点（`internal/engine`）：触发即**快照**工作流定义与阶段属性（派工模式 / 动作类别 / 时限），运行实例不受此后定义热改影响；提交后按阶段声明的闸推进（0 闸直通）；越级审核 409；退回必填方向+位置；代录闸须附原话；合流阶段就绪时自动派给中枢。**平台写护栏**：`action_class=platform_write:<scope>` 的任务在派工、自动派工、提交三处检查 run 授权（`run_authorizations`），缺失 409 `authorization_required` 并停在 ready。**生命周期**：接单 / 心跳（ack）、报告失败、取消（级联未开始的下游）、重开；run 完成 = 全部终态且至少一个通过。**交付物 kind**：补件（挂已通过任务、标下游待返工）、定点编辑（中枢在自己的闸上提交编辑版本、首稿保留）。**事件接续**：需要通知的事件与 outbox 同事务写入，server 进程内 notifier 经飞书 Open API 单写群播报（`CSW_NOTIFIER_*` / `CSW_LARK_*`，默认关闭）；`GET /runs/:id/progress` 给出真实卡点。迁移 0009–0014 为本轮增量（0011 / 0012 为表重建，deploy 前自动备份）。所有写操作支持 `Idempotency-Key`（fail-closed：业务前持久占位 + 请求指纹绑定；2xx 后同指纹回放，非 2xx 释放占位可重试，崩溃后同键 409 需人工核实；见设计 §8），错误统一 `{code,message}` + HTTP 码。
+引擎要点（`internal/engine`）：触发即**快照**工作流定义与阶段属性（派工模式 / 动作类别 / 时限），运行实例不受此后定义热改影响；提交后按阶段声明的闸推进（0 闸直通）；越级审核 409；退回必填方向+位置；代录闸须附原话；合流阶段就绪时自动派给中枢。**平台写护栏**：`action_class=platform_write:<scope>` 的任务在派工、自动派工、提交三处检查 run 授权（`run_authorizations`），缺失 409 `authorization_required` 并停在 ready。**生命周期**：接单 / 心跳（ack）、报告失败、取消（级联未开始的下游）、重开；run 完成 = 全部终态且至少一个通过。**交付物 kind**：补件（挂已通过任务、标下游待返工）、定点编辑（中枢在自己的闸上提交编辑版本、首稿保留）。**条目级推进**：逐条阶段（write / material）按 Van 批准可写的条目动态生成任务，完整审核稿等全部已批条目；已写成不足整期目标时 run 保持进行中，由中枢 close 接受缺口。**事件接续**：需要通知的事件与 outbox 同事务写入，server 进程内 notifier 经飞书 Open API 单写群播报（`CSW_NOTIFIER_*` / `CSW_LARK_*`，默认关闭）；`GET /runs/:id/progress` 给出真实卡点。迁移 0009–0015 为本轮增量（0011 / 0012 为表重建，deploy 前自动备份）。所有写操作支持 `Idempotency-Key`（fail-closed：业务前持久占位 + 请求指纹绑定；2xx 后同指纹回放，非 2xx 释放占位可重试，崩溃后同键 409 需人工核实；见设计 §8），错误统一 `{code,message}` + HTTP 码。
 
 ## 前端 `csw-task-web/`：管理后台
 

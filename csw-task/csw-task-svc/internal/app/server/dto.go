@@ -20,6 +20,7 @@ type taskDTO struct {
 	ActionClass    string `json:"action_class"`
 	DispatchMode   string `json:"dispatch_mode,omitempty"`
 	ItemKey        string `json:"item_key"`
+	WaitItemStages string `json:"wait_item_stages,omitempty"`
 	FailReason     string `json:"fail_reason,omitempty"`
 	DueAt          string `json:"due_at,omitempty"`
 	DispatchedAt   string `json:"dispatched_at,omitempty"`
@@ -46,7 +47,7 @@ func toTaskDTO(t domain.Task) taskDTO {
 		Seq: t.Seq, RoleCode: t.RoleCode, OutputType: t.OutputType, IsMerge: t.IsMerge, Status: string(t.Status),
 		CurVersion: t.CurVersion, AssigneeID: t.AssigneeID,
 		ActionClass: ac, DispatchMode: string(t.DispatchMode), SLAMinutes: t.SLAMinutes,
-		ItemKey: t.ItemKey, FailReason: t.FailReason, DueAt: t.DueAt, DispatchedAt: t.DispatchedAt,
+		ItemKey: t.ItemKey, WaitItemStages: t.WaitItemStages, FailReason: t.FailReason, DueAt: t.DueAt, DispatchedAt: t.DispatchedAt,
 		StartedAt: t.StartedAt, CompletedAt: t.CompletedAt, LastActivityAt: t.LastActivityAt, ReworkPending: t.ReworkPending,
 	}
 }

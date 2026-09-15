@@ -32,7 +32,7 @@ func TestProgressBlockers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Total != 13 || p.Done != 0 {
+	if p.Total != 11 || p.Done != 0 {
 		t.Fatalf("counts: %d/%d", p.Done, p.Total)
 	}
 	if it, _ := blockerOf(p, "intake"); it.Blocker == nil || it.Blocker.Kind != "ack" || !strings.Contains(it.Blocker.Text, "情报收集员") {
@@ -74,12 +74,15 @@ func TestProgressBlockers(t *testing.T) {
 	}
 
 	// 手动派工阶段 / 平台写待授权。
-	if _, err := st.DB().Exec(`UPDATE tasks SET status='ready' WHERE run_id=? AND stage_code IN ('write','wx_save')`, runID); err != nil {
+	if _, err := st.DB().Exec(`UPDATE tasks SET status='ready' WHERE run_id=? AND stage_code IN ('xhs_text','wx_save')`, runID); err != nil {
 		t.Fatal(err)
 	}
 	p6, _ := e.Progress(ctx, runID)
-	if w, _ := blockerOf(p6, "write"); w.Blocker == nil || w.Blocker.Kind != "dispatch" || !strings.Contains(w.Blocker.Text, "手动") {
-		t.Fatalf("write blocker: %+v", w.Blocker)
+	if w, _ := blockerOf(p6, "xhs_text"); w.Blocker == nil || w.Blocker.Kind != "dispatch" || !strings.Contains(w.Blocker.Text, "手动") {
+		t.Fatalf("xhs_text blocker: %+v", w.Blocker)
+	}
+	if ft, _ := blockerOf(p6, "fulltext"); ft.Blocker == nil || ft.Blocker.Text != "待选题批准条目" {
+		t.Fatalf("fulltext should wait for approved items: %+v", ft.Blocker)
 	}
 	if s, _ := blockerOf(p6, "wx_save"); s.Blocker == nil || s.Blocker.Text != "待授权：公众号草稿" {
 		t.Fatalf("wx_save blocker: %+v", s.Blocker)

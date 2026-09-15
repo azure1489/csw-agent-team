@@ -92,7 +92,7 @@ func Load() Config {
 		LarkAppID:       env("CSW_LARK_APP_ID", ""),
 		LarkAppSecret:   env("CSW_LARK_APP_SECRET", ""),
 		LarkBaseURL:     strings.TrimRight(env("CSW_LARK_BASE_URL", "https://open.feishu.cn"), "/"),
-		SkillMinVersion: env("CSW_SKILL_MIN_VERSION", "3.0.0"),
+		SkillMinVersion: env("CSW_SKILL_MIN_VERSION", "3.1.0"),
 	}
 	cfg.AllowedContentTypes = parseSet(env("CSW_ALLOWED_CONTENT_TYPES",
 		"application/zip,application/x-zip-compressed,application/octet-stream"))

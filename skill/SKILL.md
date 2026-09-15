@@ -1,6 +1,6 @@
 ---
 name: csw-task
-version: 3.0.0
+version: 3.1.0
 description: 营事编集室「任务流转服务」客户端 + 编辑部协作协议（v3：十三阶段、引擎单写群播报）。当 agent 需要在工作流里干活时使用：被群消息 @ 唤醒后查任务、接单、下载上游、干活并一步提交产出或补件；（主编）触发实例、派工、审核、定点编辑、录入授权、代录 Van 决定、取消与重开。封装运行面 HTTP API（bearer 鉴权 / 幂等 / 一步式上传提交），agent 不自己拼 HTTP。触发词：触发流程、开批次、我的任务、接单、提交产出、补件、派工、审核、退回、定点编辑、授权、任务进度、编辑部群、CSW 任务流转。
 ---
 
@@ -47,7 +47,10 @@ description: 营事编集室「任务流转服务」客户端 + 编辑部协作�
 | fail | 执行者 | `POST /api/v1/tasks/{id}/fail` `{reason}` |
 | fetch | 各 agent | 见 §2.1 |
 | submit | 执行者 / 主编 | `POST /api/v1/tasks/{id}/deliverables`（multipart；`kind` = output 缺省 / supplement / edit）见 §2.2、§2.3 |
-| run / timeline / progress | 各 agent | `GET /api/v1/runs/{id}` · `…/timeline` · `…/progress`（每个任务的真实卡点与下一步） |
+| run / timeline / progress | 各 agent | `GET /api/v1/runs/{id}` · `…/timeline` · `…/progress`（每个任务的真实卡点与下一步、条目与缺口） |
+| items | 参与角色 / 主编 | `GET /api/v1/runs/{id}/items` · `PUT /api/v1/runs/{id}/items` `{items:[{item_key,title,brand?,product?,source_url?,published_at?,status?}]}`（登记只能写 candidate / shortlisted） |
+| decide | 主编 | `POST /api/v1/runs/{id}/items/{item_key}/decision` `{decision, source_quote}`（approve_write / approve_research / defer / reject） |
+| close | 主编 | `POST /api/v1/runs/{id}/close` `{reason}`（接受整期缺口结束 run） |
 | roster | 各 agent | `GET /api/v1/roster` |
 
 > 没有「建 / 改工作流」动作——定义只经管理后台或 `csw-workflow` skill（wfctl），本 skill 不碰。
@@ -95,9 +98,11 @@ curl -fsS -X POST "$BASE/api/v1/tasks/$TASK_ID/deliverables" -H "Authorization: 
 2. 对每个 `dispatched` 任务先 **`ack` 接单**（进度才显示「已接单」）。长任务约每 20 分钟再 `ack` 一次作心跳——超过 30 分钟没有心跳也没有产物，进度上会标「无活动」。
 3. `task <id>` → 派工单（`editor_note` + `upstreams`）、作业手册、自检标准。`rework_pending=true` 时先看补件（`supplements` 与派工单里的「补件#n」），按新资产返工。
 4. `fetch` 每条上游 → 照作业手册干活。
-5. 装交付物文件夹（`index.md` 头按《交付与流转规范》§5；按条目交付的写「条目」字段）→ zip → `submit`。**不用再发群消息**：引擎会 @ 下一道闸的审核人；0 闸阶段提交即通过。
+5. 装交付物文件夹（`index.md` 头按《交付与流转规范》§5；逐条任务的 `item_key` 就是条目，头里写「条目」字段）→ zip → `submit`。**不用再发群消息**：引擎会 @ 下一道闸的审核人；0 闸阶段提交即通过。
 6. **被退回**：`task <id>` 该版本的 `latest_review` 读方向 / 位置 / 意见 → 改 → 重交（版本自动 +1，从第一道闸重走）。
 7. **做不了就报失败**：`fail` 写清原因（来源全部失效 / 缺必要权限 / 版本过低…），不要沉默等待；主编会重开或取消。平台写阶段返回 `authorization_required` = 本期没有这项授权——停手报主编，不找别的办法进后台。
+
+**登记条目（情报收集员 / 选题研究员）**：每条情报在引擎登记为一个条目——`PUT /runs/{id}/items`，条目键 = 品牌英文或拼音小写 + 短横 + 原文链接 sha256 前 6 位（如 `hxo-3fa91c`），生成后不再改；研究员把采用与备选的条目标 `shortlisted`。批准、暂缓、否决只由主编按 Van 原话决定。
 
 ### 3.1 状态词汇（全员统一，汇报进度只用这些词）
 
@@ -158,12 +163,13 @@ curl -fsS -X POST "$BASE/api/v1/deliverables/$D/reviews" -H "Authorization: Bear
 ### 4.3 选题决定（03 Van 闸，按条目）
 
 - `items` 写 Van 批准的条目键；「保留」「就这条」= 批准可写；「再看看」「继续研究」= 只开研究、不派写作；措辞不明时只问一次受影响的范围。
-- 条目级决定接口上线前，`comment` 同时写结构化记录：`{"approved":[…],"research":[…],"pending":[…],"target":N}`。
-- 数量不足：已批准的照常推进，缺口写进选题方案；不用旧闻或弱题凑数；改数量或范围由 Van 一次决定。
+- 引擎自动为每个批准可写的条目生成 04-公众号写作与 05-配图与素材核任务；07-完整审核稿等这些条目的两项都通过才就绪。
+- 补批或撤回单条：`POST /runs/{id}/items/{item_key}/decision {decision, source_quote}`。撤回只取消该条尚未完成的任务，不影响完整审核稿；已写成的条目不能再改决定。批准晚到时，已开工的完整审核稿会标「补件待返工」，由你决定纳入本期还是留到下期。
+- 数量不足：已批准的照常推进，缺口写进选题方案；不用旧闻或弱题凑数；改数量或范围由 Van 一次决定。整期目标来自触发 inputs（`目标.主选`）；其余任务都结束而已写成仍不足时，run 保持进行中，Van 接受缺口后 `POST /runs/{id}/close {reason}` 结束。
 
 ### 4.4 手动派工的两个阶段
 
-- **04-公众号写作**：`editor_note` 只列 Van 已批准可写的条目（条目键 + 工作标题）。之后补批的条目：对 03 提交补件（summary 写新批准条目与 Van 原话）——04 已开工会被标「补件待返工」，文案据此追加；04 已通过则 `reopen` 后再派。
+- **04-公众号写作**：每个批准可写的条目一个任务（手动派工）；`editor_note` 写该条的 Van 批准原话与写作重点。补批的条目用条目决定接口，引擎自动生成任务。
 - **10-小红书改编**：只有当期纳入小红书才派；不纳入按 §4.1③ 取消。
 
 ### 4.5 定点编辑（07-完整审核稿的主编闸）
@@ -227,6 +233,8 @@ curl -fsS -X POST "$BASE/api/v1/tasks/$TASK_ID/deliverables" -H "Authorization: 
 | review | `review-{deliverable_id}-{verdict}-v{version}` |
 | authorize | `auth-{run_id}-{scope}`（同一授权重复录入会返回已有记录） |
 | fail / cancel / reopen | `{fail\|cancel\|reopen}-{task_id}-{reason sha256 前8}` |
+| decide | `decision-{run_id}-{item_key}-{decision}` |
+| close | `close-{run_id}` |
 | trigger | `trigger-{wf}-{subject}-{当日批次号}` |
 | ack | 不带键（重复调用只刷新活动时间） |
 
@@ -253,6 +261,10 @@ curl -fsS -X POST "$BASE/api/v1/tasks/$TASK_ID/deliverables" -H "Authorization: 
 | 400 `bad_decision_type` / `bad_items_json` / `bad_scope` / `bad_kind` | 取值不合法 | 按 §4 取值 |
 | 400 `affects_required` / `bad_affects` / `edit_of_required` / `diff_summary_required` | 补件或定点编辑缺字段 | 按 §2.3 / §4.5 补齐 |
 | 400 `doc_type_required` | doc_type 与阶段产出类型都空 | 显式传 `-F doc_type=…` |
+| 400 `bad_item_key` / `bad_item_status` / `bad_decision` | 条目键或状态、决定取值不合法 | 条目键小写字母数字与短横；登记只写 candidate / shortlisted |
+| 403 `not_participant` | 不是本期 run 的参与角色 | 登记条目只由参与角色或主编做 |
+| 404 `item_not_found` / 409 `item_already_written` | 没有这个条目 / 该条已写成 | 先登记；已写成的要改请重开相关任务 |
+| 409 `run_has_open_tasks` / `run_nothing_passed` | 结束 run 时还有未完成任务 / 没有交付 | 先处理未完成的任务 |
 | 409 `idempotency_request_mismatch` | 同键用于不同内容 | 检查键的派生；确属新请求就换键 |
 | 409 `idempotency_in_progress_or_uncertain` | 同键首次请求结果不确定 | `task <id>` 核实，已落则不再发 |
 | 413 `idempotency_body_too_large` | 请求体超上传上限 | 检查 zip 大小 |

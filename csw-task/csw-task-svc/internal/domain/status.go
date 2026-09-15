@@ -238,3 +238,51 @@ func AllPassed(depStatuses []TaskStatus) bool {
 	}
 	return true
 }
+
+// ItemStatus 条目状态。
+type ItemStatus string
+
+const (
+	ItemCandidate        ItemStatus = "candidate"         // 已登记的候选
+	ItemShortlisted      ItemStatus = "shortlisted"       // 研究员建议采用 / 备选
+	ItemApprovedWrite    ItemStatus = "approved_write"    // Van 批准可写：生成逐条任务
+	ItemApprovedResearch ItemStatus = "approved_research" // 只开研究，不派写作
+	ItemDeferred         ItemStatus = "deferred"
+	ItemRejected         ItemStatus = "rejected"
+	ItemWritten          ItemStatus = "written" // 该条的逐条任务全部通过
+	ItemReviewed         ItemStatus = "reviewed"
+	ItemPublished        ItemStatus = "published"
+)
+
+// 条目决定类别（中枢按 Van 原话录入）。
+const (
+	ItemApproveWrite    = "approve_write"
+	ItemApproveResearch = "approve_research"
+	ItemDefer           = "defer"
+	ItemReject          = "reject"
+)
+
+// ItemDecisionStatus 决定类别 → 条目状态；非法类别返回 false。
+func ItemDecisionStatus(decision string) (ItemStatus, bool) {
+	switch decision {
+	case ItemApproveWrite:
+		return ItemApprovedWrite, true
+	case ItemApproveResearch:
+		return ItemApprovedResearch, true
+	case ItemDefer:
+		return ItemDeferred, true
+	case ItemReject:
+		return ItemRejected, true
+	}
+	return "", false
+}
+
+// ItemCounted 计入整期已写成条数的状态。
+func ItemCounted(s ItemStatus) bool {
+	return s == ItemWritten || s == ItemReviewed || s == ItemPublished
+}
+
+const (
+	EvtItemDecided = "item_decided"
+	EvtRunClosed   = "run_closed"
+)

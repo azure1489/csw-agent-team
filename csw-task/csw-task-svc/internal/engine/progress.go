@@ -62,6 +62,7 @@ type Progress struct {
 	Status         string         `json:"status"`
 	Subject        string         `json:"subject"`
 	Digest         string         `json:"digest"`
+	Items          map[string]int `json:"items"` // 条目数按状态
 	Authorizations []string       `json:"authorizations"`
 	CurrentNodes   []string       `json:"current_nodes"`
 	Tasks          []ProgressTask `json:"tasks"`
@@ -165,7 +166,11 @@ func BuildProgress(ctx context.Context, q *sqlite.Queries, runID int64, now time
 					waiting = append(waiting, u.StageName)
 				}
 			}
-			pt.Blocker = &Blocker{Kind: "upstream", Text: "待上游：" + strings.Join(waiting, "、")}
+			text := "待上游：" + strings.Join(waiting, "、")
+			if len(waiting) == 0 && t.WaitItemStages != "" {
+				text = "待选题批准条目"
+			}
+			pt.Blocker = &Blocker{Kind: "upstream", Text: text}
 			pt.Next = "等上游通过"
 		case domain.TaskReady:
 			ok, scope, err := authorized(ctx, q, t)
@@ -230,6 +235,22 @@ func BuildProgress(ctx context.Context, q *sqlite.Queries, runID int64, now time
 		}
 		p.Tasks = append(p.Tasks, pt)
 	}
+	items, err := q.ListItems(ctx, runID)
+	if err != nil {
+		return p, err
+	}
+	p.Items = map[string]int{}
+	written := 0
+	for _, it := range items {
+		p.Items[string(it.Status)]++
+		if domain.ItemCounted(it.Status) {
+			written++
+		}
+	}
+	p.TargetCount = run.TargetCount
+	if p.TargetCount > written {
+		p.Gap = p.TargetCount - written
+	}
 	p.Digest = progressDigest(p)
 	return p, nil
 }
@@ -255,7 +276,7 @@ func progressDigest(p Progress) string {
 		Rows   []row
 		Status string
 		Auths  []string
-	}{rows, p.Status, p.Authorizations})
+	}{rows, p.Status + fmt.Sprintf("|gap=%d", p.Gap), p.Authorizations})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:8])
 }

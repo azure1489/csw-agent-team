@@ -166,6 +166,26 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 			return err
 		}
 
+		// 选题决定随审核录入：items 里的条目按决定类别批准可写（生成逐条任务）或只开研究。
+		if in.Verdict == domain.VerdictPass && in.ItemsJSON != "" &&
+			(in.DecisionType == string(domain.DecTopicApprove) || in.DecisionType == string(domain.DecResearchOK)) {
+			decision := domain.ItemApproveWrite
+			if in.DecisionType == string(domain.DecResearchOK) {
+				decision = domain.ItemApproveResearch
+			}
+			src := quote
+			if src == "" {
+				src = in.Comment
+			}
+			var keys []string
+			_ = json.Unmarshal([]byte(in.ItemsJSON), &keys)
+			for _, k := range keys {
+				if _, err := e.decideInTx(ctx, q, run, wf, actor, k, decision, src, true); err != nil {
+					return err
+				}
+			}
+		}
+
 		if in.Verdict == domain.VerdictPass {
 			gates, err := q.ListTaskGates(ctx, task.ID)
 			if err != nil {

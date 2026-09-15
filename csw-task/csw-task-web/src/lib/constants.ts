@@ -145,6 +145,19 @@ export const EVENT_LABEL: Record<string, string> = {
   supplement_arrived: '补件到达',
 }
 
+// 条目状态 → 中文 + 色调
+export const ITEM_STATUS: Record<string, { label: string; tone: Tone }> = {
+  candidate: { label: '候选', tone: 'gray' },
+  shortlisted: { label: '短名单', tone: 'blue' },
+  approved_write: { label: '批准可写', tone: 'green' },
+  approved_research: { label: '只开研究', tone: 'yellow' },
+  deferred: { label: '暂缓', tone: 'gray' },
+  rejected: { label: '否决', tone: 'red' },
+  written: { label: '已写成', tone: 'green' },
+  reviewed: { label: '已审', tone: 'green' },
+  published: { label: '已发布', tone: 'violet' },
+}
+
 // run 授权范围 → 中文
 export const SCOPE_LABEL: Record<string, string> = {
   local_drill: '本地演练',

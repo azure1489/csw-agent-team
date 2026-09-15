@@ -254,7 +254,7 @@ func TestProgressCardAfterStagePassedOnce(t *testing.T) {
 	for _, s := range r.sender.texts() {
 		if strings.Contains(s, "进度】") {
 			cards++
-			if !strings.Contains(s, "已交付 1/13") {
+			if !strings.Contains(s, "已交付 1/11") {
 				t.Fatalf("progress card: %s", s)
 			}
 		}

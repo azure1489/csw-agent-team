@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"strings"
 
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/domain"
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/store/sqlite"
@@ -60,8 +61,9 @@ func (e *Engine) recomputeReady(ctx context.Context, q *sqlite.Queries, runID in
 		return err
 	}
 	status := make(map[int64]domain.TaskStatus, len(tasks))
+	stageOf := make(map[int64]string, len(tasks))
 	for _, t := range tasks {
-		status[t.ID] = t.Status
+		status[t.ID], stageOf[t.ID] = t.Status, t.StageCode
 	}
 	depMap := make(map[int64][]int64)
 	for _, d := range deps {
@@ -77,6 +79,19 @@ func (e *Engine) recomputeReady(ctx context.Context, q *sqlite.Queries, runID in
 			if status[dep] != domain.TaskPassed {
 				ready = false
 				break
+			}
+		}
+		if ready && t.WaitItemStages != "" {
+			// 等条目：每个要等的逐条阶段都至少有一个条目任务（条目任务在依赖里，已随上面判定全部通过）。
+			have := map[string]bool{}
+			for _, dep := range depMap[t.ID] {
+				have[stageOf[dep]] = true
+			}
+			for _, sc := range strings.Split(t.WaitItemStages, ",") {
+				if !have[sc] {
+					ready = false
+					break
+				}
 			}
 		}
 		if ready {
@@ -114,6 +129,22 @@ func (e *Engine) checkRunDone(ctx context.Context, q *sqlite.Queries, runID int6
 	}
 	if !anyPassed {
 		return nil
+	}
+	// 整期目标：已写成条数不足时保持进行中（进度显示缺口），由中枢 close 接受缺口。
+	if run.TargetCount > 0 {
+		items, err := q.ListItems(ctx, runID)
+		if err != nil {
+			return err
+		}
+		written := 0
+		for _, it := range items {
+			if domain.ItemCounted(it.Status) {
+				written++
+			}
+		}
+		if written < run.TargetCount {
+			return nil
+		}
 	}
 	if err := q.SetRunStatus(ctx, runID, domain.RunDone); err != nil {
 		return err

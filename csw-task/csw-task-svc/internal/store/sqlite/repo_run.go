@@ -27,12 +27,12 @@ func scanRun(s interface{ Scan(...any) error }) (domain.Run, error) {
 	var title sql.NullString
 	var createdBy sql.NullInt64
 	var status string
-	err := s.Scan(&r.ID, &r.WorkflowID, &r.WorkflowVer, &r.Subject, &title, &status, &createdBy)
+	err := s.Scan(&r.ID, &r.WorkflowID, &r.WorkflowVer, &r.Subject, &title, &status, &createdBy, &r.TargetCount)
 	r.Title, r.Status, r.CreatedBy = title.String, domain.RunStatus(status), ptrI64(createdBy)
 	return r, err
 }
 
-const runCols = `id, workflow_id, workflow_ver, subject, title, status, created_by`
+const runCols = `id, workflow_id, workflow_ver, subject, title, status, created_by, target_count`
 
 // GetRun 取实例。
 func (q *Queries) GetRun(ctx context.Context, id int64) (domain.Run, error) {
@@ -60,11 +60,11 @@ func (q *Queries) InsertTask(ctx context.Context, t domain.Task) (int64, error) 
 		INSERT INTO tasks
 		  (run_id, stage_code, stage_name, seq, role_code, is_merge, output_type,
 		   instructions, self_check_criteria, acceptance, assignee_id, status, cur_version,
-		   dispatch_mode, action_class, sla_minutes, item_key)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   dispatch_mode, action_class, sla_minutes, item_key, wait_item_stages)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		t.RunID, t.StageCode, t.StageName, t.Seq, t.RoleCode, b2i(t.IsMerge), t.OutputType,
 		t.Instructions, t.SelfCheckCriteria, t.Acceptance, nullI64(t.AssigneeID), string(t.Status), t.CurVersion,
-		nullIfEmpty(string(t.DispatchMode)), actionOrRead(t.ActionClass), nullIfNonPos(t.SLAMinutes), t.ItemKey)
+		nullIfEmpty(string(t.DispatchMode)), actionOrRead(t.ActionClass), nullIfNonPos(t.SLAMinutes), t.ItemKey, nullIfEmpty(t.WaitItemStages))
 	if err != nil {
 		return 0, err
 	}
@@ -74,24 +74,27 @@ func (q *Queries) InsertTask(ctx context.Context, t domain.Task) (int64, error) 
 const taskCols = `id, run_id, stage_code, stage_name, seq, role_code, is_merge, output_type,
 	instructions, self_check_criteria, acceptance, assignee_id, status, cur_version,
 	dispatch_mode, action_class, sla_minutes,
-	item_key, fail_reason, due_at, dispatched_at, started_at, completed_at, last_activity_at, rework_pending`
+	item_key, fail_reason, due_at, dispatched_at, started_at, completed_at, last_activity_at, rework_pending,
+	wait_item_stages`
 
 // 带表别名 t. 的列，用于含 JOIN 的查询（避免 id 等与 runs 列歧义）。
 const taskColsT = `t.id, t.run_id, t.stage_code, t.stage_name, t.seq, t.role_code, t.is_merge, t.output_type,
 	t.instructions, t.self_check_criteria, t.acceptance, t.assignee_id, t.status, t.cur_version,
 	t.dispatch_mode, t.action_class, t.sla_minutes,
-	t.item_key, t.fail_reason, t.due_at, t.dispatched_at, t.started_at, t.completed_at, t.last_activity_at, t.rework_pending`
+	t.item_key, t.fail_reason, t.due_at, t.dispatched_at, t.started_at, t.completed_at, t.last_activity_at, t.rework_pending,
+	t.wait_item_stages`
 
 func scanTask(s interface{ Scan(...any) error }) (domain.Task, error) {
 	var t domain.Task
 	var merge int
-	var outType, ins, sc, ac, dmode, failR, due, disp, start, done, act sql.NullString
+	var outType, ins, sc, ac, dmode, failR, due, disp, start, done, act, wait sql.NullString
 	var assignee, sla sql.NullInt64
 	var status string
 	var rework int
 	err := s.Scan(&t.ID, &t.RunID, &t.StageCode, &t.StageName, &t.Seq, &t.RoleCode, &merge, &outType,
 		&ins, &sc, &ac, &assignee, &status, &t.CurVersion, &dmode, &t.ActionClass, &sla,
-		&t.ItemKey, &failR, &due, &disp, &start, &done, &act, &rework)
+		&t.ItemKey, &failR, &due, &disp, &start, &done, &act, &rework, &wait)
+	t.WaitItemStages = wait.String
 	t.DispatchMode, t.SLAMinutes = domain.DispatchMode(dmode.String), int(sla.Int64)
 	t.FailReason, t.DueAt, t.DispatchedAt = failR.String, due.String, disp.String
 	t.StartedAt, t.CompletedAt, t.LastActivityAt = start.String, done.String, act.String

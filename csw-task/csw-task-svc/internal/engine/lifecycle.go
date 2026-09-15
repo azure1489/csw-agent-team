@@ -120,7 +120,8 @@ func (e *Engine) Cancel(ctx context.Context, hub domain.Agent, role domain.Role,
 		if err != nil {
 			return err
 		}
-		if _, _, err := hubRun(ctx, q, role, task.RunID, "取消任务"); err != nil {
+		_, wf, err := hubRun(ctx, q, role, task.RunID, "取消任务")
+		if err != nil {
 			return err
 		}
 		if !domain.CanCancel(task.Status) {
@@ -135,8 +136,9 @@ func (e *Engine) Cancel(ctx context.Context, hub domain.Agent, role domain.Role,
 			return err
 		}
 		status := make(map[int64]domain.TaskStatus, len(tasks))
+		itemOf := make(map[int64]string, len(tasks))
 		for _, t := range tasks {
-			status[t.ID] = t.Status
+			status[t.ID], itemOf[t.ID] = t.Status, t.ItemKey
 		}
 		dependents := map[int64][]int64{}
 		for _, d := range deps {
@@ -167,6 +169,13 @@ func (e *Engine) Cancel(ctx context.Context, hub domain.Agent, role domain.Role,
 				if seen[m] {
 					continue
 				}
+				if itemOf[n] != "" && itemOf[m] == "" {
+					// 逐条任务取消不连带合流任务：只摘掉合流任务对它的等待。
+					if err := q.DeleteTaskDep(ctx, m, n); err != nil {
+						return err
+					}
+					continue
+				}
 				seen[m] = true
 				if s := status[m]; s != domain.TaskBlocked && s != domain.TaskReady {
 					continue
@@ -177,7 +186,7 @@ func (e *Engine) Cancel(ctx context.Context, hub domain.Agent, role domain.Role,
 				queue = append(queue, m)
 			}
 		}
-		if err := e.checkRunDone(ctx, q, task.RunID); err != nil {
+		if err := e.recomputeReady(ctx, q, task.RunID, wf); err != nil {
 			return err
 		}
 		res.Task, err = q.GetTask(ctx, taskID)

@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { I } from '@/components/icons'
 import { Avatar, Btn, SectionCard, StatusBadge, toast } from '@/components/ui'
 import { api } from '@/lib/api'
-import { EVENT_LABEL, EVENT_TONE, SCOPE_LABEL, SCOPE_SATISFIED_BY, STATUS, TONES, type Tone } from '@/lib/constants'
+import { EVENT_LABEL, EVENT_TONE, ITEM_STATUS, SCOPE_LABEL, SCOPE_SATISFIED_BY, STATUS, TONES, type Tone } from '@/lib/constants'
 import { fmtTime } from '@/lib/utils'
 import { useRoleName } from '@/hooks/useRoles'
 import type { Deliverable, TaskBrief } from '@/types'
@@ -104,6 +104,9 @@ export function RunDetailPage() {
   const tl = order === 'desc' ? [...(events || [])].reverse() : events || []
   const agentName = (aid?: number | null) => (aid ? agents?.find((a) => a.id === aid)?.name || `#${aid}` : '系统')
   const auths = detail.authorizations || []
+  const items = detail.items || []
+  const target = detail.run.target_count || 0
+  const written = items.filter((it) => ['written', 'reviewed', 'published'].includes(it.status)).length
   const activeScopes = auths.filter((a) => a.status === 'active').map((a) => a.scope)
   const writeScope = (s: TaskBrief) => (s.action_class && s.action_class.startsWith('platform_write:') ? s.action_class.slice('platform_write:'.length) : '')
   const awaitingAuth = (s: TaskBrief) => {
@@ -157,6 +160,34 @@ export function RunDetailPage() {
 
         <div style={{ height: 14 }} />
 
+        {(items.length > 0 || target > 0) && (
+          <>
+            <SectionCard title="条目" subtitle={target > 0 ? `目标 ${target} 条 · 已写成 ${written} 条 · 缺口 ${Math.max(0, target - written)} 条` : `已写成 ${written} 条`}>
+              {items.length === 0 ? (
+                <span className="t3 sm">还没有登记条目。</span>
+              ) : (
+                <div className="col gap6">
+                  {items.map((it) => {
+                    const m = ITEM_STATUS[it.status] || { label: it.status, tone: 'gray' as Tone }
+                    const tn = TONES[m.tone]
+                    return (
+                      <div key={it.item_key} className="row gap10 sm" style={{ alignItems: 'baseline' }}>
+                        <span style={{ fontSize: 11.5, fontWeight: 600, color: tn.c, background: tn.bg, border: `1px solid ${tn.bd}`, borderRadius: 999, padding: '1px 8px', minWidth: 56, textAlign: 'center' }}>
+                          {m.label}
+                        </span>
+                        <span className="b">{it.title || it.item_key}</span>
+                        <span className="t3 mono xs">{it.item_key}</span>
+                        {it.decision_source && <span className="t2 xs">{it.decision_source}</span>}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </SectionCard>
+            <div style={{ height: 14 }} />
+          </>
+        )}
+
         <SectionCard title="进度" subtitle={`${passedCount} / ${tasks.length} 阶段已完成`}>
           <div className="row gap8 wrap">
             {tasks.map((s) => {
@@ -206,6 +237,7 @@ export function RunDetailPage() {
                             </span>
                             <span className="t3 sm">{roleName(s.role_code)}</span>
                             {s.is_merge && <span className="t3 xs">· 合流</span>}
+                            {s.item_key && <span className="t3 mono xs">· {s.item_key}</span>}
                             {writeScope(s) && <span className="t3 xs">· 平台写 · {SCOPE_LABEL[writeScope(s)] || writeScope(s)}</span>}
                             {awaitingAuth(s) && <span style={{ color: 'var(--amber)', fontSize: 11.5, fontWeight: 600 }}>等待授权</span>}
                             {s.rework_pending && <span style={{ color: 'var(--amber)', fontSize: 11.5, fontWeight: 600 }}>补件待返工</span>}

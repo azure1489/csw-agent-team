@@ -78,6 +78,7 @@ type Gate struct {
 
 // Run 工作流实例（一次批次）。
 type Run struct {
+	TargetCount int // 整期目标条数（0=不设）
 	Subject     string
 	Title       string
 	Status      RunStatus
@@ -99,6 +100,7 @@ type Task struct {
 	ActionClass       string       // 快照：read | platform_write:<scope>
 	DispatchMode      DispatchMode // 快照：触发时解析的派工模式；空=旧任务，回退工作流级
 	ItemKey           string       // 条目键；非条目级任务为空串
+	WaitItemStages    string       // 快照：要等哪些逐条阶段的条目任务（CSV）；空=不等条目
 	FailReason        string       // 执行者报告失败的原因
 	DueAt             string       // 派工（或退回）时按 sla 写入
 	DispatchedAt      string
@@ -242,6 +244,24 @@ type Outbox struct {
 	ID            int64
 	EventID       int64
 	Attempts      int
+}
+
+// RunItem 一期里的一条候选资讯（条目级推进）。
+type RunItem struct {
+	ItemKey        string
+	Title          string
+	Brand          string
+	Product        string
+	SourceURL      string
+	PublishedAt    string
+	Status         ItemStatus
+	DecidedAt      string
+	DecisionSource string // Van 原话
+	CreatedAt      string
+	UpdatedAt      string
+	DecidedBy      *int64
+	ID             int64
+	RunID          int64
 }
 
 // Event 进度事件。

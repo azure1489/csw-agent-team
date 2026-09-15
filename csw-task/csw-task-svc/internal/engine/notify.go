@@ -93,6 +93,9 @@ func (e *Engine) stagePassed(ctx context.Context, q *sqlite.Queries, task domain
 		&notice{target: wf.HubRoleCode, hub: wf.HubRoleCode, payload: taskPayload(task, map[string]any{"version": version, "next_stages": next})}); err != nil {
 		return err
 	}
+	if err := markItemWritten(ctx, q, task.RunID, task.ItemKey); err != nil {
+		return err
+	}
 	return e.recomputeReady(ctx, q, task.RunID, wf)
 }
 

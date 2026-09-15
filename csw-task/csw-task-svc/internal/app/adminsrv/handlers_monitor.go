@@ -88,13 +88,22 @@ func (s *Server) handleRunDetail(c *gin.Context) {
 			"expires_at": a.ExpiresAt, "revoked_at": a.RevokedAt, "status": st,
 		})
 	}
+	items, _ := s.store.Q().ListItems(ctx, id)
+	is := make([]gin.H, 0, len(items))
+	for _, it := range items {
+		is = append(is, gin.H{
+			"item_key": it.ItemKey, "title": it.Title, "brand": it.Brand, "status": string(it.Status),
+			"decided_at": it.DecidedAt, "decision_source": it.DecisionSource,
+		})
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"run": gin.H{
 			"id": run.ID, "workflow_id": run.WorkflowID, "workflow_ver": run.WorkflowVer,
-			"subject": run.Subject, "title": run.Title, "status": string(run.Status),
+			"subject": run.Subject, "title": run.Title, "status": string(run.Status), "target_count": run.TargetCount,
 		},
 		"tasks":          ts,
 		"authorizations": as,
+		"items":          is,
 	})
 }
 

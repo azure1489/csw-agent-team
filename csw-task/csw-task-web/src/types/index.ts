@@ -233,10 +233,20 @@ export interface RunAuthorization {
   status: string // active | revoked | expired
 }
 
+export interface RunItem {
+  item_key: string
+  title: string
+  brand?: string
+  status: string // candidate | shortlisted | approved_write | approved_research | deferred | rejected | written | reviewed | published
+  decided_at?: string
+  decision_source?: string
+}
+
 export interface RunDetail {
-  run: RunMeta
+  run: RunMeta & { target_count?: number }
   tasks: TaskBrief[]
   authorizations?: RunAuthorization[]
+  items?: RunItem[]
 }
 
 export interface TimelineEvent {
