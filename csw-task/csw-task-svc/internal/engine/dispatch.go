@@ -101,7 +101,8 @@ func (e *Engine) dispatchInternal(ctx context.Context, q *sqlite.Queries, task d
 			return domain.Deliverable{}, err
 		}
 	}
-	if err := q.InsertEvent(ctx, domain.Event{RunID: &task.RunID, TaskID: &task.ID, DeliverableID: &id, ActorID: producerID, Type: domain.EvtDispatched}); err != nil {
+	if err := emit(ctx, q, domain.Event{RunID: &task.RunID, TaskID: &task.ID, DeliverableID: &id, ActorID: producerID, Type: domain.EvtDispatched},
+		&notice{target: task.RoleCode, hub: wf.HubRoleCode, payload: taskPayload(task, map[string]any{"note": editorNote, "sla_minutes": task.SLAMinutes})}); err != nil {
 		return domain.Deliverable{}, err
 	}
 	return q.GetDeliverable(ctx, id)

@@ -95,6 +95,7 @@ func (e *Engine) submitSupplement(ctx context.Context, agent domain.Agent, taskI
 			return err
 		}
 		rework := []int64{}
+		var reworkNames, reworkRoles []string
 		for _, t := range downs {
 			switch t.Status {
 			case domain.TaskDispatched, domain.TaskInProgress, domain.TaskReview, domain.TaskReturned:
@@ -102,12 +103,17 @@ func (e *Engine) submitSupplement(ctx context.Context, agent domain.Agent, taskI
 					return err
 				}
 				rework = append(rework, t.ID)
+				reworkNames = append(reworkNames, t.StageName)
+				reworkRoles = append(reworkRoles, t.RoleCode)
 			}
 		}
-		if err := q.InsertEvent(ctx, domain.Event{RunID: &task.RunID, TaskID: &taskID, DeliverableID: &id, ActorID: &producer,
+		if err := emit(ctx, q, domain.Event{RunID: &task.RunID, TaskID: &taskID, DeliverableID: &id, ActorID: &producer,
 			Type: domain.EvtSupplementArrived, DetailJSON: evtDetail(map[string]any{
 				"affects_deliverable_id": *in.AffectsID, "version": ver + 1, "rework_task_ids": rework,
-			})}); err != nil {
+			})}, &notice{target: wf.HubRoleCode, hub: wf.HubRoleCode, cc: reworkRoles, payload: taskPayload(task, map[string]any{
+			"version": ver + 1, "affects_deliverable_id": *in.AffectsID, "download_url": in.DownloadURL,
+			"summary": in.Summary, "rework_stages": reworkNames,
+		})}); err != nil {
 			return err
 		}
 		out, err = q.GetDeliverable(ctx, id)
@@ -230,8 +236,16 @@ func (e *Engine) submitEdit(ctx context.Context, agent domain.Agent, taskID int6
 			DetailJSON: evtDetail(map[string]any{"kind": string(domain.KindEdit), "edit_of": *in.EditOf, "diff_summary": diff})}); err != nil {
 			return err
 		}
-		if err := q.InsertEvent(ctx, domain.Event{RunID: &task.RunID, TaskID: &taskID, DeliverableID: &id, ActorID: &producer, Type: domain.EvtGatePassed,
-			DetailJSON: evtDetail(map[string]any{"gate": nextGate, "gate_name": tg.Name, "edit": true, "final": final})}); err != nil {
+		var gn *notice // 未到末闸：通知下一道闸（通常是 Van 闸）审编辑版本
+		if !final {
+			ng, err := q.TaskGateByOrder(ctx, taskID, nextGate+1)
+			if err != nil {
+				return err
+			}
+			gn = reviewNotice(task, wf.HubRoleCode, ng, ver, id, in.DownloadURL, map[string]any{"passed_gate_name": tg.Name, "edit": true, "diff_summary": diff})
+		}
+		if err := emit(ctx, q, domain.Event{RunID: &task.RunID, TaskID: &taskID, DeliverableID: &id, ActorID: &producer, Type: domain.EvtGatePassed,
+			DetailJSON: evtDetail(map[string]any{"gate": nextGate, "gate_name": tg.Name, "edit": true, "final": final})}, gn); err != nil {
 			return err
 		}
 		if err := q.TouchTaskActivity(ctx, taskID); err != nil {
@@ -241,10 +255,7 @@ func (e *Engine) submitEdit(ctx context.Context, agent domain.Agent, taskID int6
 			if err := q.SetTaskPassed(ctx, taskID, ver); err != nil {
 				return err
 			}
-			if err := q.InsertEvent(ctx, domain.Event{RunID: &task.RunID, TaskID: &taskID, Type: domain.EvtStagePassed}); err != nil {
-				return err
-			}
-			if err := e.recomputeReady(ctx, q, task.RunID, wf); err != nil {
+			if err := e.stagePassed(ctx, q, task, wf, ver); err != nil {
 				return err
 			}
 		} else if err := q.SetTaskReview(ctx, taskID, ver); err != nil {

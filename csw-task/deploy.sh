@@ -7,7 +7,8 @@
 # 做什么：
 #   1. 本机构建：server/adminsrv/adminctl（linux/amd64 静态）+ 前端 dist（VITE_API_BASE=https://<domain>）
 #   2. 上传：二进制 → /opt/csw-task/bin（停服替换）；dist → nginx 容器挂载的 html/csw-task-web
-#   3. 远端配置（幂等）：迁移、两个 systemd 服务、adminsrv 的 JWT secret（仅首次生成）、
+#   3. 远端配置（幂等）：迁移前自动备份数据库、迁移、两个 systemd 服务、adminsrv 的 JWT secret（仅首次生成）、
+#      server.env（notifier 开关与飞书凭证占位，仅首次生成，默认关闭）、
 #      superadmin 引导（仅首次，随机密码打印一次）、nginx 反代（/ 前端、/admin→8081、/api/v1→8080）
 #   4. 验证：healthz / 前端 200 / adminsrv 401（未登录即活着）
 #
@@ -53,6 +54,18 @@ systemctl stop csw-task csw-task-admin 2>/dev/null || true
 mv -f upload/server upload/adminsrv upload/adminctl bin/ && chmod +x bin/*
 
 export CSW_CONFIG=/opt/csw-task/config.yaml CSW_DATA_DIR=/opt/csw-task/data
+
+# 迁移前备份（服务已停；含表重建的迁移出问题时可整库回退）
+if [ -f data/csw-task.db ]; then
+  mkdir -p data/backup
+  BK="data/backup/csw-task.$(date +%Y%m%d%H%M%S).db"
+  if command -v sqlite3 >/dev/null 2>&1; then
+    sqlite3 data/csw-task.db ".backup '$BK'"
+  else
+    cp data/csw-task.db "$BK"; for x in wal shm; do [ -f "data/csw-task.db-$x" ] && cp "data/csw-task.db-$x" "$BK-$x"; done
+  fi
+  echo "   迁移前备份：$BK"
+fi
 ./bin/adminctl migrate up 2>&1 | tail -1
 
 # adminsrv 的 secret/env：仅首次生成（重生成会踢掉全部后台登录态）
@@ -63,6 +76,17 @@ if [ ! -f adminsrv.env ]; then
     echo "CSW_COOKIE_SECURE=true"; } > adminsrv.env
   chmod 600 adminsrv.env
   echo "   adminsrv.env 已生成（JWT secret 固化）"
+fi
+
+# server 的 notifier 开关与飞书凭证：仅首次生成占位（默认关闭）。填入主编 bot 的 app_id / app_secret 后，
+# 先 CSW_NOTIFIER_DRY_RUN=true 演练一轮看日志，再改 CSW_NOTIFIER_ENABLED=true 并重启 csw-task。
+if [ ! -f server.env ]; then
+  { echo "CSW_NOTIFIER_ENABLED=false";
+    echo "CSW_NOTIFIER_DRY_RUN=true";
+    echo "CSW_LARK_APP_ID=";
+    echo "CSW_LARK_APP_SECRET="; } > server.env
+  chmod 600 server.env
+  echo "   server.env 已生成（notifier 默认关闭，飞书凭证待填）"
 fi
 
 # 首个 superadmin：仅当不存在时创建，随机密码只打印这一次
@@ -83,9 +107,11 @@ Environment=CSW_DATA_DIR=/opt/csw-task/data
 Environment=CSW_ADDR=:8080
 Environment=CSW_BASE_URL=https://$DOMAIN
 Environment=CSW_OSS_PREFIX=csw
+EnvironmentFile=-/opt/csw-task/server.env
 ExecStart=/opt/csw-task/bin/server
 Restart=always
 RestartSec=3
+TimeoutStopSec=15
 [Install]
 WantedBy=multi-user.target
 UNIT

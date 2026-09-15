@@ -44,6 +44,19 @@ type Config struct {
 	OSSAccessKeyID     string
 	OSSAccessKeySecret string
 	OSSPrefix          string // 对象 key 前缀，默认 "blobs"
+
+	// ── 事件通知（notifier：引擎直连飞书 Open API，单写编辑部群播报）──
+	NotifierEnabled bool          // 默认 false；true 时 server 进程内起 notifier
+	NotifierDryRun  bool          // 只渲染并写日志、不真正发送（上线前演练）
+	NotifierChatKey string        // 目标群 chat_id（空=花名册第一个群）
+	NotifierPoll    time.Duration // outbox 轮询间隔
+	OverdueScan     time.Duration // 逾期扫描间隔
+	LarkAppID       string        // 飞书应用 app_id（首期复用主编 bot）
+	LarkAppSecret   string        // 飞书应用 app_secret
+	LarkBaseURL     string        // 飞书 Open API 根地址
+
+	// SkillMinVersion agent 侧 csw-task skill 的最低版本；task / my-tasks 响应回显，低于则不开工。
+	SkillMinVersion string
 }
 
 // Load 加载配置：先把 config.yaml 的值注入未设置的环境变量，再按 env（含注入值）读取。
@@ -70,6 +83,16 @@ func Load() Config {
 		OSSAccessKeyID:     env("CSW_OSS_ACCESS_KEY_ID", ""),
 		OSSAccessKeySecret: env("CSW_OSS_ACCESS_KEY_SECRET", ""),
 		OSSPrefix:          env("CSW_OSS_PREFIX", "blobs"),
+
+		NotifierEnabled: envBool("CSW_NOTIFIER_ENABLED", false),
+		NotifierDryRun:  envBool("CSW_NOTIFIER_DRY_RUN", false),
+		NotifierChatKey: env("CSW_NOTIFIER_CHAT_KEY", ""),
+		NotifierPoll:    envDuration("CSW_NOTIFIER_POLL", 2*time.Second),
+		OverdueScan:     envDuration("CSW_OVERDUE_SCAN", 60*time.Second),
+		LarkAppID:       env("CSW_LARK_APP_ID", ""),
+		LarkAppSecret:   env("CSW_LARK_APP_SECRET", ""),
+		LarkBaseURL:     strings.TrimRight(env("CSW_LARK_BASE_URL", "https://open.feishu.cn"), "/"),
+		SkillMinVersion: env("CSW_SKILL_MIN_VERSION", "3.0.0"),
 	}
 	cfg.AllowedContentTypes = parseSet(env("CSW_ALLOWED_CONTENT_TYPES",
 		"application/zip,application/x-zip-compressed,application/octet-stream"))
@@ -95,7 +118,20 @@ type fileConfig struct {
 		BaseURL             string   `yaml:"base_url"`
 		MaxUploadBytes      int64    `yaml:"max_upload_bytes"`
 		AllowedContentTypes []string `yaml:"allowed_content_types"`
+		SkillMinVersion     string   `yaml:"skill_min_version"`
 	} `yaml:"server"`
+	Notifier struct {
+		Enabled     *bool  `yaml:"enabled"`
+		DryRun      *bool  `yaml:"dry_run"`
+		ChatKey     string `yaml:"chat_key"`
+		Poll        string `yaml:"poll"`
+		OverdueScan string `yaml:"overdue_scan"`
+	} `yaml:"notifier"`
+	Lark struct {
+		AppID     string `yaml:"app_id"`
+		AppSecret string `yaml:"app_secret"`
+		BaseURL   string `yaml:"base_url"`
+	} `yaml:"lark"`
 	Admin struct {
 		Addr          string   `yaml:"addr"`
 		JWTSecret     string   `yaml:"jwt_secret"`
@@ -158,6 +194,19 @@ func applyConfigFile() {
 	setIfUnset("CSW_OSS_ACCESS_KEY_ID", fc.Storage.OSS.AccessKeyID)
 	setIfUnset("CSW_OSS_ACCESS_KEY_SECRET", fc.Storage.OSS.AccessKeySecret)
 	setIfUnset("CSW_OSS_PREFIX", fc.Storage.OSS.Prefix)
+	setIfUnset("CSW_SKILL_MIN_VERSION", fc.Server.SkillMinVersion)
+	if fc.Notifier.Enabled != nil {
+		setIfUnset("CSW_NOTIFIER_ENABLED", strconv.FormatBool(*fc.Notifier.Enabled))
+	}
+	if fc.Notifier.DryRun != nil {
+		setIfUnset("CSW_NOTIFIER_DRY_RUN", strconv.FormatBool(*fc.Notifier.DryRun))
+	}
+	setIfUnset("CSW_NOTIFIER_CHAT_KEY", fc.Notifier.ChatKey)
+	setIfUnset("CSW_NOTIFIER_POLL", fc.Notifier.Poll)
+	setIfUnset("CSW_OVERDUE_SCAN", fc.Notifier.OverdueScan)
+	setIfUnset("CSW_LARK_APP_ID", fc.Lark.AppID)
+	setIfUnset("CSW_LARK_APP_SECRET", fc.Lark.AppSecret)
+	setIfUnset("CSW_LARK_BASE_URL", fc.Lark.BaseURL)
 }
 
 func setIfUnset(key, val string) {

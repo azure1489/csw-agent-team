@@ -312,11 +312,19 @@ func (q *Queries) ListOverdueTasks(ctx context.Context) ([]domain.Task, error) {
 	return out, rows.Err()
 }
 
-// MarkOverdueNotified 记已提醒逾期（同一次逾期只提醒一次）。
-func (q *Queries) MarkOverdueNotified(ctx context.Context, id int64) error {
-	_, err := q.ex.ExecContext(ctx,
-		`UPDATE tasks SET overdue_notified_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?`, id)
-	return err
+// MarkOverdueNotified 条件标记「已提醒逾期」：仍在执行中、已逾期且尚未提醒时才标，返回是否本次标上。
+// 同一次逾期只提醒一次；并发扫描时只有一方拿到。
+func (q *Queries) MarkOverdueNotified(ctx context.Context, id int64) (bool, error) {
+	res, err := q.ex.ExecContext(ctx, `
+		UPDATE tasks SET overdue_notified_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE id=? AND overdue_notified_at IS NULL AND due_at IS NOT NULL
+		  AND due_at <= strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		  AND status IN ('dispatched','in_progress','returned')`, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 // ListDirectDownstream 列直接依赖某任务的下游任务。

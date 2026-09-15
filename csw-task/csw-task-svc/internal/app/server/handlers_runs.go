@@ -169,3 +169,18 @@ func (s *Server) handleTimeline(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"events": out})
 }
+
+// GET /runs/:id/progress —— 进度投影：每个任务的真实阻塞项、下一步、最近产出、逾期；run 级授权与当前节点
+func (s *Server) handleProgress(c *gin.Context) {
+	id, err := pathID(c, "id")
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	p, err := s.eng.Progress(c.Request.Context(), id)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, p)
+}

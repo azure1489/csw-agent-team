@@ -23,17 +23,23 @@ func (e *Engine) onTaskReady(ctx context.Context, q *sqlite.Queries, task domain
 	if err := q.SetTaskReady(ctx, task.ID); err != nil {
 		return err
 	}
-	if err := q.InsertEvent(ctx, domain.Event{RunID: &task.RunID, TaskID: &task.ID, Type: domain.EvtTaskReady}); err != nil {
+	auto := effectiveDispatchMode(task, wf) == domain.DispatchAuto || task.IsMerge
+	var rn *notice // 手动派工阶段：通知中枢「待派工」；自动派工由随后的 dispatched 通知执行者
+	if !auto {
+		rn = &notice{target: wf.HubRoleCode, hub: wf.HubRoleCode, payload: taskPayload(task, nil)}
+	}
+	if err := emit(ctx, q, domain.Event{RunID: &task.RunID, TaskID: &task.ID, Type: domain.EvtTaskReady}, rn); err != nil {
 		return err
 	}
-	if effectiveDispatchMode(task, wf) == domain.DispatchAuto || task.IsMerge {
+	if auto {
 		ok, scope, err := authorized(ctx, q, task)
 		if err != nil {
 			return err
 		}
 		if !ok {
-			return q.InsertEvent(ctx, domain.Event{RunID: &task.RunID, TaskID: &task.ID, Type: domain.EvtAuthorizationRequired,
-				DetailJSON: evtDetail(map[string]any{"scope": string(scope)})})
+			return emit(ctx, q, domain.Event{RunID: &task.RunID, TaskID: &task.ID, Type: domain.EvtAuthorizationRequired,
+				DetailJSON: evtDetail(map[string]any{"scope": string(scope)})},
+				&notice{target: wf.HubRoleCode, hub: wf.HubRoleCode, payload: taskPayload(task, map[string]any{"scope": string(scope)})})
 		}
 		producer := resolveAssignee(ctx, q, wf.HubRoleCode)
 		if _, err := e.dispatchInternal(ctx, q, task, wf, "", nil, producer); err != nil {

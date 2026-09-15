@@ -202,8 +202,8 @@ func TestDueAtFromSLA(t *testing.T) {
 	if len(od) != 1 || od[0].ID != a.ID {
 		t.Fatalf("want a overdue, got %+v", od)
 	}
-	if err := st.Q().MarkOverdueNotified(ctx, a.ID); err != nil {
-		t.Fatal(err)
+	if ok, err := st.Q().MarkOverdueNotified(ctx, a.ID); err != nil || !ok {
+		t.Fatalf("mark overdue: ok=%v err=%v", ok, err)
 	}
 	if od, _ := st.Q().ListOverdueTasks(ctx); len(od) != 0 {
 		t.Fatalf("overdue should be notified once, got %d", len(od))

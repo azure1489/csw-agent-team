@@ -17,12 +17,16 @@ import (
 
 // Server 运行面服务依赖。
 type Server struct {
-	store *sqlite.Store
-	eng   *engine.Engine
-	blobs files.BlobStore
-	cfg   config.Config
-	log   *slog.Logger
+	store  *sqlite.Store
+	eng    *engine.Engine
+	blobs  files.BlobStore
+	log    *slog.Logger
+	health func() map[string]any // /healthz 附加字段（notifier 状态、outbox 积压）
+	cfg    config.Config
 }
+
+// SetHealth 注入 /healthz 附加字段。
+func (s *Server) SetHealth(fn func() map[string]any) { s.health = fn }
 
 // New 构造 Server。
 func New(store *sqlite.Store, eng *engine.Engine, blobs files.BlobStore, cfg config.Config, log *slog.Logger) *Server {
@@ -35,7 +39,15 @@ func (s *Server) Router() *gin.Engine {
 	r := gin.New()
 	r.Use(middleware.RequestID(), middleware.Logger(s.log), middleware.Recovery(s.log))
 
-	r.GET("/healthz", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
+	r.GET("/healthz", func(c *gin.Context) {
+		h := gin.H{"status": "ok"}
+		if s.health != nil {
+			for k, v := range s.health() {
+				h[k] = v
+			}
+		}
+		c.JSON(200, h)
+	})
 
 	v1 := r.Group("/api/v1")
 	v1.Use(middleware.AgentAuth(s.store), middleware.Idempotency(s.store, s.cfg.MaxUploadBytes+(1<<20)))
@@ -46,6 +58,7 @@ func (s *Server) Router() *gin.Engine {
 		v1.GET("/runs/:id", s.handleRunDetail)
 		v1.GET("/runs/:id/timeline", s.handleTimeline)
 		v1.GET("/runs/:id/authorizations", s.handleListAuthorizations)
+		v1.GET("/runs/:id/progress", s.handleProgress)
 		v1.POST("/files", s.handleUpload)
 		v1.GET("/files/:id", s.handleDownload)
 		v1.POST("/tasks/:id/deliverables", s.handleSubmit)

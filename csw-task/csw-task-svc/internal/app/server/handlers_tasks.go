@@ -32,7 +32,7 @@ func (s *Server) handleMyTasks(c *gin.Context) {
 		}
 		out = append(out, gin.H{"task": toTaskDTO(t), "run_subject": subj})
 	}
-	c.JSON(http.StatusOK, gin.H{"tasks": out})
+	c.JSON(http.StatusOK, gin.H{"tasks": out, "skill_min_version": s.cfg.SkillMinVersion})
 }
 
 // GET /tasks/:id —— 作业手册 + 自检标准 + 验收标准 + 派工单 + 各版本产出 + 闸进度
@@ -96,6 +96,7 @@ func (s *Server) handleTaskDetail(c *gin.Context) {
 		"dispatch":            latestDispatch,
 		"deliverables":        produced,
 		"supplements":         supplements,
+		"skill_min_version":   s.cfg.SkillMinVersion,
 	})
 }
 

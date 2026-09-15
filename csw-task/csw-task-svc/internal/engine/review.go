@@ -185,10 +185,7 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 				if err := q.InsertEvent(ctx, domain.Event{RunID: &run.ID, TaskID: &task.ID, DeliverableID: &deliverableID, ActorID: &reviewerID, Type: domain.EvtGatePassed, DetailJSON: passDetail}); err != nil {
 					return err
 				}
-				if err := q.InsertEvent(ctx, domain.Event{RunID: &run.ID, TaskID: &task.ID, Type: domain.EvtStagePassed}); err != nil {
-					return err
-				}
-				if err := e.recomputeReady(ctx, q, run.ID, wf); err != nil {
+				if err := e.stagePassed(ctx, q, task, wf, d.Version); err != nil {
 					return err
 				}
 				res.Final = true
@@ -196,7 +193,12 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 				if err := q.SetDeliverableGate(ctx, deliverableID, nextGate, domain.DelInReview, nil); err != nil {
 					return err
 				}
-				if err := q.InsertEvent(ctx, domain.Event{RunID: &run.ID, TaskID: &task.ID, DeliverableID: &deliverableID, ActorID: &reviewerID, Type: domain.EvtGatePassed, DetailJSON: passDetail}); err != nil {
+				ng, err := q.TaskGateByOrder(ctx, task.ID, nextGate+1)
+				if err != nil {
+					return err
+				}
+				if err := emit(ctx, q, domain.Event{RunID: &run.ID, TaskID: &task.ID, DeliverableID: &deliverableID, ActorID: &reviewerID, Type: domain.EvtGatePassed, DetailJSON: passDetail},
+					reviewNotice(task, wf.HubRoleCode, ng, d.Version, deliverableID, d.DownloadURL, map[string]any{"passed_gate_name": tg.Name})); err != nil {
 					return err
 				}
 			}
@@ -220,7 +222,11 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 				"gate": nextGate, "gate_name": tg.Name,
 				"return_direction": in.ReturnDirection, "return_location": in.ReturnLocation, "comment": in.Comment,
 			}, in, quote))
-			if err := q.InsertEvent(ctx, domain.Event{RunID: &run.ID, TaskID: &task.ID, DeliverableID: &deliverableID, ActorID: &reviewerID, Type: domain.EvtGateReturned, DetailJSON: rejDetail}); err != nil {
+			if err := emit(ctx, q, domain.Event{RunID: &run.ID, TaskID: &task.ID, DeliverableID: &deliverableID, ActorID: &reviewerID, Type: domain.EvtGateReturned, DetailJSON: rejDetail},
+				&notice{target: task.RoleCode, hub: wf.HubRoleCode, cc: []string{wf.HubRoleCode}, payload: taskPayload(task, map[string]any{
+					"version": d.Version, "gate_name": tg.Name, "return_direction": in.ReturnDirection,
+					"return_location": in.ReturnLocation, "comment": in.Comment,
+				})}); err != nil {
 				return err
 			}
 		}

@@ -225,6 +225,25 @@ type RunAuthorization struct {
 	RunID       int64
 }
 
+// Outbox 待发通知（事件接续）。TargetRole / CCRoles 由引擎按闸与角色推导，请求方不能指定。
+type Outbox struct {
+	EventType     string
+	Channel       string
+	TargetRole    string
+	CCRoles       string // CSV
+	PayloadJSON   string
+	Status        string // pending | sent | dead
+	LastError     string
+	ClaimedAt     string
+	CreatedAt     string
+	RunID         *int64
+	TaskID        *int64
+	DeliverableID *int64
+	ID            int64
+	EventID       int64
+	Attempts      int
+}
+
 // Event 进度事件。
 type Event struct {
 	Type          string

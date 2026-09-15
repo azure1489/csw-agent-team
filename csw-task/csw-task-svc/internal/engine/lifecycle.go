@@ -86,8 +86,13 @@ func (e *Engine) Fail(ctx context.Context, agent domain.Agent, taskID int64, rea
 		if err := q.SetTaskFailed(ctx, taskID, reason); err != nil {
 			return err
 		}
-		if err := q.InsertEvent(ctx, domain.Event{RunID: &task.RunID, TaskID: &taskID, ActorID: &agent.ID, Type: domain.EvtTaskFailed,
-			DetailJSON: evtDetail(map[string]any{"reason": reason})}); err != nil {
+		wf, err := taskWorkflow(ctx, q, task)
+		if err != nil {
+			return err
+		}
+		if err := emit(ctx, q, domain.Event{RunID: &task.RunID, TaskID: &taskID, ActorID: &agent.ID, Type: domain.EvtTaskFailed,
+			DetailJSON: evtDetail(map[string]any{"reason": reason})},
+			&notice{target: wf.HubRoleCode, hub: wf.HubRoleCode, payload: taskPayload(task, map[string]any{"reason": reason})}); err != nil {
 			return err
 		}
 		out, err = q.GetTask(ctx, taskID)

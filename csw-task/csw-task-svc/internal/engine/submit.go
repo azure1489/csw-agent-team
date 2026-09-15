@@ -101,7 +101,19 @@ func (e *Engine) Submit(ctx context.Context, agent domain.Agent, taskID int64, i
 				return err
 			}
 		}
-		if err := q.InsertEvent(ctx, domain.Event{RunID: &task.RunID, TaskID: &taskID, DeliverableID: &id, ActorID: &producer, Type: domain.EvtSubmitted}); err != nil {
+		gates, err := q.ListTaskGates(ctx, taskID)
+		if err != nil {
+			return err
+		}
+		wf, err := taskWorkflow(ctx, q, task)
+		if err != nil {
+			return err
+		}
+		var sn *notice // 0 闸：提交即通过，由 stage_passed 通知中枢
+		if len(gates) > 0 {
+			sn = reviewNotice(task, wf.HubRoleCode, gates[0], ver, id, in.DownloadURL, map[string]any{"self_check": in.SelfCheck})
+		}
+		if err := emit(ctx, q, domain.Event{RunID: &task.RunID, TaskID: &taskID, DeliverableID: &id, ActorID: &producer, Type: domain.EvtSubmitted}, sn); err != nil {
 			return err
 		}
 		// 有产出即有活动；清逾期提醒标记（退回后再逾期可再提醒一次）。
@@ -116,10 +128,6 @@ func (e *Engine) Submit(ctx context.Context, agent domain.Agent, taskID int64, i
 			return err
 		}
 
-		gates, err := q.ListTaskGates(ctx, taskID)
-		if err != nil {
-			return err
-		}
 		if len(gates) == 0 {
 			// 0 闸阶段：提交即 passed，触发下游就绪重算。
 			if err := q.SetDeliverableGate(ctx, id, 0, domain.DelPassed, nil); err != nil {
@@ -128,18 +136,7 @@ func (e *Engine) Submit(ctx context.Context, agent domain.Agent, taskID int64, i
 			if err := q.SetTaskPassed(ctx, taskID, ver); err != nil {
 				return err
 			}
-			if err := q.InsertEvent(ctx, domain.Event{RunID: &task.RunID, TaskID: &taskID, Type: domain.EvtStagePassed}); err != nil {
-				return err
-			}
-			run, err := q.GetRun(ctx, task.RunID)
-			if err != nil {
-				return err
-			}
-			wf, err := q.GetWorkflow(ctx, run.WorkflowID)
-			if err != nil {
-				return err
-			}
-			if err := e.recomputeReady(ctx, q, task.RunID, wf); err != nil {
+			if err := e.stagePassed(ctx, q, task, wf, ver); err != nil {
 				return err
 			}
 		} else if err := q.SetTaskReview(ctx, taskID, ver); err != nil {

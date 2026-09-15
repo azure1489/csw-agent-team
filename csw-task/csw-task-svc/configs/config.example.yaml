@@ -21,6 +21,19 @@ server:
     - application/zip
     - application/x-zip-compressed
     - application/octet-stream
+  skill_min_version: "3.0.0"        # CSW_SKILL_MIN_VERSION    agent 侧 csw-task skill 最低版本（task / my-tasks 响应回显）
+
+# ── 事件通知（server 进程内 notifier：引擎单写编辑部群播报，直连飞书 Open API）──
+notifier:
+  enabled: false                    # CSW_NOTIFIER_ENABLED     默认关闭；开启前先 dry_run 演练一轮
+  dry_run: false                    # CSW_NOTIFIER_DRY_RUN     true=只渲染并写日志、不真正发送
+  chat_key: ""                      # CSW_NOTIFIER_CHAT_KEY    目标群 chat_id（留空=花名册第一个群）
+  poll: 2s                          # CSW_NOTIFIER_POLL        outbox 轮询间隔
+  overdue_scan: 60s                 # CSW_OVERDUE_SCAN         逾期扫描间隔（逾期只提醒一次）
+lark:                               # 凭证勿提交：放 /opt/csw-task/server.env（deploy 生成，chmod 600）或 env
+  app_id: ""                        # CSW_LARK_APP_ID          首期复用主编 bot 的 app_id
+  app_secret: ""                    # CSW_LARK_APP_SECRET
+  base_url: https://open.feishu.cn  # CSW_LARK_BASE_URL
 
 # ── 管理后台 cmd/adminsrv（人类 JWT + CORS，默认 :8081）──
 admin:
