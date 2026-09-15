@@ -35,6 +35,11 @@ lark:                               # 凭证勿提交：放 /opt/csw-task/server
   app_secret: ""                    # CSW_LARK_APP_SECRET
   base_url: https://open.feishu.cn  # CSW_LARK_BASE_URL
 
+# ── 数据子系统（syncer：发布记录同步 / 指标快照；只由运维 CLI 使用）──
+#   平台读取走外部命令，约定见 docs/数据子系统_探针记录.md；命令可以是 ssh 到持有 mp-helper / opencli 登录态的主机执行。
+#   CSW_SYNC_WX_CMD="ssh agent-host /opt/csw-sync/wx.sh"    CSW_SYNC_XHS_CMD="ssh agent-host /opt/csw-sync/xhs.sh"
+#   CSW_SYNC_WX_ACCOUNT=营事编集室                          CSW_SYNC_XHS_ACCOUNT=CAMPsomeWHERE
+
 # ── 管理后台 cmd/adminsrv（人类 JWT + CORS，默认 :8081）──
 admin:
   addr: ":8081"                     # CSW_ADMIN_ADDR

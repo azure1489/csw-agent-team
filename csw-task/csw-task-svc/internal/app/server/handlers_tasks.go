@@ -96,6 +96,7 @@ func (s *Server) handleTaskDetail(c *gin.Context) {
 		"dispatch":            latestDispatch,
 		"deliverables":        produced,
 		"supplements":         supplements,
+		"feedback":            feedbackDTOs(taskFeedback(ctx, s, t)),
 		"skill_min_version":   s.cfg.SkillMinVersion,
 	})
 }

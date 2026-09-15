@@ -67,6 +67,11 @@ func (s *Server) Router() *gin.Engine {
 		v1.POST("/tasks/:id/ack", s.handleAck)
 		v1.POST("/tasks/:id/fail", s.handleFail)
 
+		// 数据子系统（只读查重 / 反馈记忆；写入反馈仅管理类角色）
+		v1.GET("/ledger/posts", s.handleLedgerPosts)
+		v1.GET("/memory/feedback", s.handleListFeedback)
+		v1.POST("/memory/feedback", s.handleCreateFeedback)
+
 		// 花名册（任意角色 token 可读，群播报查 open_id 用）
 		v1.GET("/roster", s.handleRoster)
 

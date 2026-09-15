@@ -1,6 +1,6 @@
 ---
 name: csw-task
-version: 3.1.0
+version: 3.2.0
 description: 营事编集室「任务流转服务」客户端 + 编辑部协作协议（v3：十三阶段、引擎单写群播报）。当 agent 需要在工作流里干活时使用：被群消息 @ 唤醒后查任务、接单、下载上游、干活并一步提交产出或补件；（主编）触发实例、派工、审核、定点编辑、录入授权、代录 Van 决定、取消与重开。封装运行面 HTTP API（bearer 鉴权 / 幂等 / 一步式上传提交），agent 不自己拼 HTTP。触发词：触发流程、开批次、我的任务、接单、提交产出、补件、派工、审核、退回、定点编辑、授权、任务进度、编辑部群、CSW 任务流转。
 ---
 
@@ -51,6 +51,8 @@ description: 营事编集室「任务流转服务」客户端 + 编辑部协作�
 | items | 参与角色 / 主编 | `GET /api/v1/runs/{id}/items` · `PUT /api/v1/runs/{id}/items` `{items:[{item_key,title,brand?,product?,source_url?,published_at?,status?}]}`（登记只能写 candidate / shortlisted） |
 | decide | 主编 | `POST /api/v1/runs/{id}/items/{item_key}/decision` `{decision, source_quote}`（approve_write / approve_research / defer / reject） |
 | close | 主编 | `POST /api/v1/runs/{id}/close` `{reason}`（接受整期缺口结束 run） |
+| ledger | 各 agent | `GET /api/v1/ledger/posts?since=30d&brand=&q=`（发布记录查重，含合集拆条；`verdict=not_found_in_synced_records` 只表示已同步记录里没有，**不是**「从未发布」） |
+| feedback | 各 agent / 主编 | `GET /api/v1/memory/feedback?tags=brand:nanga,stage:topic`（有效编辑反馈）· `POST …`（主编录入原话）；`task <id>` 已随附与本阶段、本条目相关的至多 5 条 |
 | roster | 各 agent | `GET /api/v1/roster` |
 
 > 没有「建 / 改工作流」动作——定义只经管理后台或 `csw-workflow` skill（wfctl），本 skill 不碰。

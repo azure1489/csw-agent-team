@@ -57,6 +57,12 @@ type Config struct {
 
 	// SkillMinVersion agent 侧 csw-task skill 的最低版本；task / my-tasks 响应回显，低于则不开工。
 	SkillMinVersion string
+
+	// ── 数据子系统（syncer）：平台读取走外部命令（包 mp-helper / opencli，可以是 ssh 到持有登录态的主机执行）──
+	SyncWxCmd      string
+	SyncXhsCmd     string
+	SyncWxAccount  string
+	SyncXhsAccount string
 }
 
 // Load 加载配置：先把 config.yaml 的值注入未设置的环境变量，再按 env（含注入值）读取。
@@ -93,6 +99,10 @@ func Load() Config {
 		LarkAppSecret:   env("CSW_LARK_APP_SECRET", ""),
 		LarkBaseURL:     strings.TrimRight(env("CSW_LARK_BASE_URL", "https://open.feishu.cn"), "/"),
 		SkillMinVersion: env("CSW_SKILL_MIN_VERSION", "3.1.0"),
+		SyncWxCmd:       env("CSW_SYNC_WX_CMD", ""),
+		SyncXhsCmd:      env("CSW_SYNC_XHS_CMD", ""),
+		SyncWxAccount:   env("CSW_SYNC_WX_ACCOUNT", "营事编集室"),
+		SyncXhsAccount:  env("CSW_SYNC_XHS_ACCOUNT", "CAMPsomeWHERE"),
 	}
 	cfg.AllowedContentTypes = parseSet(env("CSW_ALLOWED_CONTENT_TYPES",
 		"application/zip,application/x-zip-compressed,application/octet-stream"))

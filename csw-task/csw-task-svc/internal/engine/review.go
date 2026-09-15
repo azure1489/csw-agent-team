@@ -150,7 +150,7 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 		}
 
 		reviewerID := actor.ID
-		if _, err := q.InsertReview(ctx, domain.Review{
+		reviewID, err := q.InsertReview(ctx, domain.Review{
 			DeliverableID:   deliverableID,
 			TaskGateID:      tg.ID,
 			ReviewerID:      &reviewerID,
@@ -162,7 +162,12 @@ func (e *Engine) Review(ctx context.Context, actor domain.Agent, role domain.Rol
 			SourceQuote:     quote,
 			ItemsJSON:       in.ItemsJSON,
 			ExpectedVersion: in.ExpectedVersion,
-		}); err != nil {
+		})
+		if err != nil {
+			return err
+		}
+		// 带原话的审核沉淀为编辑反馈记忆（审核决定的一部分，失败即整体回滚）。
+		if err := recordReviewFeedback(ctx, q, run, task, reviewID, in, quote); err != nil {
 			return err
 		}
 

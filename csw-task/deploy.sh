@@ -31,12 +31,13 @@ log "1/5 本机构建（go ×3 + 前端 dist）"
 (cd "$SVC" &&
   GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$STAGE/server"   ./cmd/server &&
   GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$STAGE/adminsrv" ./cmd/adminsrv &&
-  GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$STAGE/adminctl" ./cmd/adminctl)
+  GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$STAGE/adminctl" ./cmd/adminctl &&
+  GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$STAGE/syncer"   ./cmd/syncer)
 (cd "$WEB" && VITE_API_BASE="https://$DOMAIN" pnpm build | tail -2)
 
 log "2/5 上传（二进制 → upload 暂存；dist/roster 直达；config.yaml 仅远端缺失时）"
 ssh "$HOST" 'mkdir -p /opt/csw-task/bin /opt/csw-task/data /opt/csw-task/upload'
-scp -q "$STAGE/server" "$STAGE/adminsrv" "$STAGE/adminctl" "$HOST":/opt/csw-task/upload/
+scp -q "$STAGE/server" "$STAGE/adminsrv" "$STAGE/adminctl" "$STAGE/syncer" "$HOST":/opt/csw-task/upload/
 [ -f "$ROSTER" ] && scp -q "$ROSTER" "$HOST":/opt/csw-task/roster.json
 tar -C "$WEB/dist" -cf - . | ssh "$HOST" 'mkdir -p /opt/docker/nginx/html/csw-task-web && tar -xf - -C /opt/docker/nginx/html/csw-task-web'
 if [ -f "$SVC/config.yaml" ]; then
@@ -51,7 +52,7 @@ cd /opt/csw-task
 
 # 停服替换二进制（运行中 ELF 不能原地覆盖）
 systemctl stop csw-task csw-task-admin 2>/dev/null || true
-mv -f upload/server upload/adminsrv upload/adminctl bin/ && chmod +x bin/*
+mv -f upload/server upload/adminsrv upload/adminctl upload/syncer bin/ && chmod +x bin/*
 
 export CSW_CONFIG=/opt/csw-task/config.yaml CSW_DATA_DIR=/opt/csw-task/data
 
