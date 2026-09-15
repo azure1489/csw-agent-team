@@ -61,6 +61,10 @@ func main() {
 		notifierState = "misconfigured: CSW_LARK_APP_ID / CSW_LARK_APP_SECRET 未设置"
 		log.Error("notifier not started", "reason", notifierState)
 	default:
+		notifierState = "enabled"
+		if cfg.NotifierDryRun {
+			notifierState = "enabled (dry-run)"
+		}
 		ntf = notifier.New(store, eng, lark.New(cfg.LarkBaseURL, cfg.LarkAppID, cfg.LarkAppSecret), notifier.Options{
 			ChatKey: cfg.NotifierChatKey, Poll: cfg.NotifierPoll, OverdueScan: cfg.OverdueScan, DryRun: cfg.NotifierDryRun,
 		}, log)

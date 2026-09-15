@@ -1,60 +1,71 @@
 {
   "_comment": "CSW编辑部 花名册离线兜底快照（权威为引擎 GET /api/v1/roster，后台「通讯录」可改）。key=引擎 role_code，name=引擎角色名，bot=群内 bot 显示名，open_id 用于 <at user_id=\"<open_id>\">name</at>。v3 起群播报由引擎单写，本文件只在人工兜底时用。",
-  "chat_id": "oc_c7484358fbf366ba1c806e9d65db3103",
+  "chat_id": "oc_ea0659652f1f4656b12c090f789c4341",
   "roster": {
     "editor": {
-      "open_id": "ou_e8b7e1e4076dbfbaf88c55078794b5eb",
+      "open_id": "ou_24baf2bf3d1e4cf8f4ddb1cc40e41cdb",
       "name": "主编",
       "bot": "主编"
     },
     "collector": {
-      "open_id": "ou_4df246d7bdd235a7337bfb453b38da5d",
+      "open_id": "ou_86a1e3b7378b6b4e3518ed447bc3d3ff",
       "name": "情报收集员",
       "bot": "情报收集员"
     },
     "researcher": {
-      "open_id": "ou_7d2e525dff82f92ab89741f92613353c",
+      "open_id": "ou_7fa42bf3cea7895a2aaffcdc78eaf321",
       "name": "选题研究员",
       "bot": "选题研究员"
     },
     "writer": {
-      "open_id": "ou_98ef567d4e26d4d2ef9279da5304a758",
+      "open_id": "ou_ba8367b7663d78f03fcc4caf687ce565",
       "name": "文案",
-      "bot": "深度内容创作者"
+      "bot": "文案"
     },
     "designer": {
-      "open_id": "ou_0d21381c313e0fa02be7e68d45c6f96e",
+      "open_id": "ou_c87b78a35f7425502a208f79377ca28c",
       "name": "设计师",
-      "bot": "视觉设计师"
+      "bot": "设计师"
     },
     "publisher": {
-      "open_id": "ou_2a362b7337a9a96717ef3c1f4ecd51fe",
+      "open_id": "ou_48706747194488bbad477f4387107bb4",
       "name": "发布员",
-      "bot": "发布运营员"
+      "bot": "发布员"
     },
     "van": {
-      "open_id": "ou_1fca25427af132224142dd3abdda906d",
+      "open_id": "ou_dd5cd03b99fcf80bbb28c4459f2e9ce4",
       "name": "Van",
-      "user_id": "ag83acf1",
       "human": true
     },
     "xhswriter": {
-      "open_id": "ou_003deac0bece81514fca9cd9ba081139",
+      "open_id": "ou_1573bb4a3bc68474fa80816a7d5e5387",
       "name": "小红书图文作者",
-      "bot": "小红书图文作者"
+      "bot": "小红书图文"
     },
     "reviewer": {
-      "open_id": "ou_5e4a9f33f31701a5dd674db4c9daa2dc",
+      "open_id": "ou_c60af3e9aaa2ddb7e68554c0139e9cb5",
       "name": "合规版权审查员",
-      "bot": "合规版权审查员"
+      "bot": "合规审查员"
     },
     "analyst": {
-      "open_id": "ou_7b9ba1d4d09cfbee3ba3f89005db434f",
+      "open_id": "ou_47ef34877d62f1cb10c8ae94acf84498",
       "name": "数据复盘师",
       "bot": "数据复盘师"
     }
   },
   "reserved_bots": {
     "_note": "群内已有但未接入工作流的 bot（v3 起三个原预留 bot 已转为正式角色）"
+  },
+  "partner_users": {
+    "lunzhaoping": {
+      "open_id": "ou_4af06ef3481486d7899fa9a23aacf6a5",
+      "name": "伦兆平",
+      "identity": "CAMPsomeWHERE 合伙人 / Van 拍档",
+      "permission_level": "partner",
+      "workflow_role": "none",
+      "knowledge_capture": true,
+      "can_instruct_agents": true,
+      "note": "不默认接入《营事编集室》任务流；其有效业务反馈、审美判断、项目经验应按合伙人反馈提炼后进入共享知识库/训练体系。"
+    }
   }
 }
