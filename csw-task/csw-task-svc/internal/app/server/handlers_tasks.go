@@ -87,8 +87,16 @@ func (s *Server) handleTaskDetail(c *gin.Context) {
 		}
 	}
 
+	var item *itemDTO // 逐条任务附条目登记：标题、品牌、来源、Van 决定原话
+	if t.ItemKey != "" {
+		if it, err := q.GetItem(ctx, t.RunID, t.ItemKey); err == nil {
+			item = &toItemDTOs([]domain.RunItem{it})[0]
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"task":                toTaskDTO(t),
+		"item":                item,
 		"instructions":        t.Instructions,
 		"self_check_criteria": t.SelfCheckCriteria,
 		"acceptance":          t.Acceptance,

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/domain"
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/store/sqlite"
@@ -65,6 +66,9 @@ func (e *Engine) dispatchInternal(ctx context.Context, q *sqlite.Queries, task d
 		return domain.Deliverable{}, err
 	}
 	ver++
+	if editorNote == "" && task.ItemKey != "" {
+		editorNote = itemNote(ctx, q, task) // 逐条任务自动派工：派工意见写明条目与 Van 决定
+	}
 
 	id, err := q.InsertDeliverable(ctx, domain.Deliverable{
 		TaskID:     task.ID,
@@ -142,4 +146,24 @@ func (e *Engine) autoPrefill(ctx context.Context, q *sqlite.Queries, task domain
 		}
 	}
 	return ups, nil
+}
+
+// itemNote 逐条任务的默认派工意见：条目（品牌｜标题 + 条目键）、来源与 Van 决定原话。条目登记缺失时只写条目键。
+func itemNote(ctx context.Context, q *sqlite.Queries, task domain.Task) string {
+	it, err := q.GetItem(ctx, task.RunID, task.ItemKey)
+	if err != nil {
+		return "条目：" + task.ItemKey
+	}
+	label := strings.Trim(strings.TrimSpace(it.Brand)+"｜"+strings.TrimSpace(it.Title), "｜")
+	if label == "" {
+		label = it.ItemKey
+	}
+	parts := []string{fmt.Sprintf("条目：%s（%s）", label, it.ItemKey)}
+	if it.SourceURL != "" {
+		parts = append(parts, "来源："+it.SourceURL)
+	}
+	if it.DecisionSource != "" {
+		parts = append(parts, "Van 决定："+it.DecisionSource)
+	}
+	return strings.Join(parts, "；")
 }

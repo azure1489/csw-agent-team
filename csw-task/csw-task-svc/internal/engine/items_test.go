@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/domain"
@@ -272,5 +274,60 @@ func TestCancelItemTaskKeepsMerge(t *testing.T) {
 	}
 	if got := taskByCode(t, st, runID, "e").Status; got == domain.TaskCancelled {
 		t.Fatalf("merge task must not be cancelled")
+	}
+}
+
+// TestAutoDispatchItemNote 逐条任务自动派工时，派工意见由引擎写明条目、来源与 Van 决定原话；
+// 手动派工留空意见时同样补上，写了意见则原样保留。
+func TestAutoDispatchItemNote(t *testing.T) {
+	e, st, ctx, runID := itemFlow(t, "")
+	collector, collectorRole := who(t, st, "collector")
+	if _, err := e.UpsertItems(ctx, collector, collectorRole, runID, []ItemInput{
+		{Key: "hxo-1", Brand: "HxO", Title: "折叠木椅", SourceURL: "https://example.com/hxo"},
+		{Key: "nanga-2", Brand: "NANGA", Title: "羽绒睡袋"},
+	}); err != nil {
+		t.Fatalf("upsert items: %v", err)
+	}
+	passB(t, e, st, ctx, runID, ReviewInput{DecisionType: "topic_approve", ItemsJSON: `["hxo-1","nanga-2"]`, SourceQuote: "Van：HxO 和 NANGA 可以写"})
+
+	note := func(taskID int64) string {
+		t.Helper()
+		var n string
+		if err := st.DB().QueryRow(`SELECT COALESCE(editor_note,'') FROM deliverables WHERE task_id=? AND kind='dispatch' ORDER BY id DESC LIMIT 1`, taskID).Scan(&n); err != nil {
+			t.Fatalf("dispatch note: %v", err)
+		}
+		return n
+	}
+	d := taskByItem(t, st, runID, "d", "hxo-1")
+	if d.Status != domain.TaskDispatched {
+		t.Fatalf("auto per-item task should be dispatched, got %s", d.Status)
+	}
+	want := "条目：HxO｜折叠木椅（hxo-1）；来源：https://example.com/hxo；Van 决定：Van：HxO 和 NANGA 可以写"
+	if got := note(d.ID); got != want {
+		t.Fatalf("auto note:\n got  %s\n want %s", got, want)
+	}
+	var noticeNote string
+	for _, r := range outboxRows(t, st) {
+		if r.typ == domain.EvtDispatched && fmt.Sprint(r.payload["task_id"]) == fmt.Sprint(d.ID) {
+			noticeNote = fmt.Sprint(r.payload["note"])
+		}
+	}
+	if noticeNote != want {
+		t.Fatalf("dispatched notice should carry the item note: %q", noticeNote)
+	}
+
+	editor, editorRole := who(t, st, "editor")
+	cH, cN := taskByItem(t, st, runID, "c", "hxo-1"), taskByItem(t, st, runID, "c", "nanga-2")
+	if _, err := e.Dispatch(ctx, editor, editorRole, cH.ID, "", nil); err != nil {
+		t.Fatalf("dispatch empty note: %v", err)
+	}
+	if got := note(cH.ID); !strings.HasPrefix(got, "条目：HxO｜折叠木椅（hxo-1）") {
+		t.Fatalf("manual dispatch with empty note should get item note: %s", got)
+	}
+	if _, err := e.Dispatch(ctx, editor, editorRole, cN.ID, "只写睡袋的温标变化", nil); err != nil {
+		t.Fatalf("dispatch with note: %v", err)
+	}
+	if got := note(cN.ID); got != "只写睡袋的温标变化" {
+		t.Fatalf("explicit note must be kept: %s", got)
 	}
 }
