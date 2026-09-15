@@ -38,6 +38,9 @@ func (e *Engine) Dispatch(ctx context.Context, hub domain.Agent, role domain.Rol
 		if task.Status != domain.TaskReady {
 			return domain.Conflict("task_not_ready", "仅 ready 任务可派工，当前："+string(task.Status))
 		}
+		if err := RequireAuthorization(ctx, q, task); err != nil {
+			return err
+		}
 
 		var explicit []UpstreamInput
 		if len(upstreams) > 0 {

@@ -11,24 +11,58 @@ func (s *Server) fileURL(id int64) string {
 }
 
 type taskDTO struct {
-	StageCode  string `json:"stage_code"`
-	StageName  string `json:"stage_name"`
-	RoleCode   string `json:"role_code"`
-	OutputType string `json:"output_type"`
-	Status     string `json:"status"`
-	AssigneeID *int64 `json:"assignee_id"`
-	ID         int64  `json:"id"`
-	RunID      int64  `json:"run_id"`
-	Seq        int    `json:"seq"`
-	CurVersion int    `json:"cur_version"`
-	IsMerge    bool   `json:"is_merge"`
+	StageCode    string `json:"stage_code"`
+	StageName    string `json:"stage_name"`
+	RoleCode     string `json:"role_code"`
+	OutputType   string `json:"output_type"`
+	Status       string `json:"status"`
+	ActionClass  string `json:"action_class"`
+	DispatchMode string `json:"dispatch_mode,omitempty"`
+	AssigneeID   *int64 `json:"assignee_id"`
+	ID           int64  `json:"id"`
+	RunID        int64  `json:"run_id"`
+	Seq          int    `json:"seq"`
+	CurVersion   int    `json:"cur_version"`
+	SLAMinutes   int    `json:"sla_minutes,omitempty"`
+	IsMerge      bool   `json:"is_merge"`
 }
 
 func toTaskDTO(t domain.Task) taskDTO {
+	ac := t.ActionClass
+	if ac == "" {
+		ac = domain.ActionRead
+	}
 	return taskDTO{
 		ID: t.ID, RunID: t.RunID, StageCode: t.StageCode, StageName: t.StageName,
 		Seq: t.Seq, RoleCode: t.RoleCode, OutputType: t.OutputType, IsMerge: t.IsMerge, Status: string(t.Status),
 		CurVersion: t.CurVersion, AssigneeID: t.AssigneeID,
+		ActionClass: ac, DispatchMode: string(t.DispatchMode), SLAMinutes: t.SLAMinutes,
+	}
+}
+
+// authorizationDTO run 授权记录；status 为 active / revoked / expired。
+type authorizationDTO struct {
+	Scope       string `json:"scope"`
+	SourceQuote string `json:"source_quote"`
+	GrantedAt   string `json:"granted_at"`
+	ExpiresAt   string `json:"expires_at,omitempty"`
+	RevokedAt   string `json:"revoked_at,omitempty"`
+	Status      string `json:"status"`
+	GrantedBy   *int64 `json:"granted_by"`
+	ID          int64  `json:"id"`
+}
+
+func toAuthorizationDTO(a domain.RunAuthorization, now string) authorizationDTO {
+	st := "active"
+	switch {
+	case a.RevokedAt != "":
+		st = "revoked"
+	case a.ExpiresAt != "" && a.ExpiresAt <= now:
+		st = "expired"
+	}
+	return authorizationDTO{
+		ID: a.ID, Scope: string(a.Scope), SourceQuote: a.SourceQuote, GrantedAt: a.GrantedAt,
+		ExpiresAt: a.ExpiresAt, RevokedAt: a.RevokedAt, Status: st, GrantedBy: a.GrantedBy,
 	}
 }
 

@@ -41,10 +41,14 @@ type Stage struct {
 	Instructions      string
 	SelfCheckCriteria string
 	Acceptance        string
+	DispatchMode      string // 阶段级派工模式覆盖：空=继承工作流 / manual / auto
+	ActionClass       string // read | platform_write:<scope>（平台写操作受 run 授权约束）
 	ID                int64
 	WorkflowID        int64
 	Seq               int
+	SLAMinutes        int // 派工后时限（分钟），0=不设
 	IsMerge           bool
+	PerItem           bool // 按条目生成任务（条目级推进）
 }
 
 // StageDep 定义层依赖边（stage 依赖 dependsOn 全部通过才就绪）。
@@ -92,12 +96,15 @@ type Task struct {
 	Instructions      string
 	SelfCheckCriteria string
 	Acceptance        string
+	ActionClass       string       // 快照：read | platform_write:<scope>
+	DispatchMode      DispatchMode // 快照：触发时解析的派工模式；空=旧任务，回退工作流级
 	Status            TaskStatus
 	AssigneeID        *int64
 	ID                int64
 	RunID             int64
 	Seq               int
 	CurVersion        int
+	SLAMinutes        int // 快照：派工后时限（分钟），0=不设
 	IsMerge           bool
 }
 
@@ -186,6 +193,19 @@ type Review struct {
 	TaskGateID      int64
 	ReviewerID      *int64
 	ID              int64
+}
+
+// RunAuthorization run 级授权（平台写操作护栏）。SourceQuote 为 Van 原话，由中枢录入。
+type RunAuthorization struct {
+	Scope       AuthScope
+	SourceQuote string
+	GrantedAt   string
+	ExpiresAt   string // 空=不过期
+	RevokedAt   string // 空=未撤销
+	GrantedBy   *int64
+	RevokedBy   *int64
+	ID          int64
+	RunID       int64
 }
 
 // Event 进度事件。

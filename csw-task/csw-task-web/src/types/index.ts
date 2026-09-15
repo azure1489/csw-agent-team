@@ -41,6 +41,10 @@ export interface ApiStage {
   instructions?: string
   self_check_criteria?: string
   acceptance?: string
+  dispatch_mode?: string | null // 阶段级派工模式覆盖：空=继承工作流 / manual / auto
+  action_class?: string // read | platform_write:<scope>
+  sla_minutes?: number | null // 派工后时限（分钟），0/空=不设
+  per_item?: boolean // 按条目生成任务
   deps: string[] // 上游阶段 code
   gates: ApiGate[] // 覆盖闸（空=用 default_gates）
 }
@@ -87,6 +91,10 @@ export interface EditorStage {
   instructions: string
   self_check: string
   acceptance: string
+  dispatch_mode: string // '' = 继承工作流
+  action_class: string // read | platform_write:<scope>
+  sla_minutes: number // 0 = 不设
+  per_item: boolean
   deps: number[] // 上游阶段 id
   gate_override: EditorGate[] | null
 }
@@ -206,11 +214,25 @@ export interface TaskBrief {
   status: string
   cur_version: number
   assignee_id?: number | null
+  action_class?: string
+  dispatch_mode?: string
+  sla_minutes?: number
+}
+
+export interface RunAuthorization {
+  id: number
+  scope: string // local_drill | wx_draft | wx_publish | xhs_draft | xhs_publish
+  source_quote: string
+  granted_at: string
+  expires_at?: string
+  revoked_at?: string
+  status: string // active | revoked | expired
 }
 
 export interface RunDetail {
   run: RunMeta
   tasks: TaskBrief[]
+  authorizations?: RunAuthorization[]
 }
 
 export interface TimelineEvent {

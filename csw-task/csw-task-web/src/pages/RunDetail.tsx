@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { I } from '@/components/icons'
 import { Avatar, Btn, SectionCard, StatusBadge, toast } from '@/components/ui'
 import { api } from '@/lib/api'
-import { EVENT_LABEL, EVENT_TONE, STATUS, TONES, type Tone } from '@/lib/constants'
+import { EVENT_LABEL, EVENT_TONE, SCOPE_LABEL, SCOPE_SATISFIED_BY, STATUS, TONES, type Tone } from '@/lib/constants'
 import { fmtTime } from '@/lib/utils'
 import { useRoleName } from '@/hooks/useRoles'
 import type { Deliverable, TaskBrief } from '@/types'
@@ -100,6 +100,13 @@ export function RunDetailPage() {
   const passedCount = tasks.filter((s) => s.status === 'passed').length
   const tl = order === 'desc' ? [...(events || [])].reverse() : events || []
   const agentName = (aid?: number | null) => (aid ? agents?.find((a) => a.id === aid)?.name || `#${aid}` : '系统')
+  const auths = detail.authorizations || []
+  const activeScopes = auths.filter((a) => a.status === 'active').map((a) => a.scope)
+  const writeScope = (s: TaskBrief) => (s.action_class && s.action_class.startsWith('platform_write:') ? s.action_class.slice('platform_write:'.length) : '')
+  const awaitingAuth = (s: TaskBrief) => {
+    const sc = writeScope(s)
+    return !!sc && s.status === 'ready' && !(SCOPE_SATISFIED_BY[sc] || [sc]).some((x) => activeScopes.includes(x))
+  }
 
   return (
     <div style={{ flex: 1, overflowY: 'auto' }}>
@@ -125,6 +132,27 @@ export function RunDetailPage() {
             </span>
           </div>
         </div>
+
+        <SectionCard title="本期授权" subtitle="平台写操作以此为准；只有本地演练时任何解锁都不进平台后台">
+          {auths.length === 0 ? (
+            <span className="t3 sm">未录入授权：平台写阶段会停在「等待授权」。</span>
+          ) : (
+            <div className="col gap6">
+              {auths.map((a) => (
+                <div key={a.id} className="row gap10 sm" style={{ opacity: a.status === 'active' ? 1 : 0.55 }}>
+                  <span className="b" style={{ minWidth: 84 }}>
+                    {SCOPE_LABEL[a.scope] || a.scope}
+                  </span>
+                  <span className="t2">{a.source_quote}</span>
+                  <span className="t3 mono xs">{fmtTime(a.granted_at)}</span>
+                  {a.status !== 'active' && <span className="t3 xs">{a.status === 'revoked' ? '已撤销' : '已过期'}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </SectionCard>
+
+        <div style={{ height: 14 }} />
 
         <SectionCard title="进度" subtitle={`${passedCount} / ${tasks.length} 阶段已完成`}>
           <div className="row gap8 wrap">
@@ -175,6 +203,8 @@ export function RunDetailPage() {
                             </span>
                             <span className="t3 sm">{roleName(s.role_code)}</span>
                             {s.is_merge && <span className="t3 xs">· 合流</span>}
+                            {writeScope(s) && <span className="t3 xs">· 平台写 · {SCOPE_LABEL[writeScope(s)] || writeScope(s)}</span>}
+                            {awaitingAuth(s) && <span style={{ color: 'var(--amber)', fontSize: 11.5, fontWeight: 600 }}>等待授权</span>}
                           </div>
                           <span className="t2 xs">{s.cur_version > 0 ? `当前 v${s.cur_version} · ${STATUS[s.status]?.label || s.status}` : STATUS[s.status]?.label || '未就绪'}</span>
                         </div>

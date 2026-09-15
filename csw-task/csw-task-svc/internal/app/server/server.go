@@ -45,6 +45,7 @@ func (s *Server) Router() *gin.Engine {
 		v1.GET("/tasks/:id", s.handleTaskDetail)
 		v1.GET("/runs/:id", s.handleRunDetail)
 		v1.GET("/runs/:id/timeline", s.handleTimeline)
+		v1.GET("/runs/:id/authorizations", s.handleListAuthorizations)
 		v1.POST("/files", s.handleUpload)
 		v1.GET("/files/:id", s.handleDownload)
 		v1.POST("/tasks/:id/deliverables", s.handleSubmit)
@@ -60,6 +61,8 @@ func (s *Server) Router() *gin.Engine {
 		v1.GET("/me/inbox", s.handleInbox)
 		v1.POST("/tasks/:id/dispatch", s.handleDispatch)
 		v1.POST("/deliverables/:id/reviews", s.handleReview)
+		v1.POST("/runs/:id/authorizations", s.handleGrantAuthorization)
+		v1.DELETE("/runs/:id/authorizations/:scope", s.handleRevokeAuthorization)
 	}
 	return r
 }

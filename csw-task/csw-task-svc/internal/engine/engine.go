@@ -74,6 +74,14 @@ func resolveGates(all []domain.Gate, stageID int64) []domain.Gate {
 	return def
 }
 
+// stageDispatchMode 阶段覆盖非空取覆盖，否则取工作流级；触发时解析后快照进任务。
+func stageDispatchMode(st domain.Stage, wf domain.Workflow) domain.DispatchMode {
+	if st.DispatchMode != "" {
+		return domain.DispatchMode(st.DispatchMode)
+	}
+	return wf.DispatchMode
+}
+
 // resolveAssignee 按角色取唯一活跃 agent；无则 nil。
 func resolveAssignee(ctx context.Context, q *sqlite.Queries, roleCode string) *int64 {
 	a, err := q.ActiveAgentByRole(ctx, roleCode)
@@ -142,6 +150,9 @@ func (e *Engine) Trigger(ctx context.Context, actor domain.Agent, role domain.Ro
 				Instructions:      combine(wf.CommonInstructions, st.Instructions),
 				SelfCheckCriteria: st.SelfCheckCriteria,
 				Acceptance:        combine(wf.CommonAcceptance, st.Acceptance),
+				DispatchMode:      stageDispatchMode(st, wf),
+				ActionClass:       st.ActionClass,
+				SLAMinutes:        st.SLAMinutes,
 				AssigneeID:        resolveAssignee(ctx, q, st.RoleCode),
 				Status:            domain.TaskBlocked,
 			}

@@ -17,15 +17,27 @@ func TestMigrate(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	// 20 张原始业务表 + 0008 花名册 2 张（chats / chat_members）+ goose 版本表。
+	// 20 张原始业务表 + 0008 花名册 2 张（chats / chat_members）+ 0010 run_authorizations；不含 goose 版本表。
 	var n int
 	if err := db.QueryRow(
 		`SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name <> 'goose_db_version'`,
 	).Scan(&n); err != nil {
 		t.Fatalf("count tables: %v", err)
 	}
-	if n != 22 {
-		t.Fatalf("want 22 tables, got %d", n)
+	if n != 23 {
+		t.Fatalf("want 23 tables, got %d", n)
+	}
+
+	// 0009 新增列：阶段四列 + 任务快照三列。
+	for _, tc := range []struct{ table, col string }{
+		{"workflow_stages", "dispatch_mode"}, {"workflow_stages", "action_class"},
+		{"workflow_stages", "sla_minutes"}, {"workflow_stages", "per_item"},
+		{"tasks", "dispatch_mode"}, {"tasks", "action_class"}, {"tasks", "sla_minutes"},
+	} {
+		var c int
+		if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, tc.table, tc.col).Scan(&c); err != nil || c != 1 {
+			t.Fatalf("missing column %s.%s (n=%d err=%v)", tc.table, tc.col, c, err)
+		}
 	}
 
 	// 抽查部分唯一索引（约束硬化）存在。
@@ -53,8 +65,8 @@ func TestSeedDailyNews(t *testing.T) {
 	if err := db.QueryRow(`SELECT id, status FROM workflows WHERE wf_key='daily_news' AND version=1`).Scan(&wfID, &status); err != nil {
 		t.Fatalf("daily_news workflow: %v", err)
 	}
-	if status != "active" {
-		t.Fatalf("want active, got %s", status)
+	if status != "archived" {
+		t.Fatalf("v1 want archived after 0009, got %s", status)
 	}
 
 	// 10 阶段，且三段内容全部非空。
@@ -108,5 +120,131 @@ func TestSeedDailyNews(t *testing.T) {
 		if err := db.QueryRow(q, wfID, tc.code, tc.want).Scan(&n); err != nil || n != 1 {
 			t.Fatalf("0007 规范缺失：%s.%s 应含 %q (n=%d err=%v)", tc.code, tc.col, tc.want, n, err)
 		}
+	}
+}
+
+// TestSeedDailyNewsV2 验证 0009 seed：v2 为唯一 active；十三阶段、逐阶段闸（无默认闸）、
+// 派工模式覆盖、平台写与条目级标记、三个新角色与花名册转正。
+func TestSeedDailyNewsV2(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	if err := Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	var wfID, ver int
+	var mode string
+	if err := db.QueryRow(`SELECT id, version, dispatch_mode FROM workflows WHERE wf_key='daily_news' AND status='active'`).
+		Scan(&wfID, &ver, &mode); err != nil {
+		t.Fatalf("active daily_news: %v", err)
+	}
+	if ver != 2 || mode != "auto" {
+		t.Fatalf("want v2 auto, got v%d %s", ver, mode)
+	}
+
+	count := func(q string, args ...any) int {
+		t.Helper()
+		var n int
+		if err := db.QueryRow(q, args...).Scan(&n); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		return n
+	}
+	codes := func(cond string) string {
+		t.Helper()
+		var s string
+		if err := db.QueryRow(`SELECT COALESCE(group_concat(code, ','), '') FROM
+			(SELECT code FROM workflow_stages WHERE workflow_id=? AND `+cond+` ORDER BY seq)`, wfID).Scan(&s); err != nil {
+			t.Fatalf("codes %s: %v", cond, err)
+		}
+		return s
+	}
+
+	if n := count(`SELECT count(*) FROM workflow_stages WHERE workflow_id=?`, wfID); n != 13 {
+		t.Fatalf("want 13 stages, got %d", n)
+	}
+	if n := count(`SELECT count(*) FROM workflow_stages WHERE workflow_id=?
+		AND (COALESCE(instructions,'')='' OR COALESCE(self_check_criteria,'')='' OR COALESCE(acceptance,'')='')`, wfID); n != 0 {
+		t.Fatalf("%d stages with empty text", n)
+	}
+	// 文本不粘贴方案文档：单段不超过 2500 字、不引用方案章节号。
+	if n := count(`SELECT count(*) FROM workflow_stages WHERE workflow_id=?
+		AND (length(instructions)>2500 OR length(self_check_criteria)>2500 OR length(acceptance)>2500
+		     OR instr(instructions,'§')>0 OR instr(self_check_criteria,'§')>0 OR instr(acceptance,'§')>0)`, wfID); n != 0 {
+		t.Fatalf("%d stages with oversized text or section refs", n)
+	}
+	if n := count(`SELECT count(*) FROM workflows WHERE id=? AND (length(common_instructions)>2500 OR length(common_acceptance)>2500)`, wfID); n != 0 {
+		t.Fatalf("common text oversized")
+	}
+	if n := count(`SELECT count(*) FROM workflow_stage_deps WHERE workflow_id=?`, wfID); n != 15 {
+		t.Fatalf("want 15 deps, got %d", n)
+	}
+	if got := codes("is_merge=1"); got != "topic,fulltext" {
+		t.Fatalf("merge stages: %s", got)
+	}
+	if n := count(`SELECT count(*) FROM workflow_gates WHERE workflow_id=? AND stage_id IS NULL`, wfID); n != 0 {
+		t.Fatalf("want 0 default gates, got %d", n)
+	}
+	rows, err := db.Query(`SELECT s.code, count(*) FROM workflow_gates g JOIN workflow_stages s ON s.id=g.stage_id
+		WHERE g.workflow_id=? GROUP BY s.code`, wfID)
+	if err != nil {
+		t.Fatalf("gates: %v", err)
+	}
+	gates := map[string]int{}
+	for rows.Next() {
+		var code string
+		var n int
+		if err := rows.Scan(&code, &n); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		gates[code] = n
+	}
+	rows.Close()
+	want := map[string]int{"topic": 2, "write": 1, "fulltext": 2, "wx_layout": 1, "xhs_text": 2, "xhs_visual": 1, "xhs_package": 1}
+	if len(gates) != len(want) {
+		t.Fatalf("gate distribution %v, want %v", gates, want)
+	}
+	for k, v := range want {
+		if gates[k] != v {
+			t.Fatalf("gate distribution %v, want %v", gates, want)
+		}
+	}
+	// Van 闸只在选题、全文、小红书文本三处，且都由中枢代录。
+	if got := codes(`id IN (SELECT stage_id FROM workflow_gates WHERE reviewer_role='van' AND relayed_by_hub=1)`); got != "topic,fulltext,xhs_text" {
+		t.Fatalf("van gates at: %s", got)
+	}
+	if got := codes("dispatch_mode='manual'"); got != "write,xhs_text" {
+		t.Fatalf("manual stages: %s", got)
+	}
+	if got := codes("dispatch_mode IS NOT NULL AND dispatch_mode<>'manual'"); got != "" {
+		t.Fatalf("unexpected auto overrides: %s", got)
+	}
+	if got := codes("action_class LIKE 'platform_write:%'"); got != "wx_save,xhs_save" {
+		t.Fatalf("platform_write stages: %s", got)
+	}
+	if got := codes("per_item=1"); got != "write,material" {
+		t.Fatalf("per_item stages: %s", got)
+	}
+	if n := count(`SELECT sla_minutes FROM workflow_stages WHERE workflow_id=? AND code='topic'`, wfID); n != 15 {
+		t.Fatalf("topic sla want 15, got %d", n)
+	}
+	// 阶段名不能含路径分隔符（交付物路径按阶段名派生）。
+	if n := count(`SELECT count(*) FROM workflow_stages WHERE workflow_id=? AND (instr(name,'/')>0 OR instr(name,'\')>0)`, wfID); n != 0 {
+		t.Fatalf("stage names must not contain path separators")
+	}
+
+	for _, r := range []string{"xhswriter", "reviewer", "analyst"} {
+		if n := count(`SELECT count(*) FROM roles r JOIN agents a ON a.role_code=r.code WHERE r.code=? AND a.active=1`, r); n != 1 {
+			t.Fatalf("role/agent %s: n=%d", r, n)
+		}
+	}
+	if n := count(`SELECT count(*) FROM chat_members WHERE kind='mapped'`); n != 10 {
+		t.Fatalf("want 10 mapped chat members, got %d", n)
+	}
+	if n := count(`SELECT count(*) FROM chat_members WHERE kind='reserved'`); n != 0 {
+		t.Fatalf("want 0 reserved chat members, got %d", n)
 	}
 }

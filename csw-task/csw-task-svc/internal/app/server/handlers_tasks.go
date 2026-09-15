@@ -177,6 +177,10 @@ func (s *Server) handleSubmitMultipart(c *gin.Context, taskID int64) {
 		s.renderErr(c, domain.Conflict("cannot_submit", "任务当前状态不可提交："+string(task.Status)))
 		return
 	}
+	if err := engine.RequireAuthorization(ctx, q, task); err != nil {
+		s.renderErr(c, err)
+		return
+	}
 	run, err := q.GetRun(ctx, task.RunID)
 	if err != nil {
 		s.renderErr(c, err)

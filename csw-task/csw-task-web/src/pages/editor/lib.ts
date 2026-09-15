@@ -5,7 +5,26 @@
 import { computeDag } from '@/lib/dag'
 import type { EditorWorkflow, Role } from '@/types'
 
-export const OUTPUT_OPTS = ['资讯包', '选题成品', '文章', '封面', '成品', '发布物', '小红书文本', '卡片', '素材包', '提纲', '初稿', '配图']
+export const OUTPUT_OPTS = [
+  '资讯包', '选题成品', '文章', '封面', '成品', '发布物', '小红书文本', '卡片', '素材包', '提纲', '初稿', '配图',
+  '情报记录', '短名单', '选题方案', '模板', '审核稿', '小红书卡片',
+]
+
+// 阶段级派工模式覆盖（空=继承工作流）
+export const DISPATCH_MODE_OPTS = [
+  { value: '', label: '继承工作流' },
+  { value: 'auto', label: '自动派工' },
+  { value: 'manual', label: '手动派工' },
+]
+
+// 动作类别：平台写操作需要本期 run 授权才会派工与提交（发布授权涵盖同平台草稿）
+export const ACTION_CLASS_OPTS = [
+  { value: 'read', label: '普通（不写平台）' },
+  { value: 'platform_write:wx_draft', label: '平台写 · 公众号草稿' },
+  { value: 'platform_write:wx_publish', label: '平台写 · 公众号发布' },
+  { value: 'platform_write:xhs_draft', label: '平台写 · 小红书草稿' },
+  { value: 'platform_write:xhs_publish', label: '平台写 · 小红书发布' },
+]
 
 export interface FrontCheck {
   status: 'pass' | 'warn' | 'fail'
@@ -62,6 +81,34 @@ export function runChecks(draft: EditorWorkflow, roles: Role[]): FrontCheck[] {
   if (dup) checks.push({ status: 'fail', text: `阶段 code「${dup}」重复` })
 
   if (draft.stages.length === 0) checks.push({ status: 'fail', text: '至少需要 1 个阶段' })
+
+  // 与后端校验镜像：动作类别 / 派工模式与时限 / 条目级阶段下游有合流
+  const actionValues = ACTION_CLASS_OPTS.map((o) => o.value)
+  const badAction = draft.stages.filter((s) => !actionValues.includes(s.action_class || 'read'))
+  if (badAction.length === 0) checks.push({ status: 'pass', text: '动作类别均合法' })
+  else badAction.forEach((s) => checks.push({ status: 'fail', text: `${s.name}：动作类别「${s.action_class}」不合法`, stageId: s.id }))
+
+  const badMode = draft.stages.filter((s) => !['', 'auto', 'manual'].includes(s.dispatch_mode || '') || (s.sla_minutes || 0) < 0)
+  if (badMode.length === 0) checks.push({ status: 'pass', text: '派工模式与时限取值合法' })
+  else badMode.forEach((s) => checks.push({ status: 'fail', text: `${s.name}：派工模式或时限取值不合法`, stageId: s.id }))
+
+  const orphanItem = draft.stages.filter((s) => {
+    if (!s.per_item) return false
+    const seen = new Set<number>([s.id])
+    const queue = [s.id]
+    while (queue.length) {
+      const u = queue.shift()!
+      for (const v of adj[u] || []) {
+        if (seen.has(v)) continue
+        if (byId[v]?.is_merge) return false
+        seen.add(v)
+        queue.push(v)
+      }
+    }
+    return true
+  })
+  if (orphanItem.length === 0) checks.push({ status: 'pass', text: '条目级阶段下游均有合流' })
+  else orphanItem.forEach((s) => checks.push({ status: 'fail', text: `${s.name}：逐条生成的阶段下游没有合流阶段，逐条产出无法汇成整期`, stageId: s.id }))
 
   const mergeHub = draft.stages.filter((s) => s.is_merge && s.role_code === draft.hub_role)
   if (mergeHub.length) checks.push({ status: 'warn', text: `${mergeHub.map((s) => s.seq).join('、')} 为合流且责任=中枢，将自动派工给中枢自己（提示）` })

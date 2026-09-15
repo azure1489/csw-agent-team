@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { I } from '@/components/icons'
 import { Badge, Btn, Checkbox, Drawer, Field, IconBtn, MarkdownView, Radio, Select, Switch, Tabs, Textarea, TextInput } from '@/components/ui'
 import { useRoles, useRoleName } from '@/hooks/useRoles'
-import { OUTPUT_OPTS } from './lib'
+import { ACTION_CLASS_OPTS, DISPATCH_MODE_OPTS, OUTPUT_OPTS } from './lib'
 import type { EditorGate, EditorStage } from '@/types'
 
 const TABS = [
@@ -88,6 +88,28 @@ export function StageDrawer({
           </div>
         </div>
 
+        {/* dispatch / action / sla / per-item */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+          <Field label="派工模式" hint="继承=沿用工作流设置；手动=就绪后等中枢写派工意见再派。">
+            <Select value={s.dispatch_mode || ''} onChange={(v) => set({ dispatch_mode: v })} options={DISPATCH_MODE_OPTS} disabled={readonly} />
+          </Field>
+          <Field label="动作类别" hint="平台写操作需要本期 run 授权才会派工与提交。">
+            <Select value={s.action_class || 'read'} onChange={(v) => set({ action_class: v })} options={ACTION_CLASS_OPTS} disabled={readonly} />
+          </Field>
+          <Field label="时限（分钟）" hint="派工后多久算逾期；留空=不设。">
+            <TextInput
+              value={s.sla_minutes ? String(s.sla_minutes) : ''}
+              onChange={(v) => set({ sla_minutes: parseInt(v.replace(/\D/g, '') || '0', 10) })}
+              readOnly={readonly}
+              placeholder="不设"
+            />
+          </Field>
+          <div className="row gap8" style={{ alignSelf: 'end', paddingBottom: 8 }}>
+            <Switch checked={s.per_item} onChange={(v) => set({ per_item: v })} disabled={readonly} />
+            <span className="sm">逐条生成任务（条目批准后按条派）</span>
+          </div>
+        </div>
+
         {/* deps */}
         <Field label="依赖上游" hint="勾选构成 DAG 边。不能选自己，保存激活时校验不成环。">
           {others.length === 0 ? (
@@ -135,8 +157,11 @@ export function StageDrawer({
                     </span>
                   </div>
                 ))}
-                {defaultGates.length === 0 && <span className="t3 xs">工作流暂无默认闸</span>}
-                <span className="t3 xs">沿用默认闸，未覆盖。</span>
+                {defaultGates.length === 0 ? (
+                  <span className="t3 xs">工作流未设默认闸：本阶段 0 闸，提交即通过。</span>
+                ) : (
+                  <span className="t3 xs">沿用默认闸，未覆盖。</span>
+                )}
               </div>
             ) : (
               <div className="col gap8">
@@ -158,6 +183,7 @@ export function StageDrawer({
                     {!readonly && <IconBtn icon={I.x} danger title="删除闸" onClick={() => delGate(i)} />}
                   </div>
                 ))}
+                {(s.gate_override || []).length === 0 && <span className="t3 xs">一道闸都不留时，保存后等同于沿用默认闸。</span>}
                 {!readonly && (
                   <Btn variant="ghost" size="sm" icon={I.plus} onClick={addGate} style={{ width: 'fit-content' }}>
                     加一道闸

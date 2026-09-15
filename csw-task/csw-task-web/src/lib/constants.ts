@@ -110,6 +110,9 @@ export const EVENT_TONE: Record<string, string> = {
   stage_passed: 'var(--green)',
   gate_returned: 'var(--red)',
   run_done: 'var(--green)',
+  authorization_required: 'var(--amber)',
+  authorization_granted: 'var(--green)',
+  authorization_revoked: 'var(--amber)',
 }
 
 // 事件类型 → 人类可读模板（缺省回退到原始 type）
@@ -123,6 +126,26 @@ export const EVENT_LABEL: Record<string, string> = {
   stage_passed: '阶段通过',
   gate_returned: '闸退回',
   run_done: '实例完成',
+  authorization_required: '等待授权',
+  authorization_granted: '授权录入',
+  authorization_revoked: '授权撤销',
+}
+
+// run 授权范围 → 中文
+export const SCOPE_LABEL: Record<string, string> = {
+  local_drill: '本地演练',
+  wx_draft: '公众号草稿',
+  wx_publish: '公众号发布',
+  xhs_draft: '小红书草稿',
+  xhs_publish: '小红书发布',
+}
+
+// 平台写动作可被哪些授权满足（发布授权涵盖同平台草稿）
+export const SCOPE_SATISFIED_BY: Record<string, string[]> = {
+  wx_draft: ['wx_draft', 'wx_publish'],
+  xhs_draft: ['xhs_draft', 'xhs_publish'],
+  wx_publish: ['wx_publish'],
+  xhs_publish: ['xhs_publish'],
 }
 
 // 阶段产出类型候选（StageDrawer / NewWorkflowModal）

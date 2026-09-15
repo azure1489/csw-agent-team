@@ -1,6 +1,8 @@
 // Package domain 定义实体、状态枚举与纯状态机规则（无框架/DB 依赖）。
 package domain
 
+import "strings"
+
 // TaskStatus 阶段任务状态。
 type TaskStatus string
 
@@ -71,7 +73,76 @@ const (
 	EvtGateReturned = "gate_returned"
 	EvtStagePassed  = "stage_passed"
 	EvtRunDone      = "run_done"
+
+	EvtAuthorizationRequired = "authorization_required" // 平台写操作就绪但缺授权，停在 ready
+	EvtAuthorizationGranted  = "authorization_granted"
+	EvtAuthorizationRevoked  = "authorization_revoked"
 )
+
+// ActionRead 普通阶段的动作类别。平台写操作写作 "platform_write:<scope>"。
+const (
+	ActionRead          = "read"
+	actionPlatformWrite = "platform_write:"
+)
+
+// AuthScope run 级授权范围。
+type AuthScope string
+
+const (
+	ScopeLocalDrill AuthScope = "local_drill" // 本地演练：只交本地成品，不进平台后台
+	ScopeWxDraft    AuthScope = "wx_draft"
+	ScopeWxPublish  AuthScope = "wx_publish"
+	ScopeXhsDraft   AuthScope = "xhs_draft"
+	ScopeXhsPublish AuthScope = "xhs_publish"
+)
+
+// ValidAuthScope 判断授权范围取值是否合法。
+func ValidAuthScope(s string) bool {
+	switch AuthScope(s) {
+	case ScopeLocalDrill, ScopeWxDraft, ScopeWxPublish, ScopeXhsDraft, ScopeXhsPublish:
+		return true
+	}
+	return false
+}
+
+// ParseActionClass 解析动作类别：read → (false, "", true)；platform_write:<平台 scope> → (true, scope, true)。
+// local_drill 不是平台写操作，不能出现在动作类别里。
+func ParseActionClass(s string) (isWrite bool, scope AuthScope, ok bool) {
+	if s == ActionRead {
+		return false, "", true
+	}
+	if !strings.HasPrefix(s, actionPlatformWrite) {
+		return false, "", false
+	}
+	sc := AuthScope(strings.TrimPrefix(s, actionPlatformWrite))
+	switch sc {
+	case ScopeWxDraft, ScopeWxPublish, ScopeXhsDraft, ScopeXhsPublish:
+		return true, sc, true
+	}
+	return false, "", false
+}
+
+// ValidActionClass 判断动作类别取值是否合法。
+func ValidActionClass(s string) bool {
+	_, _, ok := ParseActionClass(s)
+	return ok
+}
+
+// SatisfyingScopes 列出能满足某平台写动作的授权：发布授权涵盖同平台草稿。
+func SatisfyingScopes(scope AuthScope) []AuthScope {
+	switch scope {
+	case ScopeWxDraft:
+		return []AuthScope{ScopeWxDraft, ScopeWxPublish}
+	case ScopeXhsDraft:
+		return []AuthScope{ScopeXhsDraft, ScopeXhsPublish}
+	}
+	return []AuthScope{scope}
+}
+
+// ValidStageDispatchMode 阶段级派工模式覆盖：空（继承工作流）/ manual / auto。
+func ValidStageDispatchMode(s string) bool {
+	return s == "" || s == string(DispatchManual) || s == string(DispatchAuto)
+}
 
 // ── 纯状态机规则 ──
 

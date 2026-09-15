@@ -111,7 +111,11 @@ type putStage struct {
 	Instructions      string    `json:"instructions"`
 	SelfCheckCriteria string    `json:"self_check_criteria"`
 	Acceptance        string    `json:"acceptance"`
+	DispatchMode      string    `json:"dispatch_mode"` // 空=继承工作流 / manual / auto
+	ActionClass       string    `json:"action_class"`  // 空=read / platform_write:<scope>
 	IsMerge           bool      `json:"is_merge"`
+	PerItem           bool      `json:"per_item"`
+	SLAMinutes        int       `json:"sla_minutes"`
 	Deps              []string  `json:"deps"`
 	Gates             []putGate `json:"gates"`
 }
@@ -159,6 +163,18 @@ func (s *Server) handlePutWorkflow(c *gin.Context) {
 		codeSet[st.Code] = true
 	}
 	for _, st := range req.Stages {
+		if !domain.ValidStageDispatchMode(st.DispatchMode) {
+			s.renderErr(c, domain.BadRequest("bad_dispatch_mode", st.Code+" 的派工模式须为空（继承）、manual 或 auto"))
+			return
+		}
+		if st.ActionClass != "" && !domain.ValidActionClass(st.ActionClass) {
+			s.renderErr(c, domain.BadRequest("bad_action_class", st.Code+" 的动作类别须为 read 或 platform_write:<wx_draft|wx_publish|xhs_draft|xhs_publish>"))
+			return
+		}
+		if st.SLAMinutes < 0 {
+			s.renderErr(c, domain.BadRequest("bad_sla", st.Code+" 的时限不能为负数"))
+			return
+		}
 		for _, d := range st.Deps {
 			if d == st.Code {
 				s.renderErr(c, domain.BadRequest("self_dep", st.Code+" 不能依赖自己"))
@@ -196,6 +212,7 @@ func (s *Server) handlePutWorkflow(c *gin.Context) {
 				WorkflowID: id, Seq: i + 1, Code: st.Code, Name: st.Name, RoleCode: st.RoleCode,
 				OutputType: st.OutputType, Instructions: st.Instructions,
 				SelfCheckCriteria: st.SelfCheckCriteria, Acceptance: st.Acceptance, IsMerge: st.IsMerge,
+				DispatchMode: st.DispatchMode, ActionClass: st.ActionClass, SLAMinutes: st.SLAMinutes, PerItem: st.PerItem,
 			})
 			if err != nil {
 				return err

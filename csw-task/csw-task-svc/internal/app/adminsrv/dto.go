@@ -46,6 +46,7 @@ func stageDTO(st domain.Stage, deps []string, gates []gin.H) gin.H {
 		"id": st.ID, "seq": st.Seq, "code": st.Code, "name": st.Name,
 		"role_code": st.RoleCode, "output_type": st.OutputType, "is_merge": st.IsMerge,
 		"instructions": st.Instructions, "self_check_criteria": st.SelfCheckCriteria, "acceptance": st.Acceptance,
+		"dispatch_mode": st.DispatchMode, "action_class": st.ActionClass, "sla_minutes": st.SLAMinutes, "per_item": st.PerItem,
 		"deps": deps, "gates": gates,
 	}
 }
@@ -70,6 +71,7 @@ func taskBriefDTO(t domain.Task) gin.H {
 		"id": t.ID, "run_id": t.RunID, "stage_code": t.StageCode, "stage_name": t.StageName,
 		"seq": t.Seq, "role_code": t.RoleCode, "is_merge": t.IsMerge,
 		"status": string(t.Status), "cur_version": t.CurVersion, "assignee_id": t.AssigneeID,
+		"action_class": t.ActionClass, "dispatch_mode": string(t.DispatchMode), "sla_minutes": t.SLAMinutes,
 	}
 }
 

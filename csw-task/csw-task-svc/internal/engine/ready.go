@@ -7,9 +7,18 @@ import (
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/store/sqlite"
 )
 
-// onTaskReady 置任务就绪、写事件；据 dispatch_mode/合流决定是否引擎自动派工。
+// effectiveDispatchMode 任务快照的派工模式优先；快照为空（v2 之前触发的旧任务）回退工作流级。
+func effectiveDispatchMode(task domain.Task, wf domain.Workflow) domain.DispatchMode {
+	if task.DispatchMode != "" {
+		return task.DispatchMode
+	}
+	return wf.DispatchMode
+}
+
+// onTaskReady 置任务就绪、写事件；据派工模式/合流决定是否引擎自动派工。
 // - auto 模式：就绪即自动派。
 // - 合流阶段（is_merge，assignee=中枢）：即便 manual 也自动出派工单给中枢自己。
+// - 平台写操作缺 run 授权：保持 ready 不派，写 authorization_required 事件，授权录入后由 Grant 续派。
 func (e *Engine) onTaskReady(ctx context.Context, q *sqlite.Queries, task domain.Task, wf domain.Workflow) error {
 	if err := q.SetTaskReady(ctx, task.ID); err != nil {
 		return err
@@ -17,7 +26,15 @@ func (e *Engine) onTaskReady(ctx context.Context, q *sqlite.Queries, task domain
 	if err := q.InsertEvent(ctx, domain.Event{RunID: &task.RunID, TaskID: &task.ID, Type: domain.EvtTaskReady}); err != nil {
 		return err
 	}
-	if wf.DispatchMode == domain.DispatchAuto || task.IsMerge {
+	if effectiveDispatchMode(task, wf) == domain.DispatchAuto || task.IsMerge {
+		ok, scope, err := authorized(ctx, q, task)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return q.InsertEvent(ctx, domain.Event{RunID: &task.RunID, TaskID: &task.ID, Type: domain.EvtAuthorizationRequired,
+				DetailJSON: evtDetail(map[string]any{"scope": string(scope)})})
+		}
 		producer := resolveAssignee(ctx, q, wf.HubRoleCode)
 		if _, err := e.dispatchInternal(ctx, q, task, wf, "", nil, producer); err != nil {
 			return err

@@ -42,6 +42,9 @@ func (e *Engine) Submit(ctx context.Context, agent domain.Agent, taskID int64, i
 		if !domain.CanSubmit(task.Status) {
 			return domain.Conflict("cannot_submit", "任务当前状态不可提交："+string(task.Status))
 		}
+		if err := RequireAuthorization(ctx, q, task); err != nil {
+			return err
+		}
 
 		// doc_type 缺省取阶段产出类型（快照列）；两者皆空才报错。
 		if in.DocType == "" {

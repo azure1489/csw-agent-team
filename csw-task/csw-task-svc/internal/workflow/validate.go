@@ -32,7 +32,8 @@ func (r Report) AllOK() bool {
 }
 
 // Validate 校验某工作流定义（按 workflow 入参，draft/active 皆可）：
-// DAG 无环、入口可达所有、终点可达、中枢为管理类、闸角色存在、每阶段三段非空、至少一阶段。
+// DAG 无环、入口可达所有、终点可达、中枢为管理类、闸角色存在、每阶段三段非空、至少一阶段、
+// 动作类别合法、派工模式与时限合法、条目级阶段下游有合流。
 func Validate(ctx context.Context, q *sqlite.Queries, wf domain.Workflow) (Report, error) {
 	var rep Report
 	stages, err := q.ListStages(ctx, wf.ID)
@@ -118,6 +119,51 @@ func Validate(ctx context.Context, q *sqlite.Queries, wf domain.Workflow) (Repor
 
 	// 至少一个阶段。
 	rep.Checks = append(rep.Checks, Check{Name: "至少一个阶段", OK: len(stages) > 0})
+
+	// 8. 动作类别合法（read 或 platform_write:<平台 scope>）。
+	var badAction []string
+	for _, st := range stages {
+		ac := st.ActionClass
+		if ac == "" {
+			ac = domain.ActionRead
+		}
+		if !domain.ValidActionClass(ac) {
+			badAction = append(badAction, st.Name+"="+st.ActionClass)
+		}
+	}
+	rep.Checks = append(rep.Checks, Check{Name: "动作类别合法", OK: len(badAction) == 0, Detail: strings.Join(badAction, ", ")})
+
+	// 9. 派工模式覆盖与时限取值合法。
+	var badMode []string
+	for _, st := range stages {
+		if !domain.ValidStageDispatchMode(st.DispatchMode) || st.SLAMinutes < 0 {
+			badMode = append(badMode, st.Name)
+		}
+	}
+	rep.Checks = append(rep.Checks, Check{Name: "派工模式与时限取值合法", OK: len(badMode) == 0, Detail: strings.Join(badMode, ", ")})
+
+	// 10. 条目级阶段的下游有合流阶段（逐条产出最终要在合流处汇成整期）。
+	isMerge := map[int64]bool{}
+	for _, st := range stages {
+		isMerge[st.ID] = st.IsMerge
+	}
+	var orphan []string
+	for _, st := range stages {
+		if !st.PerItem {
+			continue
+		}
+		found := false
+		for id := range bfs([]int64{st.ID}, dependents) {
+			if id != st.ID && isMerge[id] {
+				found = true
+				break
+			}
+		}
+		if !found {
+			orphan = append(orphan, st.Name)
+		}
+	}
+	rep.Checks = append(rep.Checks, Check{Name: "条目级阶段下游有合流", OK: len(orphan) == 0, Detail: strings.Join(orphan, ", ")})
 
 	return rep, nil
 }

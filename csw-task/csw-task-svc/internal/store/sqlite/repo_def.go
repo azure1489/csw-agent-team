@@ -181,7 +181,8 @@ func (q *Queries) ListActiveWorkflows(ctx context.Context) ([]domain.Workflow, e
 func (q *Queries) ListStages(ctx context.Context, workflowID int64) ([]domain.Stage, error) {
 	rows, err := q.ex.QueryContext(ctx, `
 		SELECT id, workflow_id, seq, code, name, role_code, output_type,
-		       instructions, self_check_criteria, acceptance, is_merge
+		       instructions, self_check_criteria, acceptance, is_merge,
+		       dispatch_mode, action_class, sla_minutes, per_item
 		FROM workflow_stages WHERE workflow_id=? ORDER BY seq`, workflowID)
 	if err != nil {
 		return nil, err
@@ -190,14 +191,16 @@ func (q *Queries) ListStages(ctx context.Context, workflowID int64) ([]domain.St
 	var out []domain.Stage
 	for rows.Next() {
 		var st domain.Stage
-		var ot, ins, sc, ac sql.NullString
-		var merge int
+		var ot, ins, sc, ac, dmode sql.NullString
+		var sla sql.NullInt64
+		var merge, perItem int
 		if err := rows.Scan(&st.ID, &st.WorkflowID, &st.Seq, &st.Code, &st.Name, &st.RoleCode,
-			&ot, &ins, &sc, &ac, &merge); err != nil {
+			&ot, &ins, &sc, &ac, &merge, &dmode, &st.ActionClass, &sla, &perItem); err != nil {
 			return nil, err
 		}
 		st.OutputType, st.Instructions, st.SelfCheckCriteria, st.Acceptance = ot.String, ins.String, sc.String, ac.String
-		st.IsMerge = merge == 1
+		st.IsMerge, st.PerItem = merge == 1, perItem == 1
+		st.DispatchMode, st.SLAMinutes = dmode.String, int(sla.Int64)
 		out = append(out, st)
 	}
 	return out, rows.Err()
@@ -340,14 +343,30 @@ func (q *Queries) ActivateWorkflowVersion(ctx context.Context, wfKey string, ver
 func (q *Queries) InsertStage(ctx context.Context, s domain.Stage) (int64, error) {
 	res, err := q.ex.ExecContext(ctx, `
 		INSERT INTO workflow_stages
-		  (workflow_id, seq, code, name, role_code, output_type, instructions, self_check_criteria, acceptance, is_merge)
-		VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		  (workflow_id, seq, code, name, role_code, output_type, instructions, self_check_criteria, acceptance, is_merge,
+		   dispatch_mode, action_class, sla_minutes, per_item)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		s.WorkflowID, s.Seq, s.Code, s.Name, s.RoleCode, s.OutputType,
-		s.Instructions, s.SelfCheckCriteria, s.Acceptance, b2i(s.IsMerge))
+		s.Instructions, s.SelfCheckCriteria, s.Acceptance, b2i(s.IsMerge),
+		nullIfEmpty(s.DispatchMode), actionOrRead(s.ActionClass), nullIfNonPos(s.SLAMinutes), b2i(s.PerItem))
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
+}
+
+// nullIfEmpty 空串存 NULL。
+func nullIfEmpty(s string) sql.NullString { return sql.NullString{String: s, Valid: s != ""} }
+
+// nullIfNonPos 非正数存 NULL（时限类「0=不设」）。
+func nullIfNonPos(n int) sql.NullInt64 { return sql.NullInt64{Int64: int64(n), Valid: n > 0} }
+
+// actionOrRead 动作类别缺省为 read。
+func actionOrRead(s string) string {
+	if s == "" {
+		return domain.ActionRead
+	}
+	return s
 }
 
 // InsertStageDep 插入依赖边。

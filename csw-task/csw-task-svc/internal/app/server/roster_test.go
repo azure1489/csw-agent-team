@@ -20,8 +20,12 @@ func TestRosterEndpoint(t *testing.T) {
 	}
 
 	roster, _ := body["roster"].(map[string]any)
-	if len(roster) != 7 {
-		t.Fatalf("roster 应 7 个角色，got %d", len(roster))
+	// 0009 起三个原 reserved bot 转为 mapped：7 + 3 = 10。
+	if len(roster) != 10 {
+		t.Fatalf("roster 应 10 个角色，got %d", len(roster))
+	}
+	if x, _ := roster["xhswriter"].(map[string]any); x["bot"] != "小红书图文作者" || x["open_id"] != "ou_003deac0bece81514fca9cd9ba081139" {
+		t.Fatalf("xhswriter=%v", x)
 	}
 	// writer ← 深度内容创作者
 	w, _ := roster["writer"].(map[string]any)
@@ -38,8 +42,7 @@ func TestRosterEndpoint(t *testing.T) {
 		t.Fatalf("van=%v", van)
 	}
 
-	reserved, _ := body["reserved_bots"].(map[string]any)
-	if len(reserved) != 3 || reserved["数据复盘师"] != "ou_7b9ba1d4d09cfbee3ba3f89005db434f" {
-		t.Fatalf("reserved_bots=%v", reserved)
+	if reserved, _ := body["reserved_bots"].(map[string]any); len(reserved) != 0 {
+		t.Fatalf("reserved_bots 应为空，got %v", reserved)
 	}
 }

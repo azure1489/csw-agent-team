@@ -72,12 +72,29 @@ func (s *Server) handleRunDetail(c *gin.Context) {
 	for _, t := range tasks {
 		ts = append(ts, taskBriefDTO(t))
 	}
+	auths, _ := s.store.Q().ListAuthorizations(ctx, id)
+	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	as := make([]gin.H, 0, len(auths))
+	for _, a := range auths {
+		st := "active"
+		switch {
+		case a.RevokedAt != "":
+			st = "revoked"
+		case a.ExpiresAt != "" && a.ExpiresAt <= now:
+			st = "expired"
+		}
+		as = append(as, gin.H{
+			"id": a.ID, "scope": string(a.Scope), "source_quote": a.SourceQuote, "granted_at": a.GrantedAt,
+			"expires_at": a.ExpiresAt, "revoked_at": a.RevokedAt, "status": st,
+		})
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"run": gin.H{
 			"id": run.ID, "workflow_id": run.WorkflowID, "workflow_ver": run.WorkflowVer,
 			"subject": run.Subject, "title": run.Title, "status": string(run.Status),
 		},
-		"tasks": ts,
+		"tasks":          ts,
+		"authorizations": as,
 	})
 }
 
