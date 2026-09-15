@@ -31,23 +31,44 @@ func (r Report) AllOK() bool {
 	return true
 }
 
-// Validate 校验某工作流定义（按 workflow 入参，draft/active 皆可）：
-// DAG 无环、入口可达所有、终点可达、中枢为管理类、闸角色存在、每阶段三段非空、至少一阶段、
-// 动作类别合法、派工模式与时限合法、条目级阶段下游有合流。
+// PureInput 与存储无关的校验输入：服务端激活校验与 wfctl lint 共用同一套规则。
+// Stages 的 ID 只需在本次输入内唯一（wfctl 用序号充当）。
+type PureInput struct {
+	RoleLookup func(code string) (domain.Role, bool)
+	HubRole    string
+	Stages     []domain.Stage
+	Deps       []domain.StageDep
+	Gates      []domain.Gate
+}
+
+// Validate 校验某工作流定义（按 workflow 入参，draft/active 皆可）：从库里取定义后交 ValidatePure。
 func Validate(ctx context.Context, q *sqlite.Queries, wf domain.Workflow) (Report, error) {
-	var rep Report
 	stages, err := q.ListStages(ctx, wf.ID)
 	if err != nil {
-		return rep, err
+		return Report{}, err
 	}
 	deps, err := q.ListStageDeps(ctx, wf.ID)
 	if err != nil {
-		return rep, err
+		return Report{}, err
 	}
 	gates, err := q.ListGates(ctx, wf.ID)
 	if err != nil {
-		return rep, err
+		return Report{}, err
 	}
+	return ValidatePure(PureInput{
+		Stages: stages, Deps: deps, Gates: gates, HubRole: wf.HubRoleCode,
+		RoleLookup: func(code string) (domain.Role, bool) {
+			r, err := q.GetRole(ctx, code)
+			return r, err == nil
+		},
+	}), nil
+}
+
+// ValidatePure 十项校验：DAG 无环、入口可达所有、终点可达、中枢为管理类、闸角色存在、每阶段三段非空、
+// 至少一阶段、动作类别合法、派工模式与时限合法、条目级阶段下游有合流。
+func ValidatePure(in PureInput) Report {
+	var rep Report
+	stages, deps, gates := in.Stages, in.Deps, in.Gates
 
 	// 邻接：dependsOn → 其下游（dependents）；以及 stage → 其依赖。
 	dependents := map[int64][]int64{}
@@ -84,16 +105,16 @@ func Validate(ctx context.Context, q *sqlite.Queries, wf domain.Workflow) (Repor
 
 	// 4. 中枢角色为管理类。
 	hubOK := false
-	if r, err := q.GetRole(ctx, wf.HubRoleCode); err == nil && r.IsManagement {
+	if r, ok := in.RoleLookup(in.HubRole); ok && r.IsManagement {
 		hubOK = true
 	}
-	rep.Checks = append(rep.Checks, Check{Name: "中枢角色为管理类", OK: hubOK, Detail: wf.HubRoleCode})
+	rep.Checks = append(rep.Checks, Check{Name: "中枢角色为管理类", OK: hubOK, Detail: in.HubRole})
 
 	// 5. 各闸 reviewer_role 存在。
 	gatesOK := true
 	missing := ""
 	for _, g := range gates {
-		if _, err := q.GetRole(ctx, g.ReviewerRole); err != nil {
+		if _, ok := in.RoleLookup(g.ReviewerRole); !ok {
 			gatesOK = false
 			missing = g.ReviewerRole
 		}
@@ -165,7 +186,7 @@ func Validate(ctx context.Context, q *sqlite.Queries, wf domain.Workflow) (Repor
 	}
 	rep.Checks = append(rep.Checks, Check{Name: "条目级阶段下游有合流", OK: len(orphan) == 0, Detail: strings.Join(orphan, ", ")})
 
-	return rep, nil
+	return rep
 }
 
 func isAcyclic(stages []domain.Stage, adj map[int64][]int64) bool {

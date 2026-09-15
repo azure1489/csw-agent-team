@@ -108,3 +108,22 @@ agent 不直接拼 HTTP，经配套 `csw-task` skill（见 `../SKILL.md`）调�
 `go test ./...` 含：迁移冒烟 + seed 完整性 + admin 用户/refresh/激活归档旧版（`internal/store/sqlite`）；引擎全流程 + 鉴权护栏（`internal/engine`）；argon2id 往返 + JWT 签发/解析/过期（`internal/auth`）。HTTP 层经 `curl` 端到端：
 - 运行面：触发/派工/上传下载/提交/双闸/inbox/幂等/401·403·409。
 - 后台：登录/refresh 轮换/logout、工作流 clone→校验→激活归档、整份 PUT、成员 token **跨进程交叉验证**（adminsrv 签发→运行面可用→吊销即失效）、RBAC（operator→/users 403）、防自锁、只读监控、审计、CORS 预检。
+
+## wfctl（定义面客户端）
+
+把工作流定义导出为 YAML（`schema: csw-workflow/v1`，长文本外置为 md），本地改、检查、比对，再以**草稿**写回管理后台；激活必须由人在终端里手输 `<key>@<ver>` 确认。只走管理后台 API（JWT 登录，401 自动续期），不直连数据库；deploy 不上传。
+
+```bash
+make wfctl
+export CSW_ADMIN_URL=https://tasks.aworld.ltd CSW_ADMIN_USER=<operator> CSW_ADMIN_PASSWORD=***
+./bin/wfctl export daily_news -o ../../docs/workflows      # 缺省导出 active
+./bin/wfctl lint  ../../docs/workflows/daily_news_v2.yaml   # 0 通过 / 1 错误 / 3 仅警告
+./bin/wfctl diff  ../../docs/workflows/daily_news_v2.yaml   # 对比 active
+./bin/wfctl push  <file> --draft --reason "用户原话"         # 建草稿、写入、回读比对，不激活
+./bin/wfctl validate daily_news@3
+./bin/wfctl activate daily_news@3 --reason "用户原话"       # 打印差异 → 终端确认
+./bin/wfctl history daily_news                             # 版本 + 变更记录（原因 / 摘要）
+./bin/wfctl rollback daily_news@2 --reason "…"             # 旧版复制为新草稿（前滚）
+```
+
+检查规则：服务端十项校验 + L1（无默认闸时每阶段须显式写 `gates:`）、L2（像保存 / 发布却标 read）、L3（角色无活跃成员）、L4（删除的阶段在进行中的 run 里还有任务）、L6（疑似整篇粘贴、引用 §）、L7（引用、取值、依赖存在）。agent 侧用法见 `skill/csw-workflow/SKILL.md`。

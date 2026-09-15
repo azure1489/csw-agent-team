@@ -26,7 +26,7 @@ csw-task/                     配套服务 Monorepo
 
 ```bash
 cd csw-task/csw-task-svc
-make build                                   # 产出 bin/{server,adminsrv,adminctl}
+make build                                   # 产出 bin/{server,adminsrv,adminctl,wfctl}
 make test                                    # = go test ./...
 go test ./internal/engine/                   # 单个包
 go test ./internal/engine/ -run TestTrigger  # 单个测试（-run 接正则）
@@ -36,6 +36,10 @@ make tidy                                    # go mod tidy
 # 初始化 + 引导（首次）
 ./bin/adminctl migrate up
 ./bin/adminctl workflow validate daily_news
+
+# 定义面客户端（走管理后台 API；激活须在终端手输版本号确认）
+CSW_ADMIN_URL=http://localhost:8081 CSW_ADMIN_USER=admin CSW_ADMIN_PASSWORD=*** \
+  ./bin/wfctl export daily_news -o ../../docs/workflows   # 其后 lint / diff / push --draft / validate / activate / history / rollback
 ./bin/adminctl token issue editor                                  # 运行面 agent token（明文仅一次）
 ./bin/adminctl user create admin --role superadmin --password ***  # 首个后台用户（argon2id）
 
@@ -133,9 +137,9 @@ pnpm lint     # 仅 tsc --noEmit（无 ESLint）
 Go module `github.com/azure1489/csw-agent-team/csw-task-svc`，golang-standards/project-layout：
 
 ```
-cmd/{server,adminsrv,adminctl}/    三入口
+cmd/{server,adminsrv,adminctl,wfctl}/    四入口（wfctl 为操作员 / agent 本地用的定义面客户端，不部署）
 internal/
-  config/        env 配置（运行面 + JWT/CORS/后台共用）
+  config/        env 配置（运行面 + JWT/CORS/后台 + notifier/飞书）
   app/{server,adminsrv,adminctl}/  gin 装配 + handlers / CLI
   domain/        实体 + 状态枚举 + 纯规则（无框架依赖）
   engine/        工作流引擎（触发/就绪/派工/提交/审核，单事务）  ← 核心
@@ -144,6 +148,10 @@ internal/
   files/         BlobStore 接口 + 本地内容寻址实现（含 OSS 后端）
   auth/          bearer token + argon2id 密码 + JWT 签发/校验
   middleware/    requestid/logger/recovery/agentauth/idempotency · jwtauth/rbac/cors
+  lark/          飞书 Open API 最小客户端（tenant token + 群文本消息）
+  notifier/      outbox 轮询发送、逾期扫描、进度卡（server 进程内）
+  wfdef/         工作流定义 YAML（csw-workflow/v1）↔ 后台 API、差异与本地检查
+  app/wfctl/     定义面客户端 CLI（cmd/wfctl）
 ```
 
 **两个 HTTP 进程共享同一 sqlite、但分凭证**——这是核心架构约束：

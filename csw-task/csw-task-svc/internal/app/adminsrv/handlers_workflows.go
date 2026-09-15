@@ -1,7 +1,11 @@
 package adminsrv
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -99,8 +103,10 @@ func (s *Server) handleCreateWorkflow(c *gin.Context) {
 		s.renderErr(c, err)
 		return
 	}
-	s.audit(c, "workflow_create", req.WfKey, "")
-	c.JSON(http.StatusCreated, gin.H{"id": id})
+	if wf, err := s.store.Q().GetWorkflow(c.Request.Context(), id); err == nil {
+		s.auditWorkflow(c, "workflow_create", wf, "", "", nil)
+	}
+	c.JSON(http.StatusCreated, gin.H{"id": id, "version": mustVersion(s, c, id)})
 }
 
 type putStage struct {
@@ -126,7 +132,40 @@ type putGate struct {
 	RelayedByHub bool   `json:"relayed_by_hub"`
 }
 
+// readReason 读可选 JSON 体里的 reason（前端无体调用时为空，不影响）。
+func readReason(c *gin.Context) (string, error) {
+	raw, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<16))
+	if err != nil || len(strings.TrimSpace(string(raw))) == 0 {
+		return "", nil
+	}
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return "", domain.BadRequest("bad_body", "请求体须为 JSON：{\"reason\":\"…\"}")
+	}
+	return strings.TrimSpace(req.Reason), nil
+}
+
+// auditWorkflow 定义变更审计：target 统一为 <key>@<ver>，detail 带修改原因与变更摘要。
+func (s *Server) auditWorkflow(c *gin.Context, action string, wf domain.Workflow, reason, summary string, extra map[string]any) {
+	d := map[string]any{"wf_key": wf.WfKey, "version": wf.Version}
+	if reason != "" {
+		d["reason"] = reason
+	}
+	if summary != "" {
+		d["change_summary"] = summary
+	}
+	for k, v := range extra {
+		d[k] = v
+	}
+	b, _ := json.Marshal(d)
+	s.audit(c, action, fmt.Sprintf("%s@%d", wf.WfKey, wf.Version), string(b))
+}
+
 type putWorkflowReq struct {
+	Reason             string     `json:"reason"`         // 修改原因（wfctl 必带；后台可空）
+	ChangeSummary      string     `json:"change_summary"` // 变更摘要（wfctl 由差异生成）
 	Name               string     `json:"name" binding:"required"`
 	HubRole            string     `json:"hub_role" binding:"required"`
 	DispatchMode       string     `json:"dispatch_mode"`
@@ -264,7 +303,9 @@ func (s *Server) handlePutWorkflow(c *gin.Context) {
 		s.renderErr(c, err)
 		return
 	}
-	s.audit(c, "workflow_update", c.Param("id"), "")
+	if wf, err := s.store.Q().GetWorkflow(c.Request.Context(), id); err == nil {
+		s.auditWorkflow(c, "workflow_update", wf, strings.TrimSpace(req.Reason), strings.TrimSpace(req.ChangeSummary), nil)
+	}
 	resp := gin.H{"ok": true}
 	if valRep != nil {
 		resp["validation"] = gin.H{"all_ok": valRep.AllOK(), "checks": reportToJSON(*valRep)}
@@ -308,9 +349,18 @@ func (s *Server) handleActivateWorkflow(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
+	reason, err := readReason(c)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
 	wf, err := s.store.Q().GetWorkflow(ctx, id)
 	if err != nil {
 		s.renderErr(c, domain.NotFound("workflow_not_found", "无此工作流"))
+		return
+	}
+	if wf.Status != domain.WfDraft {
+		s.renderErr(c, domain.Conflict("not_draft", "只有草稿版本可以激活；当前为 "+string(wf.Status)+"（归档版本请先复制为新草稿）"))
 		return
 	}
 	rep, err := workflow.Validate(ctx, s.store.Q(), wf)
@@ -332,7 +382,7 @@ func (s *Server) handleActivateWorkflow(c *gin.Context) {
 		s.renderErr(c, err)
 		return
 	}
-	s.audit(c, "workflow_activate", wf.WfKey, "")
+	s.auditWorkflow(c, "workflow_activate", wf, reason, "", nil)
 	c.JSON(http.StatusOK, gin.H{"ok": true, "checks": reportToJSON(rep)})
 }
 
@@ -343,11 +393,21 @@ func (s *Server) handleArchiveWorkflow(c *gin.Context) {
 		s.renderErr(c, err)
 		return
 	}
+	reason, err := readReason(c)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	wf, err := s.store.Q().GetWorkflow(c.Request.Context(), id)
+	if err != nil {
+		s.renderErr(c, domain.NotFound("workflow_not_found", "无此工作流"))
+		return
+	}
 	if err := s.store.Q().SetWorkflowStatus(c.Request.Context(), id, domain.WfArchived); err != nil {
 		s.renderErr(c, err)
 		return
 	}
-	s.audit(c, "workflow_archive", c.Param("id"), "")
+	s.auditWorkflow(c, "workflow_archive", wf, reason, "", nil)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -359,12 +419,19 @@ func (s *Server) handleCloneWorkflow(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
+	reason, err := readReason(c)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
 	var newID int64
+	var srcVer int
 	err = s.store.Tx(ctx, func(q *sqlite.Queries) error {
 		src, err := q.GetWorkflow(ctx, srcID)
 		if err != nil {
 			return domain.NotFound("workflow_not_found", "无此工作流")
 		}
+		srcVer = src.Version
 		newID, err = q.CreateWorkflowDraft(ctx, src.WfKey, src.Name, src.HubRoleCode, string(src.DispatchMode), src.TriggerRoles)
 		if err != nil {
 			return err
@@ -415,6 +482,20 @@ func (s *Server) handleCloneWorkflow(c *gin.Context) {
 		s.renderErr(c, err)
 		return
 	}
-	s.audit(c, "workflow_clone", c.Param("id"), "")
-	c.JSON(http.StatusCreated, gin.H{"id": newID})
+	nw, err := s.store.Q().GetWorkflow(ctx, newID)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	s.auditWorkflow(c, "workflow_clone", nw, reason, "", map[string]any{"from_version": srcVer})
+	c.JSON(http.StatusCreated, gin.H{"id": newID, "version": nw.Version})
+}
+
+// mustVersion 取新建版本号（响应回显用；失败回 0）。
+func mustVersion(s *Server, c *gin.Context, id int64) int {
+	wf, err := s.store.Q().GetWorkflow(c.Request.Context(), id)
+	if err != nil {
+		return 0
+	}
+	return wf.Version
 }

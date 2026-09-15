@@ -187,3 +187,27 @@ func (q *Queries) ListAudit(ctx context.Context, userID *int64, action, datePref
 	}
 	return out, rows.Err()
 }
+
+// ListAuditByTargetPrefix 按 target 前缀列审计（如 "daily_news@" 查某工作流全部版本的变更记录），新到旧。
+func (q *Queries) ListAuditByTargetPrefix(ctx context.Context, prefix string, limit int) ([]domain.AdminAudit, error) {
+	rows, err := q.ex.QueryContext(ctx, `SELECT a.id, a.user_id, u.username, a.action, a.target, a.detail_json, a.created_at
+		FROM admin_audit a LEFT JOIN admin_users u ON u.id = a.user_id
+		WHERE substr(a.target, 1, length(?)) = ? ORDER BY a.id DESC LIMIT ?`, prefix, prefix, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.AdminAudit
+	for rows.Next() {
+		var e domain.AdminAudit
+		var uid sql.NullInt64
+		var uname, target, detail sql.NullString
+		if err := rows.Scan(&e.ID, &uid, &uname, &e.Action, &target, &detail, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		e.UserID = ptrI64(uid)
+		e.Username, e.Target, e.DetailJSON = uname.String, target.String, detail.String
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}

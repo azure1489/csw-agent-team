@@ -18,7 +18,7 @@ csw-task skill（同一份，见 ../SKILL.md，只读分发）
 
 | bootstrap | role_code | 群 bot | 阶段（daily_news v2） | 除公共底座外的工具 skill |
 |---|---|---|---|---|
-| `editor.md` | editor | 主编 | 03 选题方案、07 完整审核稿（合流）+ 各主编闸 + 代录 Van | — |
+| `editor.md` | editor | 主编 | 03 选题方案、07 完整审核稿（合流）+ 各主编闸 + 代录 Van | `csw-workflow`（可选：按 Van 意愿改流程定义，激活须人在终端确认；需后台 operator 账号） |
 | `collector.md` | collector | 情报收集员 | 01 情报逐条、05 配图与素材核 | 营事编集室 csw MCP · opencli（xiaohongshu）· WebFetch |
 | `researcher.md` | researcher | 选题研究员 | 02 价值初筛 | —（发布记录接口上线后查近发） |
 | `writer.md` | writer | 深度内容创作者 | 04 公众号写作 | — |

@@ -1,6 +1,6 @@
-.PHONY: build server adminsrv adminctl test tidy run-server run-adminsrv migrate clean
+.PHONY: build server adminsrv adminctl wfctl test tidy run-server run-adminsrv migrate clean
 
-build: server adminsrv adminctl
+build: server adminsrv adminctl wfctl
 
 server:
 	go build -o bin/server ./cmd/server
@@ -10,6 +10,10 @@ adminsrv:
 
 adminctl:
 	go build -o bin/adminctl ./cmd/adminctl
+
+# 定义面客户端（操作员 / agent 本地使用，走管理后台 API；deploy 不上传）
+wfctl:
+	go build -o bin/wfctl ./cmd/wfctl
 
 test:
 	go test ./...
