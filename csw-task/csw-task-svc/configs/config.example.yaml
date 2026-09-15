@@ -38,6 +38,8 @@ lark:                               # 凭证勿提交：放 /opt/csw-task/server
 # ── 数据子系统（syncer：发布记录同步 / 指标快照；只由运维 CLI 使用）──
 #   平台读取走外部命令，约定见 docs/数据子系统_探针记录.md；命令可以是 ssh 到持有 mp-helper / opencli 登录态的主机执行。
 #   CSW_SYNC_WX_CMD="ssh agent-host /opt/csw-sync/wx.sh"    CSW_SYNC_XHS_CMD="ssh agent-host /opt/csw-sync/xhs.sh"
+#   公众号也可不配命令、直接经 mp-helper 只读接口读取（CSW_SYNC_WX_CMD 为空时生效）：
+#   CSW_SYNC_WX_MPHELPER_URL=http://172.17.0.1:8088          CSW_SYNC_WX_MPHELPER_KEY=<mp-helper 业务 API Key>
 #   CSW_SYNC_WX_ACCOUNT=营事编集室                          CSW_SYNC_XHS_ACCOUNT=CAMPsomeWHERE
 
 # ── 管理后台 cmd/adminsrv（人类 JWT + CORS，默认 :8081）──

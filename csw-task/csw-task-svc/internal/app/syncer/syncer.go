@@ -60,6 +60,10 @@ func RunWith(args []string, cfg config.Config, out io.Writer, adapter func(platf
 	if adapter == nil {
 		adapter = func(p string) ledger.Adapter {
 			if p == "wechat" {
+				// 公众号：显式配置的外部命令优先；否则经 mp-helper 的只读接口读取。
+				if cfg.SyncWxCmd == "" && cfg.SyncWxMPHelperURL != "" {
+					return &ledger.MPHelperAdapter{BaseURL: cfg.SyncWxMPHelperURL, APIKey: cfg.SyncWxMPHelperKey}
+				}
 				return &ledger.CommandAdapter{Name: "wechat", Cmd: cfg.SyncWxCmd}
 			}
 			return &ledger.CommandAdapter{Name: "xhs", Cmd: cfg.SyncXhsCmd}

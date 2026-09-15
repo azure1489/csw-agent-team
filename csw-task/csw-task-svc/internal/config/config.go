@@ -59,10 +59,13 @@ type Config struct {
 	SkillMinVersion string
 
 	// ── 数据子系统（syncer）：平台读取走外部命令（包 mp-helper / opencli，可以是 ssh 到持有登录态的主机执行）──
-	SyncWxCmd      string
-	SyncXhsCmd     string
-	SyncWxAccount  string
-	SyncXhsAccount string
+	SyncWxCmd  string
+	SyncXhsCmd string
+	// 公众号读取经 mp-helper 只读接口（未配置 SyncWxCmd 时使用）
+	SyncWxMPHelperURL string
+	SyncWxMPHelperKey string
+	SyncWxAccount     string
+	SyncXhsAccount    string
 }
 
 // Load 加载配置：先把 config.yaml 的值注入未设置的环境变量，再按 env（含注入值）读取。
@@ -90,19 +93,21 @@ func Load() Config {
 		OSSAccessKeySecret: env("CSW_OSS_ACCESS_KEY_SECRET", ""),
 		OSSPrefix:          env("CSW_OSS_PREFIX", "blobs"),
 
-		NotifierEnabled: envBool("CSW_NOTIFIER_ENABLED", false),
-		NotifierDryRun:  envBool("CSW_NOTIFIER_DRY_RUN", false),
-		NotifierChatKey: env("CSW_NOTIFIER_CHAT_KEY", ""),
-		NotifierPoll:    envDuration("CSW_NOTIFIER_POLL", 2*time.Second),
-		OverdueScan:     envDuration("CSW_OVERDUE_SCAN", 60*time.Second),
-		LarkAppID:       env("CSW_LARK_APP_ID", ""),
-		LarkAppSecret:   env("CSW_LARK_APP_SECRET", ""),
-		LarkBaseURL:     strings.TrimRight(env("CSW_LARK_BASE_URL", "https://open.feishu.cn"), "/"),
-		SkillMinVersion: env("CSW_SKILL_MIN_VERSION", "3.3.0"),
-		SyncWxCmd:       env("CSW_SYNC_WX_CMD", ""),
-		SyncXhsCmd:      env("CSW_SYNC_XHS_CMD", ""),
-		SyncWxAccount:   env("CSW_SYNC_WX_ACCOUNT", "营事编集室"),
-		SyncXhsAccount:  env("CSW_SYNC_XHS_ACCOUNT", "CAMPsomeWHERE"),
+		NotifierEnabled:   envBool("CSW_NOTIFIER_ENABLED", false),
+		NotifierDryRun:    envBool("CSW_NOTIFIER_DRY_RUN", false),
+		NotifierChatKey:   env("CSW_NOTIFIER_CHAT_KEY", ""),
+		NotifierPoll:      envDuration("CSW_NOTIFIER_POLL", 2*time.Second),
+		OverdueScan:       envDuration("CSW_OVERDUE_SCAN", 60*time.Second),
+		LarkAppID:         env("CSW_LARK_APP_ID", ""),
+		LarkAppSecret:     env("CSW_LARK_APP_SECRET", ""),
+		LarkBaseURL:       strings.TrimRight(env("CSW_LARK_BASE_URL", "https://open.feishu.cn"), "/"),
+		SkillMinVersion:   env("CSW_SKILL_MIN_VERSION", "3.3.0"),
+		SyncWxCmd:         env("CSW_SYNC_WX_CMD", ""),
+		SyncXhsCmd:        env("CSW_SYNC_XHS_CMD", ""),
+		SyncWxMPHelperURL: env("CSW_SYNC_WX_MPHELPER_URL", ""),
+		SyncWxMPHelperKey: env("CSW_SYNC_WX_MPHELPER_KEY", ""),
+		SyncWxAccount:     env("CSW_SYNC_WX_ACCOUNT", "营事编集室"),
+		SyncXhsAccount:    env("CSW_SYNC_XHS_ACCOUNT", "CAMPsomeWHERE"),
 	}
 	cfg.AllowedContentTypes = parseSet(env("CSW_ALLOWED_CONTENT_TYPES",
 		"application/zip,application/x-zip-compressed,application/octet-stream"))
