@@ -33,6 +33,7 @@ type SweepInput struct {
 	FetchedUnique int
 	Reviewed      int
 	Unreviewed    int
+	Corroborated  int
 	InWindow      int
 	Registered    int
 	PagedToEnd    bool
@@ -95,7 +96,7 @@ func (e *Engine) ReportSweeps(ctx context.Context, actor domain.Agent, role doma
 				RunID: runID, TaskID: sw.TaskID, SweepKey: sw.SweepKey, Platform: sw.Platform, SourceKey: sw.SourceKey,
 				Tool: tool, Query: sw.Query, StartedAt: sw.StartedAt, EndedAt: sw.EndedAt,
 				WindowFrom: sw.WindowFrom, WindowTo: sw.WindowTo, Found: sw.Found, InWindow: sw.InWindow,
-				Registered: sw.Registered, FetchedUnique: sw.FetchedUnique, Reviewed: sw.Reviewed, Unreviewed: sw.Unreviewed,
+				Registered: sw.Registered, FetchedUnique: sw.FetchedUnique, Reviewed: sw.Reviewed, Unreviewed: sw.Unreviewed, Corroborated: sw.Corroborated,
 				Result: result, Error: sw.Error, PagedToEnd: sw.PagedToEnd,
 				ActorID: &actor.ID, RoleCode: role.Code,
 			}); err != nil {
@@ -296,13 +297,19 @@ func checkYield(tr IntakeTrace, hasSweeps, hasTraces bool) IntakeCheck {
 		c.Skipped, c.Detail = true, "本期没有上报采集轮，不判定"
 		return c
 	}
-	found, unique, reviewed, unreviewed, inWindow := 0, 0, 0, 0, 0
+	found, unique, reviewed, unreviewed, corroborated, inWindow := 0, 0, 0, 0, 0, 0
 	for _, sw := range tr.Sweeps {
 		found += sw.Found
 		unique += sw.FetchedUnique
 		reviewed += sw.Reviewed
 		unreviewed += sw.Unreviewed
+		corroborated += sw.Corroborated
 		inWindow += sw.InWindow
+	}
+	// 佐证页（为核实线索去读的官方页、原始出处）算已审但不该成为候选，从对账基数里扣掉。
+	candidates := reviewed - corroborated
+	if candidates < 0 {
+		candidates = 0
 	}
 	dropped := 0
 	for _, it := range tr.Items {
@@ -310,21 +317,21 @@ func checkYield(tr IntakeTrace, hasSweeps, hasTraces bool) IntakeCheck {
 			dropped++
 		}
 	}
-	c.Detail = fmt.Sprintf("接口返回 %d、去重 %d、已审 %d、未审 %d、窗口内 %d、登记 %d（其中淘汰 %d）",
-		found, unique, reviewed, unreviewed, inWindow, len(tr.Items), dropped)
+	c.Detail = fmt.Sprintf("接口返回 %d、去重 %d、已审 %d（其中佐证 %d）、未审 %d、窗口内 %d、登记 %d（其中淘汰 %d）",
+		found, unique, reviewed, corroborated, unreviewed, inWindow, len(tr.Items), dropped)
 	// 拿「已审」对账，不拿「接口返回」对账：获取多不等于漏登记，审过却没落状态才是漏。
 	if reviewed == 0 && unreviewed == 0 {
 		c.Skipped = true
 		c.Detail += "；本期没有分开上报已审与未审，不判定"
 		return c
 	}
-	if gap := reviewed - len(tr.Items); gap > 0 {
+	if gap := candidates - len(tr.Items); gap > 0 {
 		if !hasTraces {
 			c.Skipped = true
-			c.Detail += fmt.Sprintf("；已审比登记多 %d 条，本期没有判断轨迹，不判定", gap)
+			c.Detail += fmt.Sprintf("；已审（扣除佐证）比登记多 %d 条，本期没有判断轨迹，不判定", gap)
 			return c
 		}
-		c.Detail += fmt.Sprintf("；已审比登记多 %d 条——审过就该落状态，不能只留在本地", gap)
+		c.Detail += fmt.Sprintf("；已审（扣除佐证）比登记多 %d 条——审过的候选就该落状态，不能只留在本地", gap)
 		return c
 	}
 	if unreviewed > 0 {

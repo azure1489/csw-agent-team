@@ -316,6 +316,7 @@ type IntakeSweep struct {
 	FetchedUnique int // 去重获取数：去掉跨轮重复后的不同内容数
 	Reviewed      int // 已审数：实际读过正文或看过图、形成了判断的条数
 	Unreviewed    int // 未审数：只加载未展开的条数（不得事后补成淘汰）
+	Corroborated  int // 佐证数：已审里为核实线索而读的页面（官方页、原始出处），不作为候选登记
 	InWindow      int // 其中落在当期窗口内的条数
 	Registered    int // 其中登记成条目的条数
 	PagedToEnd    bool

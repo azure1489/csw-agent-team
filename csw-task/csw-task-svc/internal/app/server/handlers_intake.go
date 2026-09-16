@@ -25,6 +25,7 @@ type reportSweepsReq struct {
 		FetchedUnique int    `json:"fetched_unique"`
 		Reviewed      int    `json:"reviewed"`
 		Unreviewed    int    `json:"unreviewed"`
+		Corroborated  int    `json:"corroborated"`
 		InWindow      int    `json:"in_window"`
 		Registered    int    `json:"registered"`
 		Result        string `json:"result"`
@@ -51,6 +52,7 @@ type sweepDTO struct {
 	FetchedUnique int    `json:"fetched_unique"`
 	Reviewed      int    `json:"reviewed"`
 	Unreviewed    int    `json:"unreviewed"`
+	Corroborated  int    `json:"corroborated"`
 	InWindow      int    `json:"in_window"`
 	Registered    int    `json:"registered"`
 	PagedToEnd    bool   `json:"paged_to_end,omitempty"`
@@ -62,7 +64,7 @@ func toSweepDTOs(sweeps []domain.IntakeSweep) []sweepDTO {
 		out = append(out, sweepDTO{SweepKey: sw.SweepKey, Platform: sw.Platform, SourceKey: sw.SourceKey, Tool: sw.Tool,
 			Query: sw.Query, StartedAt: sw.StartedAt, EndedAt: sw.EndedAt, WindowFrom: sw.WindowFrom, WindowTo: sw.WindowTo,
 			Result: sw.Result, Error: sw.Error, RoleCode: sw.RoleCode, Found: sw.Found,
-			FetchedUnique: sw.FetchedUnique, Reviewed: sw.Reviewed, Unreviewed: sw.Unreviewed,
+			FetchedUnique: sw.FetchedUnique, Reviewed: sw.Reviewed, Unreviewed: sw.Unreviewed, Corroborated: sw.Corroborated,
 			InWindow: sw.InWindow, Registered: sw.Registered, PagedToEnd: sw.PagedToEnd})
 	}
 	return out
@@ -106,7 +108,7 @@ func (s *Server) handleReportSweeps(c *gin.Context) {
 		in = append(in, engine.SweepInput{SweepKey: sw.SweepKey, Platform: sw.Platform, SourceKey: sw.SourceKey,
 			Tool: sw.Tool, Query: sw.Query, StartedAt: sw.StartedAt, EndedAt: sw.EndedAt,
 			WindowFrom: sw.WindowFrom, WindowTo: sw.WindowTo, Found: sw.Found, InWindow: sw.InWindow,
-			Registered: sw.Registered, FetchedUnique: sw.FetchedUnique, Reviewed: sw.Reviewed, Unreviewed: sw.Unreviewed,
+			Registered: sw.Registered, FetchedUnique: sw.FetchedUnique, Reviewed: sw.Reviewed, Unreviewed: sw.Unreviewed, Corroborated: sw.Corroborated,
 			Result: sw.Result, Error: sw.Error, PagedToEnd: sw.PagedToEnd, TaskID: sw.TaskID})
 	}
 	agent, role := mwAgent(c)

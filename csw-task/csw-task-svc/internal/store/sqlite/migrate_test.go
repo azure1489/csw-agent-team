@@ -266,7 +266,7 @@ func TestSeedDailyNewsV2(t *testing.T) {
 
 // TestSeedDailyNewsV3 验证 0024：v3 为唯一 active；Van 闸只在 03 / 08 / 12；组版前移（08 即完整审核稿）；
 // 小红书 11 改为收集员选图包、与 10 同依赖 08；写作自动派工；时限与接续告警阈值。
-func TestSeedDailyNewsV6(t *testing.T) {
+func TestSeedDailyNewsV7(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -279,8 +279,8 @@ func TestSeedDailyNewsV6(t *testing.T) {
 	if err := db.QueryRow(`SELECT id, version FROM workflows WHERE wf_key='daily_news' AND status='active'`).Scan(&wfID, &ver); err != nil {
 		t.Fatalf("active daily_news: %v", err)
 	}
-	if ver != 6 {
-		t.Fatalf("want v6 active, got v%d", ver)
+	if ver != 7 {
+		t.Fatalf("want v7 active, got v%d", ver)
 	}
 	count := func(q string, args ...any) int {
 		t.Helper()

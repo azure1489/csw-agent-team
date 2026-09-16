@@ -50,12 +50,12 @@ func run(t *testing.T, ts *httptest.Server, stdin string, tty bool, args ...stri
 func TestWfctlEndToEnd(t *testing.T) {
 	ts, st := adminServer(t)
 	dir := t.TempDir()
-	file := filepath.Join(dir, "daily_news_v6.yaml")
+	file := filepath.Join(dir, "daily_news_v7.yaml")
 
-	if code, out := run(t, ts, "", false, "export", "daily_news", "-o", dir); code != 0 || !strings.Contains(out, "daily_news@v6") {
+	if code, out := run(t, ts, "", false, "export", "daily_news", "-o", dir); code != 0 || !strings.Contains(out, "daily_news@v7") {
 		t.Fatalf("export: %d %s", code, out)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "daily_news_v6", "intake.instructions.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "daily_news_v7", "intake.instructions.md")); err != nil {
 		t.Fatalf("texts should be externalized: %v", err)
 	}
 	if code, out := run(t, ts, "", false, "diff", file); code != 0 || !strings.Contains(out, "无差异") {
@@ -89,42 +89,42 @@ func TestWfctlEndToEnd(t *testing.T) {
 		t.Fatalf("push without --draft must be usage error, got %d", code)
 	}
 	code, out := run(t, ts, "", false, "push", edited, "--draft", "--reason", "Van：选题时限放宽到 20 分钟")
-	if code != 0 || !strings.Contains(out, "已建草稿 daily_news@v7") {
+	if code != 0 || !strings.Contains(out, "已建草稿 daily_news@v8") {
 		t.Fatalf("push: %d %s", code, out)
 	}
-	if code, out := run(t, ts, "", false, "validate", "daily_news@7"); code != 0 {
+	if code, out := run(t, ts, "", false, "validate", "daily_news@8"); code != 0 {
 		t.Fatalf("validate: %d %s", code, out)
 	}
-	if code, out := run(t, ts, "", false, "activate", "daily_news@7", "--reason", "Van：激活"); code != 2 || !strings.Contains(out, "终端") {
+	if code, out := run(t, ts, "", false, "activate", "daily_news@8", "--reason", "Van：激活"); code != 2 || !strings.Contains(out, "终端") {
 		t.Fatalf("activate without tty must require a human: %d %s", code, out)
 	}
-	if code, _ := run(t, ts, "daily_news@v9\n", true, "activate", "daily_news@7", "--reason", "Van：激活"); code != 2 {
+	if code, _ := run(t, ts, "daily_news@v99\n", true, "activate", "daily_news@8", "--reason", "Van：激活"); code != 2 {
 		t.Fatalf("wrong confirmation must not activate, got %d", code)
 	}
-	if code, out := run(t, ts, "daily_news@v7\n", true, "activate", "daily_news@7", "--reason", "Van：激活"); code != 0 || !strings.Contains(out, "已激活") {
+	if code, out := run(t, ts, "daily_news@v8\n", true, "activate", "daily_news@8", "--reason", "Van：激活"); code != 0 || !strings.Contains(out, "已激活") {
 		t.Fatalf("activate with confirmation: %d %s", code, out)
 	}
 	active, _ := st.Q().ActiveWorkflowByKey(context.Background(), "daily_news")
-	if active.Version != 7 {
-		t.Fatalf("active want v7, got v%d", active.Version)
+	if active.Version != 8 {
+		t.Fatalf("active want v8, got v%d", active.Version)
 	}
 	if code, out := run(t, ts, "", false, "history", "daily_news"); code != 0 || !strings.Contains(out, "workflow_activate") || !strings.Contains(out, "Van：选题时限放宽到 20 分钟") {
 		t.Fatalf("history: %d %s", code, out)
 	}
-	if code, out := run(t, ts, "", false, "rollback", "daily_news@6", "--reason", "回到原时限"); code != 0 || !strings.Contains(out, "草稿 v8") {
+	if code, out := run(t, ts, "", false, "rollback", "daily_news@7", "--reason", "回到原时限"); code != 0 || !strings.Contains(out, "草稿 v9") {
 		t.Fatalf("rollback: %d %s", code, out)
 	}
 	v4, _ := st.Q().ListWorkflowsAll(context.Background(), "daily_news", "draft")
-	if len(v4) != 1 || v4[0].Version != 8 {
+	if len(v4) != 1 || v4[0].Version != 9 {
 		t.Fatalf("rollback draft: %+v", v4)
 	}
 	stages, _ := st.Q().ListStages(context.Background(), v4[0].ID)
 	for _, s := range stages {
 		if s.Code == "topic" && s.SLAMinutes != 15 {
-			t.Fatalf("rollback should carry v6 content, topic sla=%d", s.SLAMinutes)
+			t.Fatalf("rollback should carry v7 content, topic sla=%d", s.SLAMinutes)
 		}
 	}
-	if code, _ := run(t, ts, "", false, "activate", "daily_news@6", "--reason", "x", "--yes"); code != 1 {
+	if code, _ := run(t, ts, "", false, "activate", "daily_news@7", "--reason", "x", "--yes"); code != 1 {
 		t.Fatalf("archived version must not activate, got %d", code)
 	}
 	if code, out := run(t, ts, "", false, "roles"); code != 0 || !strings.Contains(out, "xhswriter") {
@@ -138,7 +138,7 @@ func TestWfctlLintBlocksPush(t *testing.T) {
 	if code, out := run(t, ts, "", false, "export", "daily_news", "-o", dir); code != 0 {
 		t.Fatalf("export: %d %s", code, out)
 	}
-	file := filepath.Join(dir, "daily_news_v6.yaml")
+	file := filepath.Join(dir, "daily_news_v7.yaml")
 	def, _ := wfdef.Load(file)
 	for i := range def.Stages {
 		switch def.Stages[i].Code {

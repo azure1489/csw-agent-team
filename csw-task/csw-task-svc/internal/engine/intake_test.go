@@ -113,7 +113,7 @@ func TestIntakeCheckCatchesMissingRequiredSource(t *testing.T) {
 
 	// 只扫 Instagram：台账里 xhs 与 web 也是必扫，应被点名。
 	if _, err := e.ReportSweeps(ctx, collector, collectorRole, runID, []SweepInput{
-		{SweepKey: "ig-1", Platform: "instagram", SourceKey: "channel", Tool: "csw_mcp", Found: 9, FetchedUnique: 9, Reviewed: 3, Unreviewed: 6, InWindow: 3, Registered: 3, Result: "ok"},
+		{SweepKey: "ig-1", Platform: "instagram", SourceKey: "channel", Tool: "csw_mcp", Found: 9, FetchedUnique: 9, Reviewed: 4, Corroborated: 1, Unreviewed: 5, InWindow: 3, Registered: 3, Result: "ok"},
 	}); err != nil {
 		t.Fatalf("report: %v", err)
 	}
