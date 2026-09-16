@@ -324,8 +324,12 @@ func checkWindow(tr IntakeTrace, from, to time.Time) IntakeCheck {
 		c.Skipped, c.Detail = true, "本期没有条目，不判定"
 		return c
 	}
-	var bad, unparsed []string
+	var bad, unparsed, missing []string
 	for _, it := range tr.Items {
+		if strings.TrimSpace(it.PublishedAt) == "" {
+			missing = append(missing, it.ItemKey)
+			continue
+		}
 		pub, ok := parseLoose(it.PublishedAt)
 		if !ok {
 			unparsed = append(unparsed, it.ItemKey)
@@ -345,10 +349,18 @@ func checkWindow(tr IntakeTrace, from, to time.Time) IntakeCheck {
 	}
 	if len(bad) > 0 {
 		c.Detail = fmt.Sprintf("%d 条越界：%s", len(bad), strings.Join(bad, "、"))
+		if len(missing) > 0 {
+			c.Detail += fmt.Sprintf("；另有 %d 条没写原始披露时间：%s", len(missing), strings.Join(missing, "、"))
+		}
 		return c
 	}
+	judged := len(tr.Items) - len(unparsed) - len(missing)
 	c.OK = true
-	c.Detail = fmt.Sprintf("%d 条条目的时间都在窗口内", len(tr.Items)-len(unparsed))
+	c.Detail = fmt.Sprintf("%d 条条目的时间都在窗口内", judged)
+	if len(missing) > 0 {
+		c.Warn = true
+		c.Detail += fmt.Sprintf("；%d 条没写原始披露时间，无法判断是否属于当期：%s", len(missing), strings.Join(missing, "、"))
+	}
 	if len(unparsed) > 0 {
 		c.Warn = true
 		c.Detail += fmt.Sprintf("；%d 条时间格式无法解析，未判定：%s", len(unparsed), strings.Join(unparsed, "、"))
