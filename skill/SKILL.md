@@ -1,6 +1,6 @@
 ---
 name: csw-task
-version: 3.8.0
+version: 3.9.0
 description: 营事编集室「任务流转服务」客户端 + 编辑部协作协议（v3：十三阶段、引擎单写群播报）。当 agent 需要在工作流里干活时使用：被群消息 @ 唤醒后查任务、接单、下载上游、干活并一步提交产出或补件；（主编）触发实例、派工、审核、定点编辑、录入授权、代录 Van 决定、取消与重开。封装运行面 HTTP API（bearer 鉴权 / 幂等 / 一步式上传提交），agent 不自己拼 HTTP。触发词：触发流程、开批次、我的任务、接单、提交产出、补件、派工、审核、退回、定点编辑、授权、任务进度、编辑部群、CSW 任务流转。
 ---
 
@@ -108,6 +108,8 @@ curl -fsS -X POST "$BASE/api/v1/tasks/$TASK_ID/deliverables" -H "Authorization: 
 7. **做不了就报失败**：`fail` 写清原因（来源全部失效 / 缺必要权限 / 版本过低…），不要沉默等待；主编会重开或取消。平台写阶段返回 `authorization_required` = 本期没有这项授权——停手报主编，不找别的办法进后台。
 
 **登记条目（情报收集员 / 选题研究员）**：每条情报在引擎登记为一个条目——`PUT /runs/{id}/items`，条目键 = 品牌英文或拼音小写 + 短横 + 原文链接 sha256 前 6 位（如 `hxo-3fa91c`），生成后不再改；研究员把采用与备选的条目标 `shortlisted`。批准、暂缓、否决只由主编按 Van 原话决定。
+
+**Instagram 查 csw MCP（情报收集员）**：时间窗是唯一入口——直接 `csw_posts_search` 用 `start`/`end`/`order=latest`/`limit` 按当期窗口取全量贴文并翻页取完。不要按 `account` 逐个搜、不要凭记忆猜账号名（猜出来的「零结果」只说明账号不在后台，不说明该品牌没发，不得记为已扫来源）。账号信息是贴文的附属：拿到贴文后需要了解来源背景时，才用 `csw_accounts_list` 查对应账号。
 
 **留采集与判断的痕迹（情报收集员 / 选题研究员）**：提交交付物前用 `PUT /runs/{id}/sweeps` 把本次全部采集轮一次报上去（每扫一个来源一条，含找到几条、窗口内几条、登记几条、成败与失败原因）——没有这条记录，主编无法区分「没找到」与「没去找」。每条条目写 `discovered_via`（对应的 sweep_key）、`fetched_at`、`evidence_url`、`dedup_note`。**判断过就不要留在 candidate**：确定不做的标 `dropped` 并给 `reason_code` 与一句理由（`no_value` / `not_new` / `dup_published` / `dup_recent_rejected` / `out_of_window` / `evidence_missing` / `aesthetic_mismatch` / `superseded` / `other`），引擎会自动落一条判断轨迹；反复上报同样内容不会重复记录。
 

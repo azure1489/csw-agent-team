@@ -22,8 +22,8 @@ func TestFullFlowV3(t *testing.T) {
 		t.Fatalf("trigger: %v", err)
 	}
 	runID := res.Run.ID
-	if res.Run.WorkflowVer != 7 || len(res.Tasks) != 11 {
-		t.Fatalf("want v7 with 11 template tasks, got v%d %d", res.Run.WorkflowVer, len(res.Tasks))
+	if res.Run.WorkflowVer != 8 || len(res.Tasks) != 11 {
+		t.Fatalf("want v8 with 11 template tasks, got v%d %d", res.Run.WorkflowVer, len(res.Tasks))
 	}
 	expectT := func(tk domain.Task, want domain.TaskStatus) {
 		t.Helper()
