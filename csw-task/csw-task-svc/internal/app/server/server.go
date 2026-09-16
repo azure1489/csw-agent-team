@@ -88,6 +88,7 @@ func (s *Server) Router() *gin.Engine {
 		v1.POST("/tasks/:id/cancel", s.handleCancel)
 		v1.POST("/runs/:id/items/:key/decision", s.handleItemDecision)
 		v1.POST("/runs/:id/close", s.handleCloseRun)
+		v1.POST("/runs/:id/abort", s.handleAbortRun)
 		v1.POST("/tasks/:id/reopen", s.handleReopen)
 		v1.POST("/runs/:id/authorizations", s.handleGrantAuthorization)
 		v1.DELETE("/runs/:id/authorizations/:scope", s.handleRevokeAuthorization)

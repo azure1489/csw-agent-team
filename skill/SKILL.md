@@ -1,6 +1,6 @@
 ---
 name: csw-task
-version: 3.7.0
+version: 3.8.0
 description: 营事编集室「任务流转服务」客户端 + 编辑部协作协议（v3：十三阶段、引擎单写群播报）。当 agent 需要在工作流里干活时使用：被群消息 @ 唤醒后查任务、接单、下载上游、干活并一步提交产出或补件；（主编）触发实例、派工、审核、定点编辑、录入授权、代录 Van 决定、取消与重开。封装运行面 HTTP API（bearer 鉴权 / 幂等 / 一步式上传提交），agent 不自己拼 HTTP。触发词：触发流程、开批次、我的任务、接单、提交产出、补件、派工、审核、退回、定点编辑、授权、任务进度、编辑部群、CSW 任务流转。
 ---
 
@@ -52,7 +52,8 @@ description: 营事编集室「任务流转服务」客户端 + 编辑部协作�
 | sweeps | 参与角色 / 主编 | `PUT /api/v1/runs/{id}/sweeps` `{sweeps:[{sweep_key,platform,source_key?,tool?,query?,started_at?,ended_at?,window_from?,window_to?,found,fetched_unique,reviewed,corroborated,unreviewed,in_window,registered,result,error?,paged_to_end?}]}`（上报采集轮；按 sweep_key 幂等，同键重报即更新；result=failed 必须写 error；单次最多 200 条。**found 是接口返回数，不是审阅量**：拿到多少条记 found / fetched_unique，真正读过正文或看过图的记 reviewed，只加载未展开的记 unreviewed——未审的如实记为未审，不得事后补成 dropped。**为核实线索去读的官方页、原始出处记 corroborated**（它们算已审但不作为候选登记，判据用「已审 − 佐证」与登记数对账）。每条条目必须填 published_at，拿不到确切日期的标 pending_check 并写明缺日期，不要留空） |
 | intake-trace | 参与角色 / 主编 | `GET /api/v1/runs/{id}/intake-trace`（采集轮 + 条目溯源 + 判断轨迹 + 来源覆盖；02 / 03 据此判断采集是否合理，不必解压交付物） |
 | decide | 主编 | `POST /api/v1/runs/{id}/items/{item_key}/decision` `{decision, source_quote}`（approve_write / approve_research / defer / reject） |
-| close | 主编 | `POST /api/v1/runs/{id}/close` `{reason}`（接受整期缺口结束 run） |
+| close | 主编 | `POST /api/v1/runs/{id}/close` `{reason}`（接受整期缺口结束 run；要求全部任务终态且**至少一个通过**） |
+| abort | 主编 | `POST /api/v1/runs/{id}/abort` `{reason}`（作废 run：全部任务终态但**一个都没通过**时的收尾路径，状态落 `aborted` 而非 `done`，不计入完成统计） |
 | ledger | 各 agent | `GET /api/v1/ledger/posts?since=30d&brand=&q=`（发布记录查重，含合集拆条；`verdict=not_found_in_synced_records` 只表示已同步记录里没有，**不是**「从未发布」） |
 | feedback | 各 agent / 主编 | `GET /api/v1/memory/feedback?tags=brand:nanga,stage:topic`（有效编辑反馈）· `POST …`（主编录入原话）；`task <id>` 已随附与本阶段、本条目相关的至多 5 条 |
 | roster | 各 agent | `GET /api/v1/roster` |
@@ -176,7 +177,7 @@ curl -fsS -X POST "$BASE/api/v1/deliverables/$D/reviews" -H "Authorization: Bear
 - `items` 写 Van 批准的条目键，**只随 Van 闸录入**（主编自审闸带条目会被拒绝，防止写作在 Van 批准前开工）；「保留」「就这条」= 批准可写；「再看看」「继续研究」= 只开研究、不派写作；措辞不明时只问一次受影响的范围。
 - 引擎为每个批准可写的条目生成 04-公众号写作与 05-配图与素材核任务并自动派工（派工单由引擎写明条目、来源与 Van 原话）；07-内容整合稿等这些条目的两项都通过才就绪。
 - 补批或撤回单条：`POST /runs/{id}/items/{item_key}/decision {decision, source_quote}`。撤回只取消该条尚未完成的任务，不影响内容整合稿；已写成的条目不能再改决定。批准晚到时，已开工的内容整合稿会标「补件待返工」，由你决定纳入本期还是留到下期。
-- 数量不足：已批准的照常推进，缺量说明四要素（差多少、为什么缺、怎样补、补不齐怎么办）写进选题方案；不用旧闻或弱题凑数；改数量或范围由 Van 一次决定。整期目标来自触发 inputs（`目标.主选`）；其余任务都结束而已写成仍不足时，run 保持进行中，Van 接受缺口后 `POST /runs/{id}/close {reason}` 结束。
+- 数量不足：已批准的照常推进，缺量说明四要素（差多少、为什么缺、怎样补、补不齐怎么办）写进选题方案；不用旧闻或弱题凑数；改数量或范围由 Van 一次决定。整期目标来自触发 inputs（`目标.主选`）；其余任务都结束而已写成仍不足时，run 保持进行中，Van 接受缺口后 `POST /runs/{id}/close {reason}` 结束。若整期一个任务都没通过（全部取消或失败），`close` 会返回 `run_nothing_passed`——这种颗粒无收的实例用 `POST /runs/{id}/abort {reason}` 作废收尾，状态落 `aborted`，不会被记成完成；不作废它会一直挂在 active 干扰后续批次。
 
 ### 4.4 手动派工的两个阶段
 

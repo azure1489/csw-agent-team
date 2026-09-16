@@ -381,4 +381,5 @@ func ItemCounted(s ItemStatus) bool {
 const (
 	EvtItemDecided = "item_decided"
 	EvtRunClosed   = "run_closed"
+	EvtRunAborted  = "run_aborted" // 一无所获的实例被中枢显式作废（区别于按完成结束的 run_done）
 )

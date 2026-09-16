@@ -417,6 +417,53 @@ func traceIfChanged(ctx context.Context, q *sqlite.Queries, runID int64, in Item
 	})
 }
 
+// AbortRun 中枢作废 run：须附原因；要求全部任务已终态，但不要求有任何通过。
+// CloseRun 是「按完成结束」，一个颗粒无收的实例不该被记成 done——那会让统计与复盘失真；
+// 但它也必须能收尾，否则会永远挂在 active 干扰后续批次（r45 即如此）。作废落 aborted。
+func (e *Engine) AbortRun(ctx context.Context, hub domain.Agent, role domain.Role, runID int64, reason string) (domain.Run, error) {
+	var out domain.Run
+	reason, err := requireReason(reason, "作废实例")
+	if err != nil {
+		return out, err
+	}
+	err = e.store.Tx(ctx, func(q *sqlite.Queries) error {
+		run, _, err := hubRun(ctx, q, role, runID, "作废实例")
+		if err != nil {
+			return err
+		}
+		if run.Status != domain.RunActive {
+			return domain.Conflict("run_not_active", "实例不在进行中："+string(run.Status))
+		}
+		tasks, err := q.ListTasksByRun(ctx, runID)
+		if err != nil {
+			return err
+		}
+		var open []string
+		passed := 0
+		for _, t := range tasks {
+			if !domain.IsTerminal(t.Status) {
+				open = append(open, fmt.Sprintf("%s(%s)", t.StageName, t.Status))
+			}
+			if t.Status == domain.TaskPassed {
+				passed++
+			}
+		}
+		if len(open) > 0 {
+			return domain.Conflict("run_has_open_tasks", "还有未完成的任务："+strings.Join(open, "、")+"；先完成、取消或重开处理")
+		}
+		if err := q.SetRunStatus(ctx, runID, domain.RunAborted); err != nil {
+			return err
+		}
+		return q.InsertEvent(ctx, domain.Event{RunID: &runID, ActorID: &hub.ID, Type: domain.EvtRunAborted,
+			DetailJSON: evtDetail(map[string]any{"reason": reason, "passed_tasks": passed, "tasks": len(tasks)})})
+	})
+	if err != nil {
+		return out, err
+	}
+	out, err = e.store.Q().GetRun(ctx, runID)
+	return out, err
+}
+
 // CloseRun 中枢接受缺口结束 run：须附原因；要求全部任务已终态且至少一个通过。
 func (e *Engine) CloseRun(ctx context.Context, hub domain.Agent, role domain.Role, runID int64, reason string) (domain.Run, error) {
 	var out domain.Run

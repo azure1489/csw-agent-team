@@ -220,3 +220,67 @@ func TestDueAtFromSLA(t *testing.T) {
 		t.Fatalf("due_at should restart after return, got %s", got.DueAt)
 	}
 }
+
+// TestAbortRunForEmptyRun 一个颗粒无收的 run（全部取消、无人通过）不能按完成结束，
+// 但必须能作废收尾——否则会永远挂在 active 干扰后续批次（r45 即如此）。
+func TestAbortRunForEmptyRun(t *testing.T) {
+	e, st := setup(t)
+	ctx := context.Background()
+	editor, editorRole := who(t, st, "editor")
+	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-09-17", "作废用例", "")
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	runID := res.Run.ID
+
+	// 取消全部任务：一个都没通过。
+	tasks, err := st.Q().ListTasksByRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tk := range tasks {
+		if domain.IsTerminal(tk.Status) {
+			continue
+		}
+		if _, err := e.Cancel(ctx, editor, editorRole, tk.ID, "实测：全部取消"); err != nil {
+			// 级联取消后下游可能已终态，忽略这类冲突
+			continue
+		}
+	}
+
+	// close 仍应拒绝：没有任何已交付的任务。
+	if _, err := e.CloseRun(ctx, editor, editorRole, runID, "试图按完成结束"); err == nil {
+		t.Fatal("一个都没通过时不该能 close")
+	} else {
+		wantCode(t, err, "run_nothing_passed")
+	}
+
+	// abort 应成功，落 aborted 而不是 done。
+	run, err := e.AbortRun(ctx, editor, editorRole, runID, "实测 run，未产出任何成果，作废收尾")
+	if err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+	if run.Status != domain.RunAborted {
+		t.Fatalf("want aborted, got %s", run.Status)
+	}
+	// run 级事件的 TaskID 为 nil，hasEvent 只适用于任务级事件，这里直接查。
+	evs, err := st.Q().ListEventsByRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, ev := range evs {
+		if ev.Type == domain.EvtRunAborted {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("作废应留下 run_aborted 事件")
+	}
+	// 已作废的不能再作废。
+	if _, err := e.AbortRun(ctx, editor, editorRole, runID, "重复作废"); err == nil {
+		t.Fatal("已作废的 run 不该能再作废")
+	} else {
+		wantCode(t, err, "run_not_active")
+	}
+}

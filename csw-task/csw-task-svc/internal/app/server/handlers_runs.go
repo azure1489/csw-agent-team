@@ -324,6 +324,27 @@ func (s *Server) handleItemDecision(c *gin.Context) {
 }
 
 // POST /runs/:id/close {reason} —— 中枢接受缺口结束 run
+// POST /runs/:id/abort —— 中枢作废实例（全部任务终态、但一个都没通过时的收尾路径）
+func (s *Server) handleAbortRun(c *gin.Context) {
+	id, err := pathID(c, "id")
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	reason, err := bindReason(c)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	agent, role := mwAgent(c)
+	run, err := s.eng.AbortRun(c.Request.Context(), agent, role, id, reason)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"run": gin.H{"id": run.ID, "status": string(run.Status), "target_count": run.TargetCount}})
+}
+
 func (s *Server) handleCloseRun(c *gin.Context) {
 	id, err := pathID(c, "id")
 	if err != nil {
