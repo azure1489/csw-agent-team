@@ -396,13 +396,17 @@ func (q *Queries) MarkStallNotified(ctx context.Context, id int64, k domain.Stal
 
 // condRunStalled 整期停滞：run 仍 active、没有任何已派工/进行中的任务、但还有没走完的阶段，
 // 且距最近一次**业务**事件已超过阈值。判定时排除 run_stalled 自身——否则告警一发，
-// 「最近事件」就被刷成当下，清掉标记后再也判不出停滞（自我抵消）。中枢报失败后正是这种状态——任务 failed、下游 blocked，任务级告警全都不触发。
+// 「最近事件」就被刷成当下，清掉标记后再也判不出停滞（自我抵消）。
+// 同时只看最近 24 小时内还有动静的 run：与任务级 condAckDue / condIdleDue 一致。
+// 漏了这条的代价已经付过——6 月以来 39 个一直挂着的旧 v1 run 一次性全被判停滞并 @ 了中枢。中枢报失败后正是这种状态——任务 failed、下游 blocked，任务级告警全都不触发。
 const condRunStalled = `r.status='active'
 	AND r.stalled_notified_at IS NULL
 	AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.run_id=r.id AND t.status IN ('dispatched','in_progress'))
 	AND EXISTS (SELECT 1 FROM tasks t WHERE t.run_id=r.id AND t.status IN ('ready','blocked','failed','returned'))
 	AND IFNULL((SELECT MAX(e.created_at) FROM events e WHERE e.run_id=r.id AND e.type <> 'run_stalled'), r.created_at)
-	    <= strftime('%Y-%m-%dT%H:%M:%SZ','now',-? || ' minutes')`
+	    <= strftime('%Y-%m-%dT%H:%M:%SZ','now',-? || ' minutes')
+	AND IFNULL((SELECT MAX(e.created_at) FROM events e WHERE e.run_id=r.id AND e.type <> 'run_stalled'), r.created_at)
+	    >= strftime('%Y-%m-%dT%H:%M:%SZ','now','-24 hours')`
 
 // ListStalledRuns 列整期停滞且尚未提醒的 run。
 func (q *Queries) ListStalledRuns(ctx context.Context) ([]domain.Run, error) {

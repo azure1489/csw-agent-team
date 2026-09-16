@@ -227,3 +227,42 @@ func hasRunEvent(t *testing.T, st *sqlite.Store, runID int64, typ string) bool {
 	}
 	return false
 }
+
+// TestRunStalledIgnoresOldRuns 长期挂着的旧 run（最近动静在 24 小时以前）不补发停滞告警。
+// 上线当晚漏了这条下限，6 月以来 39 个旧 v1 run 一次性全被判停滞并 @ 了中枢。
+func TestRunStalledIgnoresOldRuns(t *testing.T) {
+	e, st := setup(t)
+	ctx := context.Background()
+	editor, editorRole := who(t, st, "editor")
+	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-09-17", "旧 run", "")
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	runID := res.Run.ID
+	intake := taskByCode(t, st, runID, "intake")
+	collector, _ := who(t, st, "collector")
+	if _, err := e.Ack(ctx, collector, intake.ID); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	if _, err := e.Fail(ctx, collector, intake.ID, "来源全部失效"); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	// 把全部事件拨到三天前：这是一个早就没人管的历史 run。
+	if _, err := st.DB().ExecContext(ctx,
+		`UPDATE events SET created_at = strftime('%Y-%m-%dT%H:%M:%SZ','now','-3 days') WHERE run_id=?`, runID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().ExecContext(ctx,
+		`UPDATE runs SET created_at = strftime('%Y-%m-%dT%H:%M:%SZ','now','-3 days') WHERE id=?`, runID); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := st.Q().ListStalledRuns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range runs {
+		if r.ID == runID {
+			t.Fatal("超过 24 小时没动静的历史 run 不该补发停滞告警")
+		}
+	}
+}
