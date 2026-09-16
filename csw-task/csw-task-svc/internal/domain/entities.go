@@ -294,28 +294,31 @@ type IntakeSource struct {
 
 // IntakeSweep 一轮采集：回答「找过哪里」，让「没找到」与「没去找」可区分。
 type IntakeSweep struct {
-	SweepKey   string // 上报方生成，(run_id, sweep_key) 幂等
-	Platform   string
-	SourceKey  string
-	Tool       string // csw_mcp | opencli | webfetch | other
-	Query      string // 找了什么（关键词 / 账号 / 页面）
-	StartedAt  string
-	EndedAt    string
-	WindowFrom string
-	WindowTo   string
-	Result     string // ok | failed | partial
-	Error      string
-	RoleCode   string
-	CreatedAt  string
-	UpdatedAt  string
-	TaskID     *int64
-	ActorID    *int64
-	ID         int64
-	RunID      int64
-	Found      int // 本轮看到的条数
-	InWindow   int // 其中落在当期窗口内的条数
-	Registered int // 其中登记成条目的条数
-	PagedToEnd bool
+	SweepKey      string // 上报方生成，(run_id, sweep_key) 幂等
+	Platform      string
+	SourceKey     string
+	Tool          string // csw_mcp | opencli | webfetch | other
+	Query         string // 找了什么（关键词 / 账号 / 页面）
+	StartedAt     string
+	EndedAt       string
+	WindowFrom    string
+	WindowTo      string
+	Result        string // ok | failed | partial
+	Error         string
+	RoleCode      string
+	CreatedAt     string
+	UpdatedAt     string
+	TaskID        *int64
+	ActorID       *int64
+	ID            int64
+	RunID         int64
+	Found         int // 接口返回数：这一轮拿到多少条（含重复，不等于看过）
+	FetchedUnique int // 去重获取数：去掉跨轮重复后的不同内容数
+	Reviewed      int // 已审数：实际读过正文或看过图、形成了判断的条数
+	Unreviewed    int // 未审数：只加载未展开的条数（不得事后补成淘汰）
+	InWindow      int // 其中落在当期窗口内的条数
+	Registered    int // 其中登记成条目的条数
+	PagedToEnd    bool
 }
 
 // ItemTrace 条目的一次判断：回答「为什么留、为什么弃」，淘汰理由由此落库而不是只写在交付物里。

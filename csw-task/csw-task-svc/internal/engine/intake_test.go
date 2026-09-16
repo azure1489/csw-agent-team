@@ -10,7 +10,7 @@ func TestReportSweepsIdempotent(t *testing.T) {
 	e, st := setup(t)
 	ctx := context.Background()
 	editor, editorRole := who(t, st, "editor")
-	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-09-17", "v5", "")
+	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-09-17", "v6", "")
 	if err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestIntakeTraceAndCheckOnLegacyRun(t *testing.T) {
 	e, st := setup(t)
 	ctx := context.Background()
 	editor, editorRole := who(t, st, "editor")
-	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-09-17", "v5", "")
+	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-09-17", "v6", "")
 	if err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestIntakeCheckCatchesMissingRequiredSource(t *testing.T) {
 	e, st := setup(t)
 	ctx := context.Background()
 	editor, editorRole := who(t, st, "editor")
-	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-09-17", "v5", "")
+	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-09-17", "v6", "")
 	if err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestIntakeCheckCatchesMissingRequiredSource(t *testing.T) {
 
 	// 只扫 Instagram：台账里 xhs 与 web 也是必扫，应被点名。
 	if _, err := e.ReportSweeps(ctx, collector, collectorRole, runID, []SweepInput{
-		{SweepKey: "ig-1", Platform: "instagram", SourceKey: "channel", Tool: "csw_mcp", Found: 9, InWindow: 3, Registered: 3, Result: "ok"},
+		{SweepKey: "ig-1", Platform: "instagram", SourceKey: "channel", Tool: "csw_mcp", Found: 9, FetchedUnique: 9, Reviewed: 3, Unreviewed: 6, InWindow: 3, Registered: 3, Result: "ok"},
 	}); err != nil {
 		t.Fatalf("report: %v", err)
 	}

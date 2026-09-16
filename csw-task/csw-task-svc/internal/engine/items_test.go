@@ -363,7 +363,7 @@ func TestItemStageAndRank(t *testing.T) {
 	e, st := setup(t)
 	ctx := context.Background()
 	editor, editorRole := who(t, st, "editor")
-	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-09-17", "v5", "")
+	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-09-17", "v6", "")
 	if err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestItemDropAndTrace(t *testing.T) {
 	e, st := setup(t)
 	ctx := context.Background()
 	editor, editorRole := who(t, st, "editor")
-	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-09-17", "v5", "")
+	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-09-17", "v6", "")
 	if err != nil {
 		t.Fatalf("trigger: %v", err)
 	}

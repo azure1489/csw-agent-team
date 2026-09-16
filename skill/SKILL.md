@@ -1,6 +1,6 @@
 ---
 name: csw-task
-version: 3.5.0
+version: 3.6.0
 description: 营事编集室「任务流转服务」客户端 + 编辑部协作协议（v3：十三阶段、引擎单写群播报）。当 agent 需要在工作流里干活时使用：被群消息 @ 唤醒后查任务、接单、下载上游、干活并一步提交产出或补件；（主编）触发实例、派工、审核、定点编辑、录入授权、代录 Van 决定、取消与重开。封装运行面 HTTP API（bearer 鉴权 / 幂等 / 一步式上传提交），agent 不自己拼 HTTP。触发词：触发流程、开批次、我的任务、接单、提交产出、补件、派工、审核、退回、定点编辑、授权、任务进度、编辑部群、CSW 任务流转。
 ---
 
@@ -49,7 +49,7 @@ description: 营事编集室「任务流转服务」客户端 + 编辑部协作�
 | submit | 执行者 / 主编 | `POST /api/v1/tasks/{id}/deliverables`（multipart；`kind` = output 缺省 / supplement / edit）见 §2.2、§2.3 |
 | run / timeline / progress | 各 agent | `GET /api/v1/runs/{id}` · `…/timeline` · `…/progress`（每个任务的真实卡点与下一步、条目与缺口） |
 | items | 参与角色 / 主编 | `GET /api/v1/runs/{id}/items` · `PUT /api/v1/runs/{id}/items` `{items:[{item_key,title,brand?,product?,source_url?,published_at?,status?,rank?,discovered_via?,fetched_at?,evidence_url?,dedup_note?,reason_code?,reason?}]}`（登记只能写 candidate 线索 / pending_check 待核 / shortlisted 成熟 / dropped 淘汰；成熟可带 rank=primary 主选 \| alt 备选；淘汰必须带 reason_code 与 reason） |
-| sweeps | 参与角色 / 主编 | `PUT /api/v1/runs/{id}/sweeps` `{sweeps:[{sweep_key,platform,source_key?,tool?,query?,started_at?,ended_at?,window_from?,window_to?,found,in_window,registered,result,error?,paged_to_end?}]}`（上报采集轮；按 sweep_key 幂等，同键重报即更新；result=failed 必须写 error；单次最多 200 条） |
+| sweeps | 参与角色 / 主编 | `PUT /api/v1/runs/{id}/sweeps` `{sweeps:[{sweep_key,platform,source_key?,tool?,query?,started_at?,ended_at?,window_from?,window_to?,found,fetched_unique,reviewed,unreviewed,in_window,registered,result,error?,paged_to_end?}]}`（上报采集轮；按 sweep_key 幂等，同键重报即更新；result=failed 必须写 error；单次最多 200 条。**found 是接口返回数，不是审阅量**：拿到多少条记 found / fetched_unique，真正读过正文或看过图的记 reviewed，只加载未展开的记 unreviewed——未审的如实记为未审，不得事后补成 dropped） |
 | intake-trace | 参与角色 / 主编 | `GET /api/v1/runs/{id}/intake-trace`（采集轮 + 条目溯源 + 判断轨迹 + 来源覆盖；02 / 03 据此判断采集是否合理，不必解压交付物） |
 | decide | 主编 | `POST /api/v1/runs/{id}/items/{item_key}/decision` `{decision, source_quote}`（approve_write / approve_research / defer / reject） |
 | close | 主编 | `POST /api/v1/runs/{id}/close` `{reason}`（接受整期缺口结束 run） |

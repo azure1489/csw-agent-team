@@ -12,7 +12,7 @@ import (
 func TestIntakeEndpoints(t *testing.T) {
 	ts, st, eng, mint := setupHTTP(t)
 	ctx := context.Background()
-	if err := st.Q().ActivateWorkflowVersion(ctx, "daily_news", 5); err != nil {
+	if err := st.Q().ActivateWorkflowVersion(ctx, "daily_news", 6); err != nil {
 		t.Fatal(err)
 	}
 	collectorTok, analystTok := mint("collector"), mint("analyst")

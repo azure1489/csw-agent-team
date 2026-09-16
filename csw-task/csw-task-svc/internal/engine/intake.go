@@ -17,22 +17,25 @@ const maxSweepsPerReport = 200
 
 // SweepInput 一轮采集的上报入参。
 type SweepInput struct {
-	SweepKey   string
-	Platform   string
-	SourceKey  string
-	Tool       string
-	Query      string
-	StartedAt  string
-	EndedAt    string
-	WindowFrom string
-	WindowTo   string
-	Result     string
-	Error      string
-	TaskID     *int64
-	Found      int
-	InWindow   int
-	Registered int
-	PagedToEnd bool
+	SweepKey      string
+	Platform      string
+	SourceKey     string
+	Tool          string
+	Query         string
+	StartedAt     string
+	EndedAt       string
+	WindowFrom    string
+	WindowTo      string
+	Result        string
+	Error         string
+	TaskID        *int64
+	Found         int
+	FetchedUnique int
+	Reviewed      int
+	Unreviewed    int
+	InWindow      int
+	Registered    int
+	PagedToEnd    bool
 }
 
 // ReportSweeps 批量上报采集轮（本 run 的参与角色或中枢）：(run_id, sweep_key) 幂等，同键重报即更新。
@@ -92,7 +95,8 @@ func (e *Engine) ReportSweeps(ctx context.Context, actor domain.Agent, role doma
 				RunID: runID, TaskID: sw.TaskID, SweepKey: sw.SweepKey, Platform: sw.Platform, SourceKey: sw.SourceKey,
 				Tool: tool, Query: sw.Query, StartedAt: sw.StartedAt, EndedAt: sw.EndedAt,
 				WindowFrom: sw.WindowFrom, WindowTo: sw.WindowTo, Found: sw.Found, InWindow: sw.InWindow,
-				Registered: sw.Registered, Result: result, Error: sw.Error, PagedToEnd: sw.PagedToEnd,
+				Registered: sw.Registered, FetchedUnique: sw.FetchedUnique, Reviewed: sw.Reviewed, Unreviewed: sw.Unreviewed,
+				Result: result, Error: sw.Error, PagedToEnd: sw.PagedToEnd,
 				ActorID: &actor.ID, RoleCode: role.Code,
 			}); err != nil {
 				return err
@@ -287,14 +291,17 @@ func checkCoverage(tr IntakeTrace, hasSweeps bool) IntakeCheck {
 }
 
 func checkYield(tr IntakeTrace, hasSweeps, hasTraces bool) IntakeCheck {
-	c := IntakeCheck{Name: "产出落差：窗口内找到的与登记的对得上"}
+	c := IntakeCheck{Name: "产出落差：已审的都落了状态"}
 	if !hasSweeps {
 		c.Skipped, c.Detail = true, "本期没有上报采集轮，不判定"
 		return c
 	}
-	found, inWindow := 0, 0
+	found, unique, reviewed, unreviewed, inWindow := 0, 0, 0, 0, 0
 	for _, sw := range tr.Sweeps {
 		found += sw.Found
+		unique += sw.FetchedUnique
+		reviewed += sw.Reviewed
+		unreviewed += sw.Unreviewed
 		inWindow += sw.InWindow
 	}
 	dropped := 0
@@ -303,15 +310,26 @@ func checkYield(tr IntakeTrace, hasSweeps, hasTraces bool) IntakeCheck {
 			dropped++
 		}
 	}
-	gap := inWindow - len(tr.Items)
-	c.Detail = fmt.Sprintf("看到 %d 条、窗口内 %d 条、登记 %d 条、淘汰 %d 条", found, inWindow, len(tr.Items), dropped)
-	if gap > dropped {
+	c.Detail = fmt.Sprintf("接口返回 %d、去重 %d、已审 %d、未审 %d、窗口内 %d、登记 %d（其中淘汰 %d）",
+		found, unique, reviewed, unreviewed, inWindow, len(tr.Items), dropped)
+	// 拿「已审」对账，不拿「接口返回」对账：获取多不等于漏登记，审过却没落状态才是漏。
+	if reviewed == 0 && unreviewed == 0 {
+		c.Skipped = true
+		c.Detail += "；本期没有分开上报已审与未审，不判定"
+		return c
+	}
+	if gap := reviewed - len(tr.Items); gap > 0 {
 		if !hasTraces {
 			c.Skipped = true
-			c.Detail += fmt.Sprintf("；窗口内比登记多 %d 条，本期没有判断轨迹，不判定", gap)
+			c.Detail += fmt.Sprintf("；已审比登记多 %d 条，本期没有判断轨迹，不判定", gap)
 			return c
 		}
-		c.Detail += fmt.Sprintf("；窗口内比登记多 %d 条，超出淘汰记录能解释的范围", gap)
+		c.Detail += fmt.Sprintf("；已审比登记多 %d 条——审过就该落状态，不能只留在本地", gap)
+		return c
+	}
+	if unreviewed > 0 {
+		c.OK, c.Warn = true, true
+		c.Detail += fmt.Sprintf("；另有 %d 条只加载未展开，已如实记为未审（不得事后补成淘汰）", unreviewed)
 		return c
 	}
 	c.OK = true

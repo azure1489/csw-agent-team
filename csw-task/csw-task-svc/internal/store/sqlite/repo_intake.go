@@ -86,7 +86,7 @@ func (q *Queries) TouchIntakeSourceOK(ctx context.Context, platform, key string)
 
 const sweepCols = `id, run_id, task_id, sweep_key, platform, source_key, tool, query, started_at, ended_at,
 	window_from, window_to, found, in_window, registered, result, error, paged_to_end,
-	actor_id, role_code, created_at, updated_at`
+	actor_id, role_code, created_at, updated_at, fetched_unique, reviewed, unreviewed`
 
 func scanSweep(s interface{ Scan(...any) error }) (domain.IntakeSweep, error) {
 	var sw domain.IntakeSweep
@@ -95,7 +95,8 @@ func scanSweep(s interface{ Scan(...any) error }) (domain.IntakeSweep, error) {
 	var paged int
 	err := s.Scan(&sw.ID, &sw.RunID, &taskID, &sw.SweepKey, &sw.Platform, &sw.SourceKey, &sw.Tool, &query,
 		&startedAt, &endedAt, &winFrom, &winTo, &sw.Found, &sw.InWindow, &sw.Registered, &sw.Result, &errText,
-		&paged, &actorID, &sw.RoleCode, &sw.CreatedAt, &sw.UpdatedAt)
+		&paged, &actorID, &sw.RoleCode, &sw.CreatedAt, &sw.UpdatedAt,
+		&sw.FetchedUnique, &sw.Reviewed, &sw.Unreviewed)
 	sw.Query, sw.StartedAt, sw.EndedAt = query.String, startedAt.String, endedAt.String
 	sw.WindowFrom, sw.WindowTo, sw.Error = winFrom.String, winTo.String, errText.String
 	sw.TaskID, sw.ActorID, sw.PagedToEnd = ptrI64(taskID), ptrI64(actorID), paged == 1
@@ -106,8 +107,9 @@ func scanSweep(s interface{ Scan(...any) error }) (domain.IntakeSweep, error) {
 func (q *Queries) UpsertSweep(ctx context.Context, sw domain.IntakeSweep) error {
 	_, err := q.ex.ExecContext(ctx, `
 		INSERT INTO intake_sweeps (run_id, task_id, sweep_key, platform, source_key, tool, query, started_at, ended_at,
-			window_from, window_to, found, in_window, registered, result, error, paged_to_end, actor_id, role_code)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			window_from, window_to, found, in_window, registered, result, error, paged_to_end, actor_id, role_code,
+			fetched_unique, reviewed, unreviewed)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(run_id, sweep_key) DO UPDATE SET
 			task_id = COALESCE(excluded.task_id, intake_sweeps.task_id),
 			platform = excluded.platform,
@@ -121,6 +123,9 @@ func (q *Queries) UpsertSweep(ctx context.Context, sw domain.IntakeSweep) error 
 			found = excluded.found,
 			in_window = excluded.in_window,
 			registered = excluded.registered,
+			fetched_unique = excluded.fetched_unique,
+			reviewed = excluded.reviewed,
+			unreviewed = excluded.unreviewed,
 			result = excluded.result,
 			error = COALESCE(excluded.error, intake_sweeps.error),
 			paged_to_end = excluded.paged_to_end,
@@ -128,7 +133,7 @@ func (q *Queries) UpsertSweep(ctx context.Context, sw domain.IntakeSweep) error 
 		sw.RunID, nullI64(sw.TaskID), sw.SweepKey, sw.Platform, sw.SourceKey, sw.Tool, nullIfEmpty(sw.Query),
 		nullIfEmpty(sw.StartedAt), nullIfEmpty(sw.EndedAt), nullIfEmpty(sw.WindowFrom), nullIfEmpty(sw.WindowTo),
 		sw.Found, sw.InWindow, sw.Registered, sw.Result, nullIfEmpty(sw.Error), boolToInt(sw.PagedToEnd),
-		nullI64(sw.ActorID), sw.RoleCode)
+		nullI64(sw.ActorID), sw.RoleCode, sw.FetchedUnique, sw.Reviewed, sw.Unreviewed)
 	return err
 }
 

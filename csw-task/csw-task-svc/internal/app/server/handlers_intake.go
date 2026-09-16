@@ -12,42 +12,48 @@ import (
 
 type reportSweepsReq struct {
 	Sweeps []struct {
-		SweepKey   string `json:"sweep_key"`
-		Platform   string `json:"platform"`
-		SourceKey  string `json:"source_key"`
-		Tool       string `json:"tool"`
-		Query      string `json:"query"`
-		StartedAt  string `json:"started_at"`
-		EndedAt    string `json:"ended_at"`
-		WindowFrom string `json:"window_from"`
-		WindowTo   string `json:"window_to"`
-		Found      int    `json:"found"`
-		InWindow   int    `json:"in_window"`
-		Registered int    `json:"registered"`
-		Result     string `json:"result"`
-		Error      string `json:"error"`
-		PagedToEnd bool   `json:"paged_to_end"`
-		TaskID     *int64 `json:"task_id"`
+		SweepKey      string `json:"sweep_key"`
+		Platform      string `json:"platform"`
+		SourceKey     string `json:"source_key"`
+		Tool          string `json:"tool"`
+		Query         string `json:"query"`
+		StartedAt     string `json:"started_at"`
+		EndedAt       string `json:"ended_at"`
+		WindowFrom    string `json:"window_from"`
+		WindowTo      string `json:"window_to"`
+		Found         int    `json:"found"`
+		FetchedUnique int    `json:"fetched_unique"`
+		Reviewed      int    `json:"reviewed"`
+		Unreviewed    int    `json:"unreviewed"`
+		InWindow      int    `json:"in_window"`
+		Registered    int    `json:"registered"`
+		Result        string `json:"result"`
+		Error         string `json:"error"`
+		PagedToEnd    bool   `json:"paged_to_end"`
+		TaskID        *int64 `json:"task_id"`
 	} `json:"sweeps"`
 }
 
 type sweepDTO struct {
-	SweepKey   string `json:"sweep_key"`
-	Platform   string `json:"platform"`
-	SourceKey  string `json:"source_key,omitempty"`
-	Tool       string `json:"tool"`
-	Query      string `json:"query,omitempty"`
-	StartedAt  string `json:"started_at,omitempty"`
-	EndedAt    string `json:"ended_at,omitempty"`
-	WindowFrom string `json:"window_from,omitempty"`
-	WindowTo   string `json:"window_to,omitempty"`
-	Result     string `json:"result"`
-	Error      string `json:"error,omitempty"`
-	RoleCode   string `json:"role_code,omitempty"`
-	Found      int    `json:"found"`
-	InWindow   int    `json:"in_window"`
-	Registered int    `json:"registered"`
-	PagedToEnd bool   `json:"paged_to_end,omitempty"`
+	SweepKey      string `json:"sweep_key"`
+	Platform      string `json:"platform"`
+	SourceKey     string `json:"source_key,omitempty"`
+	Tool          string `json:"tool"`
+	Query         string `json:"query,omitempty"`
+	StartedAt     string `json:"started_at,omitempty"`
+	EndedAt       string `json:"ended_at,omitempty"`
+	WindowFrom    string `json:"window_from,omitempty"`
+	WindowTo      string `json:"window_to,omitempty"`
+	Result        string `json:"result"`
+	Error         string `json:"error,omitempty"`
+	RoleCode      string `json:"role_code,omitempty"`
+	Found         int    `json:"found"`
+	FetchedUnique int    `json:"fetched_unique"`
+	Reviewed      int    `json:"reviewed"`
+	Unreviewed    int    `json:"unreviewed"`
+	InWindow      int    `json:"in_window"`
+	Registered    int    `json:"registered"`
+	PagedToEnd    bool   `json:"paged_to_end,omitempty"`
 }
 
 func toSweepDTOs(sweeps []domain.IntakeSweep) []sweepDTO {
@@ -55,8 +61,9 @@ func toSweepDTOs(sweeps []domain.IntakeSweep) []sweepDTO {
 	for _, sw := range sweeps {
 		out = append(out, sweepDTO{SweepKey: sw.SweepKey, Platform: sw.Platform, SourceKey: sw.SourceKey, Tool: sw.Tool,
 			Query: sw.Query, StartedAt: sw.StartedAt, EndedAt: sw.EndedAt, WindowFrom: sw.WindowFrom, WindowTo: sw.WindowTo,
-			Result: sw.Result, Error: sw.Error, RoleCode: sw.RoleCode, Found: sw.Found, InWindow: sw.InWindow,
-			Registered: sw.Registered, PagedToEnd: sw.PagedToEnd})
+			Result: sw.Result, Error: sw.Error, RoleCode: sw.RoleCode, Found: sw.Found,
+			FetchedUnique: sw.FetchedUnique, Reviewed: sw.Reviewed, Unreviewed: sw.Unreviewed,
+			InWindow: sw.InWindow, Registered: sw.Registered, PagedToEnd: sw.PagedToEnd})
 	}
 	return out
 }
@@ -99,7 +106,8 @@ func (s *Server) handleReportSweeps(c *gin.Context) {
 		in = append(in, engine.SweepInput{SweepKey: sw.SweepKey, Platform: sw.Platform, SourceKey: sw.SourceKey,
 			Tool: sw.Tool, Query: sw.Query, StartedAt: sw.StartedAt, EndedAt: sw.EndedAt,
 			WindowFrom: sw.WindowFrom, WindowTo: sw.WindowTo, Found: sw.Found, InWindow: sw.InWindow,
-			Registered: sw.Registered, Result: sw.Result, Error: sw.Error, PagedToEnd: sw.PagedToEnd, TaskID: sw.TaskID})
+			Registered: sw.Registered, FetchedUnique: sw.FetchedUnique, Reviewed: sw.Reviewed, Unreviewed: sw.Unreviewed,
+			Result: sw.Result, Error: sw.Error, PagedToEnd: sw.PagedToEnd, TaskID: sw.TaskID})
 	}
 	agent, role := mwAgent(c)
 	sweeps, err := s.eng.ReportSweeps(c.Request.Context(), agent, role, id, in)
