@@ -34,6 +34,9 @@ func scanRun(s interface{ Scan(...any) error }) (domain.Run, error) {
 
 const runCols = `id, workflow_id, workflow_ver, subject, title, status, created_by, target_count`
 
+// runColsR 同 runCols，但带 r. 前缀，供带 JOIN / 别名的查询使用。
+const runColsR = `r.id, r.workflow_id, r.workflow_ver, r.subject, r.title, r.status, r.created_by, r.target_count`
+
 // GetRun 取实例。
 func (q *Queries) GetRun(ctx context.Context, id int64) (domain.Run, error) {
 	return scanRun(q.ex.QueryRowContext(ctx, `SELECT `+runCols+` FROM runs WHERE id=?`, id))
@@ -389,6 +392,72 @@ func (q *Queries) MarkStallNotified(ctx context.Context, id int64, k domain.Stal
 	}
 	n, err := res.RowsAffected()
 	return n == 1, err
+}
+
+// condRunStalled 整期停滞：run 仍 active、没有任何已派工/进行中的任务、但还有没走完的阶段，
+// 且距最近一次**业务**事件已超过阈值。判定时排除 run_stalled 自身——否则告警一发，
+// 「最近事件」就被刷成当下，清掉标记后再也判不出停滞（自我抵消）。中枢报失败后正是这种状态——任务 failed、下游 blocked，任务级告警全都不触发。
+const condRunStalled = `r.status='active'
+	AND r.stalled_notified_at IS NULL
+	AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.run_id=r.id AND t.status IN ('dispatched','in_progress'))
+	AND EXISTS (SELECT 1 FROM tasks t WHERE t.run_id=r.id AND t.status IN ('ready','blocked','failed','returned'))
+	AND IFNULL((SELECT MAX(e.created_at) FROM events e WHERE e.run_id=r.id AND e.type <> 'run_stalled'), r.created_at)
+	    <= strftime('%Y-%m-%dT%H:%M:%SZ','now',-? || ' minutes')`
+
+// ListStalledRuns 列整期停滞且尚未提醒的 run。
+func (q *Queries) ListStalledRuns(ctx context.Context) ([]domain.Run, error) {
+	rows, err := q.ex.QueryContext(ctx,
+		`SELECT `+runColsR+` FROM runs r WHERE `+condRunStalled+` ORDER BY r.id`, domain.RunStallMinutes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Run
+	for rows.Next() {
+		r, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// MarkRunStallNotified 条件标记整期停滞「已提醒」：仍停滞且未提醒时才标，返回是否本次标上（同一次停滞只提醒一次）。
+func (q *Queries) MarkRunStallNotified(ctx context.Context, runID int64) (bool, error) {
+	res, err := q.ex.ExecContext(ctx,
+		`UPDATE runs AS r SET stalled_notified_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		 WHERE r.id=? AND `+condRunStalled, runID, domain.RunStallMinutes)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// ClearRunStallNotified 有新动作时清掉停滞标记，让下一次停滞还能再提醒一次。
+func (q *Queries) ClearRunStallNotified(ctx context.Context, runID int64) error {
+	_, err := q.ex.ExecContext(ctx, `UPDATE runs SET stalled_notified_at=NULL WHERE id=?`, runID)
+	return err
+}
+
+// RunStallSummary 停滞时的卡点摘要：还差哪些阶段、各是什么状态。
+func (q *Queries) RunStallSummary(ctx context.Context, runID int64) (string, error) {
+	rows, err := q.ex.QueryContext(ctx,
+		`SELECT stage_name, status FROM tasks WHERE run_id=? AND status IN ('ready','blocked','failed','returned') ORDER BY seq`, runID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	parts := make([]string, 0, 8)
+	for rows.Next() {
+		var name, st string
+		if err := rows.Scan(&name, &st); err != nil {
+			return "", err
+		}
+		parts = append(parts, name+"("+st+")")
+	}
+	return strings.Join(parts, "、"), rows.Err()
 }
 
 // ListDirectDownstream 列直接依赖某任务的下游任务。

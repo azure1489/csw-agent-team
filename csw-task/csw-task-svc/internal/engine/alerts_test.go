@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/domain"
+	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/store/sqlite"
 )
 
 // TestStallAlertsOnceEach 接续告警：派工超阈值未接单 → 提醒执行者一次（抄送中枢）；超过 3 倍 → 升级中枢一次；
@@ -132,4 +133,97 @@ func TestStallIgnoresOldHistory(t *testing.T) {
 	if ok, err := e.NotifyStall(ctx, a.ID, domain.StallAck); err != nil || ok {
 		t.Fatalf("old stall must not be notified: ok=%v err=%v", ok, err)
 	}
+}
+
+// TestRunStalledAlert 整期停滞：run 还 active 但没有任何已派工/进行中的任务、仍有没走完的阶段，
+// 超过阈值要提醒中枢一次且只一次；有新动作后清掉标记，下次停滞还能再提醒。
+// 这是任务级三类告警的补位——中枢报完失败后任务是终态、下游是阻塞，那三类都不触发（r44 实测沉默 47 分钟）。
+func TestRunStalledAlert(t *testing.T) {
+	e, st := setup(t)
+	ctx := context.Background()
+	editor, editorRole := who(t, st, "editor")
+	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-09-17", "停滞用例", "")
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	runID := res.Run.ID
+
+	// 刚触发时 01 已派工，不算停滞。
+	if runs, err := st.Q().ListStalledRuns(ctx); err != nil {
+		t.Fatal(err)
+	} else if len(runs) != 0 {
+		t.Fatalf("有已派工任务时不该判停滞，got %d", len(runs))
+	}
+
+	// 让 01 报失败：此时没有任何 dispatched/in_progress，下游仍 blocked —— 正是 r44 那个死角。
+	intake := taskByCode(t, st, runID, "intake")
+	collector, _ := who(t, st, "collector")
+	if _, err := e.Ack(ctx, collector, intake.ID); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	if _, err := e.Fail(ctx, collector, intake.ID, "来源全部失效"); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+
+	// 时间没到，先不提醒。
+	if runs, _ := st.Q().ListStalledRuns(ctx); len(runs) != 0 {
+		t.Fatalf("未到阈值不该提醒，got %d", len(runs))
+	}
+
+	// 把最近一次事件拨回到阈值之前。
+	if _, err := st.DB().ExecContext(ctx,
+		`UPDATE events SET created_at = strftime('%Y-%m-%dT%H:%M:%SZ','now','-40 minutes') WHERE run_id=?`, runID); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := st.Q().ListStalledRuns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].ID != runID {
+		t.Fatalf("应捞到停滞的 run，got %+v", runs)
+	}
+
+	sent, err := e.NotifyRunStalled(ctx, runID)
+	if err != nil || !sent {
+		t.Fatalf("首次应提醒：sent=%v err=%v", sent, err)
+	}
+	// 只提醒一次。
+	if sent, _ := e.NotifyRunStalled(ctx, runID); sent {
+		t.Fatal("同一次停滞不该重复提醒")
+	}
+	if runs, _ := st.Q().ListStalledRuns(ctx); len(runs) != 0 {
+		t.Fatal("已提醒过的不该再被捞出")
+	}
+
+	// 通知内容要带卡点摘要。
+	if !hasRunEvent(t, st, runID, domain.EvtRunStalled) {
+		t.Fatal("应留下 run_stalled 事件")
+	}
+	summary, err := st.Q().RunStallSummary(ctx, runID)
+	if err != nil || summary == "" {
+		t.Fatalf("卡点摘要不该为空：%q err=%v", summary, err)
+	}
+
+	// 有新动作后清标记，下次停滞还能再提醒。
+	if err := st.Q().ClearRunStallNotified(ctx, runID); err != nil {
+		t.Fatal(err)
+	}
+	if runs, _ := st.Q().ListStalledRuns(ctx); len(runs) != 1 {
+		t.Fatal("清掉标记后应能再次捞到")
+	}
+}
+
+// hasRunEvent run 级事件（TaskID 为 nil），hasEvent 只适用于任务级。
+func hasRunEvent(t *testing.T, st *sqlite.Store, runID int64, typ string) bool {
+	t.Helper()
+	evs, err := st.Q().ListEventsByRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	for _, ev := range evs {
+		if ev.Type == typ {
+			return true
+		}
+	}
+	return false
 }

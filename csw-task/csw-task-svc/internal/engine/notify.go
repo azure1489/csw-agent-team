@@ -124,6 +124,37 @@ func (e *Engine) NotifyOverdue(ctx context.Context, taskID int64) (bool, error) 
 	return sent, err
 }
 
+// NotifyRunStalled 整期停滞告警：run 还活着却没有任何人在动，提醒中枢接出下一步。
+// 这是任务级三类告警的补位——中枢报完失败后任务是终态、下游是阻塞，那三类都不会触发。
+func (e *Engine) NotifyRunStalled(ctx context.Context, runID int64) (bool, error) {
+	var sent bool
+	err := e.store.Tx(ctx, func(q *sqlite.Queries) error {
+		ok, err := q.MarkRunStallNotified(ctx, runID)
+		if err != nil || !ok {
+			return err
+		}
+		run, err := q.GetRun(ctx, runID)
+		if err != nil {
+			return err
+		}
+		wf, err := q.GetWorkflow(ctx, run.WorkflowID)
+		if err != nil {
+			return err
+		}
+		pending, err := q.RunStallSummary(ctx, runID)
+		if err != nil {
+			return err
+		}
+		detail := map[string]any{"minutes": domain.RunStallMinutes, "subject": run.Subject, "pending": pending}
+		n := &notice{target: wf.HubRoleCode, hub: wf.HubRoleCode,
+			payload: map[string]any{"run_id": run.ID, "subject": run.Subject,
+				"minutes": domain.RunStallMinutes, "pending": pending}}
+		sent = true
+		return emit(ctx, q, domain.Event{RunID: &run.ID, Type: domain.EvtRunStalled, DetailJSON: evtDetail(detail)}, n)
+	})
+	return sent, err
+}
+
 // NotifyStall 接续告警（未接单 / 未接单升级 / 接单后无活动），每类每次停滞只提醒一次；返回是否本次发出。
 // 未接单与无活动主送执行者、抄送中枢；升级只主送中枢，由中枢改派、重开或取消。
 func (e *Engine) NotifyStall(ctx context.Context, taskID int64, k domain.StallKind) (bool, error) {

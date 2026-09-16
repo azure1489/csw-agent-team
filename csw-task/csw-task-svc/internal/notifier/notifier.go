@@ -95,6 +95,9 @@ func (n *Notifier) Run(ctx context.Context) {
 			if _, err := n.ScanStalls(ctx); err != nil {
 				n.fail(err)
 			}
+			if _, err := n.ScanStalledRuns(ctx); err != nil {
+				n.fail(err)
+			}
 		case <-poll.C:
 			if _, err := n.Flush(ctx); err != nil {
 				n.fail(err)
@@ -275,6 +278,25 @@ func (n *Notifier) ScanOverdue(ctx context.Context) (int, error) {
 	count := 0
 	for _, t := range tasks {
 		ok, err := n.eng.NotifyOverdue(ctx, t.ID)
+		if err != nil {
+			return count, err
+		}
+		if ok {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// ScanStalledRuns 扫整期停滞的 run 并各提醒中枢一次（同一次停滞只提醒一次），返回本次提醒条数。
+func (n *Notifier) ScanStalledRuns(ctx context.Context) (int, error) {
+	runs, err := n.store.Q().ListStalledRuns(ctx)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, r := range runs {
+		ok, err := n.eng.NotifyRunStalled(ctx, r.ID)
 		if err != nil {
 			return count, err
 		}

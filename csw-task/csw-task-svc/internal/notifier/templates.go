@@ -136,6 +136,10 @@ func render(o domain.Outbox, r roster) (string, bool) {
 		line = fmt.Sprintf("【r%s·%s·任务#%s】%s 执行方（%s）派工 %s 分钟仍未接单，请改派、重开或取消", run, stage, task, to, p.s("assignee_role"), p.s("minutes"))
 	case domain.EvtTaskIdle:
 		line = fmt.Sprintf("【r%s·%s·任务#%s】%s 接单后 %s 分钟没有心跳或产物：请提交、心跳或报告失败", run, stage, task, to, p.s("minutes"))
+	case domain.EvtRunStalled:
+		// run 级事件没有 task / stage，单独成句：整期还活着却没人在动，要中枢接出下一步。
+		line = fmt.Sprintf("【r%s·整期停滞】%s 本期已 %s 分钟没有任何人在动，还没走完：%s。\n报失败或收到退回后要在同一轮接出下一步——重开/重派具体任务，或明确宣布本期停止；只发状态播报不算处置",
+			run, to, p.s("minutes"), or(p.s("pending"), "（无待办任务，可考虑 close 或 abort 收尾）"))
 	default:
 		line = fmt.Sprintf("【r%s·%s】%s %s", run, stage, to, o.EventType)
 	}
