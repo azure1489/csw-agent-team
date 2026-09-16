@@ -276,8 +276,8 @@ func TestSeedDailyNewsV3(t *testing.T) {
 	if err := db.QueryRow(`SELECT id, version FROM workflows WHERE wf_key='daily_news' AND status='active'`).Scan(&wfID, &ver); err != nil {
 		t.Fatalf("active daily_news: %v", err)
 	}
-	if ver != 3 {
-		t.Fatalf("want v3 active, got v%d", ver)
+	if ver != 4 {
+		t.Fatalf("want v4 active, got v%d", ver)
 	}
 	count := func(q string, args ...any) int {
 		t.Helper()
@@ -309,13 +309,13 @@ func TestSeedDailyNewsV3(t *testing.T) {
 	if n := count(`SELECT count(*) FROM workflow_gates WHERE workflow_id=? AND stage_id IS NULL`, wfID); n != 0 {
 		t.Fatalf("want 0 default gates, got %d", n)
 	}
-	for code, want := range map[string]int{"topic": 2, "write": 1, "fulltext": 1, "wx_layout": 2, "xhs_text": 1, "xhs_package": 2} {
+	for code, want := range map[string]int{"intake": 1, "topic": 2, "write": 1, "fulltext": 1, "wx_layout": 2, "xhs_text": 1, "xhs_package": 2} {
 		if n := count(`SELECT count(*) FROM workflow_gates g JOIN workflow_stages s ON s.id=g.stage_id WHERE g.workflow_id=? AND s.code=?`, wfID, code); n != want {
 			t.Fatalf("%s gates: %d, want %d", code, n, want)
 		}
 	}
-	if n := count(`SELECT count(*) FROM workflow_gates WHERE workflow_id=?`, wfID); n != 9 {
-		t.Fatalf("want 9 gates, got %d", n)
+	if n := count(`SELECT count(*) FROM workflow_gates WHERE workflow_id=?`, wfID); n != 10 {
+		t.Fatalf("want 10 gates, got %d", n)
 	}
 	if got := codes(`id IN (SELECT stage_id FROM workflow_gates WHERE reviewer_role='van' AND relayed_by_hub=1)`); got != "topic,wx_layout,xhs_package" {
 		t.Fatalf("van gates at: %s", got)
@@ -352,7 +352,7 @@ func TestSeedDailyNewsV3(t *testing.T) {
 	if n := count(`SELECT count(*) FROM workflow_stages WHERE workflow_id=? AND (instr(name,'/')>0 OR instr(name,'\')>0 OR instr(name,':')>0)`, wfID); n != 0 {
 		t.Fatalf("stage names must not contain path separators or colons")
 	}
-	// 旧形态的说法不能留在 v3 文本里。
+	// 旧形态的说法不能留在 v4 文本里。
 	if n := count(`SELECT count(*) FROM workflow_stages WHERE workflow_id=? AND (
 		instr(instructions||self_check_criteria||acceptance,'07 完整审核稿')>0 OR instr(instructions||self_check_criteria||acceptance,'小红书视觉')>0
 		OR instr(instructions||self_check_criteria||acceptance,'分页文案')>0 OR instr(instructions||self_check_criteria||acceptance,'§')>0)`, wfID); n != 0 {

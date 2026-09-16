@@ -194,6 +194,7 @@ type itemDTO struct {
 	SourceURL      string `json:"source_url,omitempty"`
 	PublishedAt    string `json:"published_at,omitempty"`
 	Status         string `json:"status"`
+	Rank           string `json:"rank,omitempty"`
 	DecidedAt      string `json:"decided_at,omitempty"`
 	DecisionSource string `json:"decision_source,omitempty"`
 }
@@ -202,7 +203,7 @@ func toItemDTOs(items []domain.RunItem) []itemDTO {
 	out := make([]itemDTO, 0, len(items))
 	for _, it := range items {
 		out = append(out, itemDTO{ItemKey: it.ItemKey, Title: it.Title, Brand: it.Brand, Product: it.Product,
-			SourceURL: it.SourceURL, PublishedAt: it.PublishedAt, Status: string(it.Status),
+			SourceURL: it.SourceURL, PublishedAt: it.PublishedAt, Status: string(it.Status), Rank: it.Rank,
 			DecidedAt: it.DecidedAt, DecisionSource: it.DecisionSource})
 	}
 	return out
@@ -248,6 +249,7 @@ type upsertItemsReq struct {
 		SourceURL   string `json:"source_url"`
 		PublishedAt string `json:"published_at"`
 		Status      string `json:"status"`
+		Rank        string `json:"rank"`
 	} `json:"items"`
 }
 
@@ -266,7 +268,7 @@ func (s *Server) handleUpsertItems(c *gin.Context) {
 	in := make([]engine.ItemInput, 0, len(req.Items))
 	for _, it := range req.Items {
 		in = append(in, engine.ItemInput{Key: it.ItemKey, Title: it.Title, Brand: it.Brand, Product: it.Product,
-			SourceURL: it.SourceURL, PublishedAt: it.PublishedAt, Status: it.Status})
+			SourceURL: it.SourceURL, PublishedAt: it.PublishedAt, Status: it.Status, Rank: it.Rank})
 	}
 	agent, role := mwAgent(c)
 	items, err := s.eng.UpsertItems(c.Request.Context(), agent, role, id, in)

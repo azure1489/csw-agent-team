@@ -21,10 +21,11 @@ type ItemInput struct {
 	Product     string
 	SourceURL   string
 	PublishedAt string
-	Status      string // 空 / candidate / shortlisted
+	Status      string // 空 / candidate / pending_check / shortlisted
+	Rank        string // 空 / primary 主选 / alt 备选（仅 shortlisted）
 }
 
-// UpsertItems 登记或更新条目（本 run 的参与角色或中枢）：只能写 candidate / shortlisted，已决定的条目不被覆盖。
+// UpsertItems 登记或更新条目（本 run 的参与角色或中枢）：只能写 candidate / pending_check / shortlisted（可带 rank），已决定的条目不被覆盖。
 func (e *Engine) UpsertItems(ctx context.Context, actor domain.Agent, role domain.Role, runID int64, items []ItemInput) ([]domain.RunItem, error) {
 	if len(items) == 0 {
 		return nil, domain.BadRequest("items_required", "items 不能为空")
@@ -33,8 +34,19 @@ func (e *Engine) UpsertItems(ctx context.Context, actor domain.Agent, role domai
 		if !itemKeyRe.MatchString(it.Key) {
 			return nil, domain.BadRequest("bad_item_key", "条目键须为小写字母数字与短横（2–64 位），收到："+it.Key)
 		}
-		if it.Status != "" && it.Status != string(domain.ItemCandidate) && it.Status != string(domain.ItemShortlisted) {
-			return nil, domain.BadRequest("bad_item_status", "登记只能写 candidate / shortlisted；批准、暂缓、否决由中枢按 Van 原话决定")
+		switch it.Status {
+		case "", string(domain.ItemCandidate), string(domain.ItemPendingCheck), string(domain.ItemShortlisted):
+		default:
+			return nil, domain.BadRequest("bad_item_status",
+				"登记只能写 candidate（线索）/ pending_check（待核）/ shortlisted（成熟）；批准、暂缓、否决由中枢按 Van 原话决定")
+		}
+		if it.Rank != "" {
+			if it.Rank != domain.ItemRankPrimary && it.Rank != domain.ItemRankAlt {
+				return nil, domain.BadRequest("bad_item_rank", "rank 须为 primary（主选）或 alt（备选），收到："+it.Rank)
+			}
+			if it.Status != string(domain.ItemShortlisted) {
+				return nil, domain.BadRequest("bad_item_rank", "只有成熟条目（shortlisted）才分主选与备选")
+			}
 		}
 	}
 	var out []domain.RunItem
@@ -72,7 +84,7 @@ func (e *Engine) UpsertItems(ctx context.Context, actor domain.Agent, role domai
 		for _, it := range items {
 			if err := q.UpsertItem(ctx, domain.RunItem{
 				RunID: runID, ItemKey: it.Key, Title: it.Title, Brand: it.Brand, Product: it.Product,
-				SourceURL: it.SourceURL, PublishedAt: it.PublishedAt, Status: domain.ItemStatus(it.Status),
+				SourceURL: it.SourceURL, PublishedAt: it.PublishedAt, Status: domain.ItemStatus(it.Status), Rank: it.Rank,
 			}); err != nil {
 				return err
 			}

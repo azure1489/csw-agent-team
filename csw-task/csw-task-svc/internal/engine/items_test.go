@@ -357,3 +357,43 @@ func TestItemsOnlyAtVanGate(t *testing.T) {
 		t.Fatalf("item after van gate: %+v", it)
 	}
 }
+
+// TestItemStageAndRank 条目五栏：登记可写线索 / 待核 / 成熟，成熟可分主选与备选；非法状态与分级被拒。
+func TestItemStageAndRank(t *testing.T) {
+	e, st := setup(t)
+	ctx := context.Background()
+	editor, editorRole := who(t, st, "editor")
+	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-09-17", "v4", "")
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	runID := res.Run.ID
+	collector, collectorRole := who(t, st, "collector")
+	items, err := e.UpsertItems(ctx, collector, collectorRole, runID, []ItemInput{
+		{Key: "hxo-a1b2c3", Brand: "HxO", Title: "折叠木椅", Status: "pending_check"},
+		{Key: "nanga-d4e5f6", Brand: "NANGA", Title: "羽绒睡袋", Status: "shortlisted", Rank: "primary"},
+		{Key: "keen-778899", Brand: "KEEN", Title: "凉鞋", Status: "shortlisted", Rank: "alt"},
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got := map[string]string{}
+	for _, it := range items {
+		got[it.ItemKey] = string(it.Status) + "/" + it.Rank
+	}
+	if got["hxo-a1b2c3"] != "pending_check/" || got["nanga-d4e5f6"] != "shortlisted/primary" || got["keen-778899"] != "shortlisted/alt" {
+		t.Fatalf("items = %v", got)
+	}
+	if _, err := e.UpsertItems(ctx, collector, collectorRole, runID,
+		[]ItemInput{{Key: "bad-000001", Title: "x", Status: "approved_write"}}); err == nil {
+		t.Fatal("批准状态不该由登记方写入")
+	}
+	if _, err := e.UpsertItems(ctx, collector, collectorRole, runID,
+		[]ItemInput{{Key: "bad-000002", Title: "x", Status: "pending_check", Rank: "primary"}}); err == nil {
+		t.Fatal("只有成熟条目才分主选与备选")
+	}
+	if _, err := e.UpsertItems(ctx, collector, collectorRole, runID,
+		[]ItemInput{{Key: "bad-000003", Title: "x", Status: "shortlisted", Rank: "first"}}); err == nil {
+		t.Fatal("非法 rank 应被拒")
+	}
+}

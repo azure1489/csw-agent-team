@@ -145,6 +145,7 @@ type File struct {
 
 // Deliverable 交付物，版本化。Kind 区分派工单 / 产出 / 补件 / 定点编辑；IsDispatch 与 Kind==dispatch 同义（兼容）。
 type Deliverable struct {
+	CreatedAt      string
 	Kind           DeliverableKind
 	DiffSummary    string // 定点编辑的修改摘要
 	DocType        string
@@ -204,6 +205,7 @@ type Upstream struct {
 
 // Review 一条审核记录，挂到某道 task_gate。
 type Review struct {
+	CreatedAt       string
 	Verdict         Verdict
 	Comment         string
 	ReturnDirection string
@@ -259,6 +261,7 @@ type RunItem struct {
 	SourceURL      string
 	PublishedAt    string
 	Status         ItemStatus
+	Rank           string // primary 主选 / alt 备选（仅 shortlisted）
 	DecidedAt      string
 	DecisionSource string // Van 原话
 	CreatedAt      string

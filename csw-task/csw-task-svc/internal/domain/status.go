@@ -279,7 +279,8 @@ func AllPassed(depStatuses []TaskStatus) bool {
 type ItemStatus string
 
 const (
-	ItemCandidate        ItemStatus = "candidate"         // 已登记的候选
+	ItemCandidate        ItemStatus = "candidate"         // 已登记的候选（线索）
+	ItemPendingCheck     ItemStatus = "pending_check"     // 待核：关键事实未核实，不计入成熟数量
 	ItemShortlisted      ItemStatus = "shortlisted"       // 研究员建议采用 / 备选
 	ItemApprovedWrite    ItemStatus = "approved_write"    // Van 批准可写：生成逐条任务
 	ItemApprovedResearch ItemStatus = "approved_research" // 只开研究，不派写作
@@ -288,6 +289,12 @@ const (
 	ItemWritten          ItemStatus = "written" // 该条的逐条任务全部通过
 	ItemReviewed         ItemStatus = "reviewed"
 	ItemPublished        ItemStatus = "published"
+)
+
+// 条目分级：成熟条目分主选与备选（只对 shortlisted 有意义）。
+const (
+	ItemRankPrimary = "primary"
+	ItemRankAlt     = "alt"
 )
 
 // 条目决定类别（中枢按 Van 原话录入）。

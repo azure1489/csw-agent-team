@@ -76,14 +76,14 @@ func TestWorkflowActivateArchivesOld(t *testing.T) {
 	ctx := context.Background()
 	q := st.Q()
 
-	// seed: daily_news v1、v2 archived，v3 active。新建草稿即 v4。
+	// seed: daily_news v1–v3 archived，v4 active。新建草稿即 v5。
 	v2, err := q.CreateWorkflowDraft(ctx, "daily_news", "资讯日更", "editor", "manual", "editor,scheduler")
 	if err != nil {
 		t.Fatalf("create draft: %v", err)
 	}
 	wf2, _ := q.GetWorkflow(ctx, v2)
-	if wf2.Version != 4 || wf2.Status != domain.WfDraft {
-		t.Fatalf("new draft want version=4 draft, got v%d %s", wf2.Version, wf2.Status)
+	if wf2.Version != 5 || wf2.Status != domain.WfDraft {
+		t.Fatalf("new draft want version=5 draft, got v%d %s", wf2.Version, wf2.Status)
 	}
 
 	// 激活 v2：先归档同 key 其他 active，再置 active（uq_wf_active 不冲突）。

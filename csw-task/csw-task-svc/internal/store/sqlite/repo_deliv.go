@@ -68,7 +68,7 @@ func (q *Queries) MaxDeliverableVersion(ctx context.Context, taskID int64, kind 
 
 const delivCols = `id, task_id, is_dispatch, version, doc_type, producer_id, file_id, download_url,
 	filename, title, summary, meta_json, self_check, editor_note, cur_gate, returned_at_gate, status,
-	kind, affects_deliverable_id, edit_of, diff_summary, collab`
+	kind, affects_deliverable_id, edit_of, diff_summary, collab, created_at`
 
 func scanDeliverable(s interface{ Scan(...any) error }) (domain.Deliverable, error) {
 	var d domain.Deliverable
@@ -81,7 +81,7 @@ func scanDeliverable(s interface{ Scan(...any) error }) (domain.Deliverable, err
 	var collab int
 	err := s.Scan(&d.ID, &d.TaskID, &isDispatch, &d.Version, &d.DocType, &producer, &fileID, &url,
 		&fn, &title, &sum, &meta, &sc, &note, &d.CurGate, &retGate, &status,
-		&kind, &affects, &editOf, &diff, &collab)
+		&kind, &affects, &editOf, &diff, &collab, &d.CreatedAt)
 	d.Kind, d.AffectsID, d.EditOf, d.DiffSummary, d.Collab = domain.DeliverableKind(kind), ptrI64(affects), ptrInt(editOf), diff.String, collab == 1
 	d.IsDispatch = isDispatch == 1
 	d.ProducerID, d.FileID = ptrI64(producer), ptrI64(fileID)
@@ -243,7 +243,7 @@ func (q *Queries) InsertReview(ctx context.Context, r domain.Review) (int64, err
 func (q *Queries) ListReviewsByDeliverable(ctx context.Context, deliverableID int64) ([]domain.Review, error) {
 	rows, err := q.ex.QueryContext(ctx, `
 		SELECT id, deliverable_id, task_gate_id, reviewer_id, verdict, comment, return_direction, return_location,
-		       decision_type, source_quote, items_json, expected_version
+		       decision_type, source_quote, items_json, expected_version, created_at
 		FROM reviews WHERE deliverable_id=? ORDER BY id`, deliverableID)
 	if err != nil {
 		return nil, err
@@ -257,7 +257,7 @@ func (q *Queries) ListReviewsByDeliverable(ctx context.Context, deliverableID in
 		var expected sql.NullInt64
 		var verdict string
 		if err := rows.Scan(&r.ID, &r.DeliverableID, &r.TaskGateID, &reviewer, &verdict, &comment, &dir, &loc,
-			&dec, &quote, &items, &expected); err != nil {
+			&dec, &quote, &items, &expected, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		r.DecisionType, r.SourceQuote, r.ItemsJSON, r.ExpectedVersion = dec.String, quote.String, items.String, ptrInt(expected)

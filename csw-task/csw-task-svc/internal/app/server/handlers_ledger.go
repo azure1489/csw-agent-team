@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"regexp"
@@ -217,4 +218,34 @@ func (s *Server) handleCreateFeedback(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"id": id})
+}
+
+// recentPosts 近 days 天的已发记录（标题与日期，供查重对照）。读不到只记日志，不影响任务详情。
+func recentPosts(ctx context.Context, s *Server, days, limit int) []gin.H {
+	posts, err := s.store.Q().ListLedgerPosts(ctx, sqlite.LedgerFilter{
+		Since: time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339), State: "published", Limit: limit})
+	if err != nil {
+		s.log.Warn("recent posts", "err", err)
+		return nil
+	}
+	out := make([]gin.H, 0, len(posts))
+	for _, p := range posts {
+		out = append(out, gin.H{"published_at": p.PublishedAt, "title": p.Title, "platform": p.Platform, "url": p.URL})
+	}
+	return out
+}
+
+// recentRejected 最近 days 天被否决 / 暂缓的条目（跨 run），避免换说法重报同一对象。
+func recentRejected(ctx context.Context, s *Server, days, limit int) []gin.H {
+	ds, err := s.store.Q().ListRecentItemDecisions(ctx, time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02"), limit)
+	if err != nil {
+		s.log.Warn("recent item decisions", "err", err)
+		return nil
+	}
+	out := make([]gin.H, 0, len(ds))
+	for _, d := range ds {
+		out = append(out, gin.H{"subject": d.Subject, "item_key": d.ItemKey, "title": d.Title, "brand": d.Brand,
+			"status": d.Status, "decision_source": d.DecisionSource, "decided_at": d.DecidedAt})
+	}
+	return out
 }

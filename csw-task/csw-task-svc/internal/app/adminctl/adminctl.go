@@ -10,6 +10,7 @@ import (
 
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/auth"
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/config"
+	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/engine"
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/store/sqlite"
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/workflow"
 )
@@ -20,6 +21,7 @@ const usage = `用法：
   adminctl token issue <agentID|roleCode> [--label X] [--expires RFC3339]
                                                    签发 token（明文仅打印一次）
   adminctl token revoke <tokenID>                  吊销 token
+  adminctl run-report <runID>                      一期用时报告（作业 / 等主编 / 等 Van / 返工轮次）
   adminctl workflow list                           列已激活工作流
   adminctl workflow validate <wf_key>              校验工作流定义（DAG/入口/中枢/闸）
   adminctl user create <username> --role <r> [--name N] [--password P]
@@ -57,6 +59,8 @@ func Run(args []string) int {
 		return agentCmd(ctx, store, args[1:])
 	case "token":
 		return tokenCmd(ctx, store, args[1:])
+	case "run-report":
+		return runReport(ctx, store, args[1:])
 	case "workflow":
 		return workflowCmd(ctx, store, args[1:])
 	case "user":
@@ -303,4 +307,29 @@ func flags(args []string) map[string]string {
 		}
 	}
 	return m
+}
+
+// runReport 打印一期的用时拆分：实际作业、等主编、等 Van、返工轮次与失败次数。
+func runReport(ctx context.Context, store *sqlite.Store, args []string) int {
+	if len(args) < 1 {
+		fmt.Println("用法：adminctl run-report <runID>")
+		return 2
+	}
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		fmt.Println("run id 须为数字")
+		return 2
+	}
+	rep, err := engine.BuildRunReport(ctx, store.Q(), id)
+	if err != nil {
+		fmt.Println("取报告失败：", err)
+		return 1
+	}
+	fmt.Printf("r%d（%s，%s）：作业 %d 分钟｜等主编 %d 分钟｜等 Van %d 分钟｜返工 %d 轮｜报告失败 %d 次\n",
+		rep.RunID, rep.Subject, rep.Status, rep.WorkMin, rep.WaitHubMin, rep.WaitVanMin, rep.Reworks, rep.Failures)
+	fmt.Printf("%-14s %-12s %-10s %6s %8s %10s %8s\n", "阶段", "角色", "状态", "版本", "作业", "等主编", "等Van")
+	for _, st := range rep.Stages {
+		fmt.Printf("%-14s %-12s %-10s %6d %8d %10d %8d\n", st.Stage, st.Role, st.Status, st.Versions, st.WorkMin, st.WaitHubMin, st.WaitVanMin)
+	}
+	return 0
 }

@@ -9,7 +9,7 @@ import (
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/store/sqlite"
 )
 
-// TestFullFlowV3 驱动 daily_news v3：写作随条目决定自动派工（派工单带条目与 Van 原话）；07 内容整合稿主编单闸；
+// TestFullFlowV3 驱动 daily_news v4（v3 的形态加 01 主编首批校准闸）：01 首批交齐由主编校准；写作随条目决定自动派工（派工单带条目与 Van 原话）；07 内容整合稿主编单闸；
 // 08 完整审核稿主编核版 → Van 全文终审；09 缺授权停在待授权、授权后续派；10 / 11 手动不派，
 // 主编取消后 12 / 13 级联取消；run done。
 func TestFullFlowV3(t *testing.T) {
@@ -22,8 +22,8 @@ func TestFullFlowV3(t *testing.T) {
 		t.Fatalf("trigger: %v", err)
 	}
 	runID := res.Run.ID
-	if res.Run.WorkflowVer != 3 || len(res.Tasks) != 11 {
-		t.Fatalf("want v3 with 11 template tasks, got v%d %d", res.Run.WorkflowVer, len(res.Tasks))
+	if res.Run.WorkflowVer != 4 || len(res.Tasks) != 11 {
+		t.Fatalf("want v4 with 11 template tasks, got v%d %d", res.Run.WorkflowVer, len(res.Tasks))
 	}
 	expectT := func(tk domain.Task, want domain.TaskStatus) {
 		t.Helper()
@@ -70,6 +70,9 @@ func TestFullFlowV3(t *testing.T) {
 			out = append(out, g.ReviewerRole)
 		}
 		return out
+	}
+	if got := strings.Join(gatesOf("intake"), ","); got != "editor" {
+		t.Fatalf("01 gates: %s", got)
 	}
 	if got := strings.Join(gatesOf("fulltext"), ","); got != "editor" {
 		t.Fatalf("07 gates: %s", got)

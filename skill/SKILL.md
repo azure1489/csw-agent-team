@@ -1,6 +1,6 @@
 ---
 name: csw-task
-version: 3.3.0
+version: 3.4.0
 description: 营事编集室「任务流转服务」客户端 + 编辑部协作协议（v3：十三阶段、引擎单写群播报）。当 agent 需要在工作流里干活时使用：被群消息 @ 唤醒后查任务、接单、下载上游、干活并一步提交产出或补件；（主编）触发实例、派工、审核、定点编辑、录入授权、代录 Van 决定、取消与重开。封装运行面 HTTP API（bearer 鉴权 / 幂等 / 一步式上传提交），agent 不自己拼 HTTP。触发词：触发流程、开批次、我的任务、接单、提交产出、补件、派工、审核、退回、定点编辑、授权、任务进度、编辑部群、CSW 任务流转。
 ---
 
@@ -48,7 +48,7 @@ description: 营事编集室「任务流转服务」客户端 + 编辑部协作�
 | fetch | 各 agent | 见 §2.1 |
 | submit | 执行者 / 主编 | `POST /api/v1/tasks/{id}/deliverables`（multipart；`kind` = output 缺省 / supplement / edit）见 §2.2、§2.3 |
 | run / timeline / progress | 各 agent | `GET /api/v1/runs/{id}` · `…/timeline` · `…/progress`（每个任务的真实卡点与下一步、条目与缺口） |
-| items | 参与角色 / 主编 | `GET /api/v1/runs/{id}/items` · `PUT /api/v1/runs/{id}/items` `{items:[{item_key,title,brand?,product?,source_url?,published_at?,status?}]}`（登记只能写 candidate / shortlisted） |
+| items | 参与角色 / 主编 | `GET /api/v1/runs/{id}/items` · `PUT /api/v1/runs/{id}/items` `{items:[{item_key,title,brand?,product?,source_url?,published_at?,status?,rank?}]}`（登记只能写 candidate 线索 / pending_check 待核 / shortlisted 成熟；成熟可带 rank=primary 主选 \| alt 备选） |
 | decide | 主编 | `POST /api/v1/runs/{id}/items/{item_key}/decision` `{decision, source_quote}`（approve_write / approve_research / defer / reject） |
 | close | 主编 | `POST /api/v1/runs/{id}/close` `{reason}`（接受整期缺口结束 run） |
 | ledger | 各 agent | `GET /api/v1/ledger/posts?since=30d&brand=&q=`（发布记录查重，含合集拆条；`verdict=not_found_in_synced_records` 只表示已同步记录里没有，**不是**「从未发布」） |
@@ -149,7 +149,7 @@ done
 
 ### 4.2 审核循环（按阶段声明的闸）
 
-闸以 `task` 返回的 `gates` 为准。v3 下：**Van 只在 03-选题方案、08-公众号完整审核稿、12-小红书图文包三处**（12 在接入小红书后才出现）：03 先主编自审、08 先主编核版、12 先主编审图文，再到 Van；04 / 07 / 10 是主编单闸；01 / 02 / 05 / 06 / 09 / 11 / 13 是 0 闸（提交即通过，你按验收标准抽查，发现问题用补件或重开处理）。
+闸以 `task` 返回的 `gates` 为准。v4 下：**Van 只在 03-选题方案、08-公众号完整审核稿、12-小红书图文包三处**（12 在接入小红书后才出现）：03 先主编自审、08 先主编核版、12 先主编审图文，再到 Van；01（主编首批校准）/ 04 / 07 / 10 是主编单闸；02 / 05 / 06 / 09 / 11 / 13 是 0 闸（提交即通过，你按验收标准抽查，发现问题用补件或重开处理）。
 
 ```text
 inbox.review_queue → task <task_id>（验收标准 + 下载链接 + 自检申报）→ fetch → 对照验收标准
@@ -168,6 +168,7 @@ curl -fsS -X POST "$BASE/api/v1/deliverables/$D/reviews" -H "Authorization: Bear
 
 ### 4.3 选题决定（03 Van 闸，按条目）
 
+- 五栏：线索（candidate）、待核（pending_check，关键事实未核实，不计成熟数量）、成熟主选（shortlisted + rank=primary）、成熟备选（shortlisted + rank=alt）、Van 已批准（approve_write / approve_research）。
 - `items` 写 Van 批准的条目键，**只随 Van 闸录入**（主编自审闸带条目会被拒绝，防止写作在 Van 批准前开工）；「保留」「就这条」= 批准可写；「再看看」「继续研究」= 只开研究、不派写作；措辞不明时只问一次受影响的范围。
 - 引擎为每个批准可写的条目生成 04-公众号写作与 05-配图与素材核任务并自动派工（派工单由引擎写明条目、来源与 Van 原话）；07-内容整合稿等这些条目的两项都通过才就绪。
 - 补批或撤回单条：`POST /runs/{id}/items/{item_key}/decision {decision, source_quote}`。撤回只取消该条尚未完成的任务，不影响内容整合稿；已写成的条目不能再改决定。批准晚到时，已开工的内容整合稿会标「补件待返工」，由你决定纳入本期还是留到下期。

@@ -94,7 +94,7 @@ func (s *Server) handleTaskDetail(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	body := gin.H{
 		"task":                toTaskDTO(t),
 		"item":                item,
 		"instructions":        t.Instructions,
@@ -106,7 +106,14 @@ func (s *Server) handleTaskDetail(c *gin.Context) {
 		"supplements":         supplements,
 		"feedback":            feedbackDTOs(taskFeedback(ctx, s, t)),
 		"skill_min_version":   s.cfg.SkillMinVersion,
-	})
+	}
+	// 选题前三段随附排重底稿：近 30 天已发（含群发）与最近几期被否决 / 暂缓的条目，开工即可对照，
+	// 不用等 Van 或主编逐次补链接。其余阶段不附，避免响应臃肿。
+	if t.StageCode == "intake" || t.StageCode == "shortlist" || t.StageCode == "topic" {
+		body["recent_posts"] = recentPosts(ctx, s, 30, 40)
+		body["recent_rejected"] = recentRejected(ctx, s, 14, 20)
+	}
+	c.JSON(http.StatusOK, body)
 }
 
 type submitUpstream struct {

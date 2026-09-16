@@ -249,6 +249,23 @@ func TestProgressCardAfterStagePassedOnce(t *testing.T) {
 	if _, err := r.eng.Submit(context.Background(), collector, r.task(t, "intake").ID, engine.SubmitInput{DownloadURL: "http://x/intake"}); err != nil {
 		t.Fatal(err)
 	}
+	// v4 起 01 有主编首批校准闸：先过闸，才会 stage_passed 并派 02。
+	editor, editorRole := r.agent(t, "editor")
+	intake := r.task(t, "intake")
+	dl, err := r.st.Q().ListDeliverablesByTask(context.Background(), intake.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out domain.Deliverable
+	for _, d := range dl {
+		if d.Kind != domain.KindDispatch {
+			out = d
+		}
+	}
+	if _, err := r.eng.Review(context.Background(), editor, editorRole, out.ID,
+		engine.ReviewInput{Verdict: domain.VerdictPass, Comment: "方向可以"}); err != nil {
+		t.Fatal(err)
+	}
 	r.flush(t) // stage_passed + shortlist dispatched → 一张进度卡
 	cards := 0
 	for _, s := range r.sender.texts() {
