@@ -112,6 +112,8 @@ func (s *Server) handleTaskDetail(c *gin.Context) {
 	if t.StageCode == "intake" || t.StageCode == "shortlist" || t.StageCode == "topic" {
 		body["recent_posts"] = recentPosts(ctx, s, 30, 40)
 		body["recent_rejected"] = recentRejected(ctx, s, 14, 20)
+		// 来源台账是「本期应该扫哪些」的基准，开工即可对账；采集轮本身不附，避免响应臃肿。
+		body["intake_sources"] = intakeSources(ctx, s)
 	}
 	c.JSON(http.StatusOK, body)
 }

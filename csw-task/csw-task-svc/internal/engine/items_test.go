@@ -363,7 +363,7 @@ func TestItemStageAndRank(t *testing.T) {
 	e, st := setup(t)
 	ctx := context.Background()
 	editor, editorRole := who(t, st, "editor")
-	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-09-17", "v4", "")
+	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-09-17", "v5", "")
 	if err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
@@ -395,5 +395,88 @@ func TestItemStageAndRank(t *testing.T) {
 	if _, err := e.UpsertItems(ctx, collector, collectorRole, runID,
 		[]ItemInput{{Key: "bad-000003", Title: "x", Status: "shortlisted", Rank: "first"}}); err == nil {
 		t.Fatal("非法 rank 应被拒")
+	}
+}
+
+// TestItemDropAndTrace 淘汰必须给理由并落轨迹；反复上报同样内容不刷屏。
+func TestItemDropAndTrace(t *testing.T) {
+	e, st := setup(t)
+	ctx := context.Background()
+	editor, editorRole := who(t, st, "editor")
+	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-09-17", "v5", "")
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	runID := res.Run.ID
+	researcher, researcherRole := who(t, st, "researcher")
+
+	// 淘汰不给理由：拒。
+	if _, err := e.UpsertItems(ctx, researcher, researcherRole, runID,
+		[]ItemInput{{Key: "aaa-000001", Title: "x", Status: "dropped"}}); err == nil {
+		t.Fatal("淘汰缺理由应被拒")
+	} else {
+		wantCode(t, err, "drop_reason_required")
+	}
+	// 非法理由码：拒。
+	if _, err := e.UpsertItems(ctx, researcher, researcherRole, runID,
+		[]ItemInput{{Key: "aaa-000001", Title: "x", Status: "dropped", ReasonCode: "随便写", Reason: "不行"}}); err == nil {
+		t.Fatal("非法 reason_code 应被拒")
+	} else {
+		wantCode(t, err, "bad_reason_code")
+	}
+
+	// 合法淘汰：状态落 dropped，并留一条轨迹。
+	items, err := e.UpsertItems(ctx, researcher, researcherRole, runID, []ItemInput{
+		{Key: "aaa-000001", Title: "只换配色", Status: "dropped", ReasonCode: "no_value", Reason: "只是配色更新，读者拿不到新东西"},
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if len(items) != 1 || items[0].Status != domain.ItemDropped {
+		t.Fatalf("want dropped, got %+v", items)
+	}
+	traces, err := st.Q().ListTracesByRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("traces: %v", err)
+	}
+	if len(traces) != 1 || traces[0].ReasonCode != "no_value" || traces[0].ToStatus != "dropped" {
+		t.Fatalf("want 1 drop trace, got %+v", traces)
+	}
+
+	// 同样内容重报：不再新增轨迹（agent 会反复 PUT 全量条目）。
+	if _, err := e.UpsertItems(ctx, researcher, researcherRole, runID, []ItemInput{
+		{Key: "aaa-000001", Title: "只换配色", Status: "dropped", ReasonCode: "no_value", Reason: "只是配色更新，读者拿不到新东西"},
+	}); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	traces, _ = st.Q().ListTracesByRun(ctx, runID)
+	if len(traces) != 1 {
+		t.Fatalf("重报同样内容不该新增轨迹，got %d", len(traces))
+	}
+
+	// 理由变了：补一条。
+	if _, err := e.UpsertItems(ctx, researcher, researcherRole, runID, []ItemInput{
+		{Key: "aaa-000001", Title: "只换配色", Status: "dropped", ReasonCode: "dup_published", Reason: "9 月初已发过同角度"},
+	}); err != nil {
+		t.Fatalf("re-upsert2: %v", err)
+	}
+	traces, _ = st.Q().ListTracesByRun(ctx, runID)
+	if len(traces) != 2 {
+		t.Fatalf("理由变化应补一条轨迹，got %d", len(traces))
+	}
+
+	// 淘汰后仍可被捡回（主编校准后改判），且再落一条轨迹。
+	if _, err := e.UpsertItems(ctx, researcher, researcherRole, runID, []ItemInput{
+		{Key: "aaa-000001", Title: "只换配色", Status: "shortlisted", Rank: "alt", ReasonCode: "other", Reason: "主编校准后改判"},
+	}); err != nil {
+		t.Fatalf("revive: %v", err)
+	}
+	it, _ := st.Q().GetItem(ctx, runID, "aaa-000001")
+	if it.Status != domain.ItemShortlisted {
+		t.Fatalf("淘汰的条目应能被改回成熟，got %s", it.Status)
+	}
+	traces, _ = st.Q().ListTracesByRun(ctx, runID)
+	if len(traces) != 3 {
+		t.Fatalf("改判应再落一条轨迹，got %d", len(traces))
 	}
 }

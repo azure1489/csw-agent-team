@@ -264,11 +264,73 @@ type RunItem struct {
 	Rank           string // primary 主选 / alt 备选（仅 shortlisted）
 	DecidedAt      string
 	DecisionSource string // Van 原话
+	DiscoveredVia  string // 这条来自哪一轮采集（intake_sweeps.sweep_key）
+	FetchedAt      string // 抓取时间（与 PublishedAt 原始披露时间分开）
+	EvidenceURL    string // 证据快照：预览图或正文截图的原始地址
+	DedupNote      string // 查重对照结论
 	CreatedAt      string
 	UpdatedAt      string
 	DecidedBy      *int64
 	ID             int64
 	RunID          int64
+}
+
+// IntakeSource 来源台账：本期「应该扫哪些」的基准。Required 为每轮必扫，Enabled 只表示可用。
+type IntakeSource struct {
+	Platform  string // instagram | xhs | web | other
+	SourceKey string // 账号名 / 关键词 / 域名；channel 为通道级占位
+	Name      string
+	EntryURL  string
+	LastOKAt  string
+	AddedBy   string
+	SourceRef string // 凭什么加进台账（主编或 Van 原话、回填来源）
+	Note      string
+	CreatedAt string
+	UpdatedAt string
+	ID        int64
+	Enabled   bool
+	Required  bool
+}
+
+// IntakeSweep 一轮采集：回答「找过哪里」，让「没找到」与「没去找」可区分。
+type IntakeSweep struct {
+	SweepKey   string // 上报方生成，(run_id, sweep_key) 幂等
+	Platform   string
+	SourceKey  string
+	Tool       string // csw_mcp | opencli | webfetch | other
+	Query      string // 找了什么（关键词 / 账号 / 页面）
+	StartedAt  string
+	EndedAt    string
+	WindowFrom string
+	WindowTo   string
+	Result     string // ok | failed | partial
+	Error      string
+	RoleCode   string
+	CreatedAt  string
+	UpdatedAt  string
+	TaskID     *int64
+	ActorID    *int64
+	ID         int64
+	RunID      int64
+	Found      int // 本轮看到的条数
+	InWindow   int // 其中落在当期窗口内的条数
+	Registered int // 其中登记成条目的条数
+	PagedToEnd bool
+}
+
+// ItemTrace 条目的一次判断：回答「为什么留、为什么弃」，淘汰理由由此落库而不是只写在交付物里。
+type ItemTrace struct {
+	ItemKey    string
+	FromStatus string // 首条无前态时为空
+	ToStatus   string
+	ReasonCode string
+	Reason     string
+	ActorRole  string
+	QuoteRef   string // 引用的主编校准或 Van 原话
+	CreatedAt  string
+	ActorID    *int64
+	ID         int64
+	RunID      int64
 }
 
 // Event 进度事件。

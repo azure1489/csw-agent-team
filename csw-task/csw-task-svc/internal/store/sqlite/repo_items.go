@@ -9,41 +9,51 @@ import (
 
 // ── run_items（条目级推进）──
 
+// 新列一律追加在末尾，itemCols 与 scanItem 的顺序必须严格一致。
 const itemCols = `id, run_id, item_key, title, brand, product, source_url, published_at, status, "rank",
-	decided_by, decided_at, decision_source, created_at, updated_at`
+	decided_by, decided_at, decision_source, created_at, updated_at,
+	discovered_via, fetched_at, evidence_url, dedup_note`
 
 func scanItem(s interface{ Scan(...any) error }) (domain.RunItem, error) {
 	var it domain.RunItem
 	var brand, product, url, pub, rank, decAt, decSrc sql.NullString
+	var via, fetched, evid, dedup sql.NullString
 	var decBy sql.NullInt64
 	var status string
 	err := s.Scan(&it.ID, &it.RunID, &it.ItemKey, &it.Title, &brand, &product, &url, &pub, &status, &rank,
-		&decBy, &decAt, &decSrc, &it.CreatedAt, &it.UpdatedAt)
+		&decBy, &decAt, &decSrc, &it.CreatedAt, &it.UpdatedAt, &via, &fetched, &evid, &dedup)
 	it.Rank = rank.String
 	it.Brand, it.Product, it.SourceURL, it.PublishedAt = brand.String, product.String, url.String, pub.String
 	it.Status, it.DecidedBy, it.DecidedAt, it.DecisionSource = domain.ItemStatus(status), ptrI64(decBy), decAt.String, decSrc.String
+	it.DiscoveredVia, it.FetchedAt, it.EvidenceURL, it.DedupNote = via.String, fetched.String, evid.String, dedup.String
 	return it, err
 }
 
-// UpsertItem 登记或更新一条条目的描述字段；已存在时只在「线索 / 待核 / 成熟」之间改状态，不覆盖中枢的决定。
+// UpsertItem 登记或更新一条条目的描述字段；已存在时只在「线索 / 待核 / 成熟 / 淘汰」之间改状态，不覆盖中枢的决定。
 func (q *Queries) UpsertItem(ctx context.Context, it domain.RunItem) error {
 	if it.Status == "" {
 		it.Status = domain.ItemCandidate
 	}
 	_, err := q.ex.ExecContext(ctx, `
-		INSERT INTO run_items (run_id, item_key, title, brand, product, source_url, published_at, status, "rank")
-		VALUES (?,?,?,?,?,?,?,?,?)
+		INSERT INTO run_items (run_id, item_key, title, brand, product, source_url, published_at, status, "rank",
+			discovered_via, fetched_at, evidence_url, dedup_note)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(run_id, item_key) DO UPDATE SET
 			title = CASE WHEN excluded.title <> '' THEN excluded.title ELSE run_items.title END,
 			brand = COALESCE(excluded.brand, run_items.brand),
 			product = COALESCE(excluded.product, run_items.product),
 			source_url = COALESCE(excluded.source_url, run_items.source_url),
 			published_at = COALESCE(excluded.published_at, run_items.published_at),
-			status = CASE WHEN run_items.status IN ('candidate','pending_check','shortlisted') THEN excluded.status ELSE run_items.status END,
+			status = CASE WHEN run_items.status IN ('candidate','pending_check','shortlisted','dropped') THEN excluded.status ELSE run_items.status END,
 			"rank" = COALESCE(excluded."rank", run_items."rank"),
+			discovered_via = COALESCE(excluded.discovered_via, run_items.discovered_via),
+			fetched_at = COALESCE(excluded.fetched_at, run_items.fetched_at),
+			evidence_url = COALESCE(excluded.evidence_url, run_items.evidence_url),
+			dedup_note = COALESCE(excluded.dedup_note, run_items.dedup_note),
 			updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')`,
 		it.RunID, it.ItemKey, it.Title, nullIfEmpty(it.Brand), nullIfEmpty(it.Product), nullIfEmpty(it.SourceURL),
-		nullIfEmpty(it.PublishedAt), string(it.Status), nullIfEmpty(it.Rank))
+		nullIfEmpty(it.PublishedAt), string(it.Status), nullIfEmpty(it.Rank),
+		nullIfEmpty(it.DiscoveredVia), nullIfEmpty(it.FetchedAt), nullIfEmpty(it.EvidenceURL), nullIfEmpty(it.DedupNote))
 	return err
 }
 

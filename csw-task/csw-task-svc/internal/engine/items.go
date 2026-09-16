@@ -13,19 +13,26 @@ import (
 // itemKeyRe 条目键：小写字母数字与短横，2–64 位（登记方生成后不再变，如 hxo-3fa91c）。
 var itemKeyRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,63}$`)
 
-// ItemInput 条目登记入参。
+// ItemInput 条目登记入参。溯源四字段与理由让采集与判断过程可被机器核对，不必解压交付物。
 type ItemInput struct {
-	Key         string
-	Title       string
-	Brand       string
-	Product     string
-	SourceURL   string
-	PublishedAt string
-	Status      string // 空 / candidate / pending_check / shortlisted
-	Rank        string // 空 / primary 主选 / alt 备选（仅 shortlisted）
+	Key           string
+	Title         string
+	Brand         string
+	Product       string
+	SourceURL     string
+	PublishedAt   string
+	Status        string // 空 / candidate / pending_check / shortlisted / dropped
+	Rank          string // 空 / primary 主选 / alt 备选（仅 shortlisted）
+	DiscoveredVia string // 来自哪一轮采集（sweep_key）
+	FetchedAt     string // 抓取时间
+	EvidenceURL   string // 证据快照地址
+	DedupNote     string // 查重对照结论
+	ReasonCode    string // 判断理由码；淘汰必填
+	Reason        string // 一句话理由
 }
 
-// UpsertItems 登记或更新条目（本 run 的参与角色或中枢）：只能写 candidate / pending_check / shortlisted（可带 rank），已决定的条目不被覆盖。
+// UpsertItems 登记或更新条目（本 run 的参与角色或中枢）：只能写 candidate / pending_check / shortlisted（可带 rank）/ dropped，
+// 已决定的条目不被覆盖。状态变化或理由变化时顺带落一条判断轨迹，淘汰理由由此进库而不是只留在交付物正文。
 func (e *Engine) UpsertItems(ctx context.Context, actor domain.Agent, role domain.Role, runID int64, items []ItemInput) ([]domain.RunItem, error) {
 	if len(items) == 0 {
 		return nil, domain.BadRequest("items_required", "items 不能为空")
@@ -35,10 +42,19 @@ func (e *Engine) UpsertItems(ctx context.Context, actor domain.Agent, role domai
 			return nil, domain.BadRequest("bad_item_key", "条目键须为小写字母数字与短横（2–64 位），收到："+it.Key)
 		}
 		switch it.Status {
-		case "", string(domain.ItemCandidate), string(domain.ItemPendingCheck), string(domain.ItemShortlisted):
+		case "", string(domain.ItemCandidate), string(domain.ItemPendingCheck), string(domain.ItemShortlisted), string(domain.ItemDropped):
 		default:
 			return nil, domain.BadRequest("bad_item_status",
-				"登记只能写 candidate（线索）/ pending_check（待核）/ shortlisted（成熟）；批准、暂缓、否决由中枢按 Van 原话决定")
+				"登记只能写 candidate（线索）/ pending_check（待核）/ shortlisted（成熟）/ dropped（淘汰）；批准、暂缓、否决由中枢按 Van 原话决定")
+		}
+		if it.ReasonCode != "" && !domain.ValidItemReasonCode(it.ReasonCode) {
+			return nil, domain.BadRequest("bad_reason_code",
+				"reason_code 须为 no_value / not_new / dup_published / dup_recent_rejected / out_of_window / evidence_missing / aesthetic_mismatch / superseded / other，收到："+it.ReasonCode)
+		}
+		if it.Status == string(domain.ItemDropped) {
+			if it.ReasonCode == "" || strings.TrimSpace(it.Reason) == "" {
+				return nil, domain.BadRequest("drop_reason_required", "淘汰条目须写 reason_code 与一句理由，否则无法与「还没判断」区分："+it.Key)
+			}
 		}
 		if it.Rank != "" {
 			if it.Rank != domain.ItemRankPrimary && it.Rank != domain.ItemRankAlt {
@@ -65,27 +81,27 @@ func (e *Engine) UpsertItems(ctx context.Context, actor domain.Agent, role domai
 		if err != nil {
 			return err
 		}
-		if role.Code != wf.HubRoleCode {
-			tasks, err := q.ListTasksByRun(ctx, runID)
-			if err != nil {
-				return err
-			}
-			member := false
-			for _, t := range tasks {
-				if t.RoleCode == role.Code {
-					member = true
-					break
-				}
-			}
-			if !member {
-				return domain.Forbidden("not_participant", "只有本期 run 的参与角色或中枢可以登记条目")
-			}
+		if err := requireRunParticipant(ctx, q, wf, role, runID, "登记条目"); err != nil {
+			return err
 		}
 		for _, it := range items {
+			prev, perr := q.GetItem(ctx, runID, it.Key)
+			existed := perr == nil
+			if perr != nil && !isNoRows(perr) {
+				return perr
+			}
 			if err := q.UpsertItem(ctx, domain.RunItem{
 				RunID: runID, ItemKey: it.Key, Title: it.Title, Brand: it.Brand, Product: it.Product,
 				SourceURL: it.SourceURL, PublishedAt: it.PublishedAt, Status: domain.ItemStatus(it.Status), Rank: it.Rank,
+				DiscoveredVia: it.DiscoveredVia, FetchedAt: it.FetchedAt, EvidenceURL: it.EvidenceURL, DedupNote: it.DedupNote,
 			}); err != nil {
+				return err
+			}
+			cur, err := q.GetItem(ctx, runID, it.Key)
+			if err != nil {
+				return err
+			}
+			if err := traceIfChanged(ctx, q, runID, it, prev, cur, existed, actor, role); err != nil {
 				return err
 			}
 		}
@@ -158,6 +174,12 @@ func (e *Engine) decideInTx(ctx context.Context, q *sqlite.Queries, run domain.R
 		return nil, domain.Conflict("item_already_written", "该条已写成，不能再改决定；需要撤下请重开相关任务")
 	}
 	if err := q.SetItemDecision(ctx, run.ID, key, status, &actor.ID, quote); err != nil {
+		return nil, err
+	}
+	if err := q.InsertItemTrace(ctx, domain.ItemTrace{
+		RunID: run.ID, ItemKey: key, FromStatus: string(it.Status), ToStatus: string(status),
+		ReasonCode: decision, Reason: quote, ActorID: &actor.ID, ActorRole: actor.RoleCode, QuoteRef: quote,
+	}); err != nil {
 		return nil, err
 	}
 	var spawned []int64
@@ -338,9 +360,61 @@ func markItemWritten(ctx context.Context, q *sqlite.Queries, runID int64, key st
 		return err
 	}
 	if it.Status == domain.ItemApprovedWrite {
-		return q.SetItemStatus(ctx, runID, key, domain.ItemWritten)
+		if err := q.SetItemStatus(ctx, runID, key, domain.ItemWritten); err != nil {
+			return err
+		}
+		return q.InsertItemTrace(ctx, domain.ItemTrace{
+			RunID: runID, ItemKey: key, FromStatus: string(it.Status), ToStatus: string(domain.ItemWritten),
+			ReasonCode: domain.ReasonAutoWritten, Reason: "该条的逐条任务全部通过", ActorRole: "engine",
+		})
 	}
 	return nil
+}
+
+// requireRunParticipant 校验调用方是本 run 的参与角色或中枢；登记条目与上报采集轮共用。
+func requireRunParticipant(ctx context.Context, q *sqlite.Queries, wf domain.Workflow, role domain.Role, runID int64, what string) error {
+	if role.Code == wf.HubRoleCode {
+		return nil
+	}
+	tasks, err := q.ListTasksByRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	for _, t := range tasks {
+		if t.RoleCode == role.Code {
+			return nil
+		}
+	}
+	return domain.Forbidden("not_participant", "只有本期 run 的参与角色或中枢可以"+what)
+}
+
+// traceIfChanged 仅在状态真的变了、或理由与上一条轨迹不同才落轨迹——
+// agent 会反复 PUT 全量条目，否则轨迹会被同样的内容刷屏。
+func traceIfChanged(ctx context.Context, q *sqlite.Queries, runID int64, in ItemInput,
+	prev, cur domain.RunItem, existed bool, actor domain.Agent, role domain.Role) error {
+	from := ""
+	if existed {
+		from = string(prev.Status)
+	}
+	changed := !existed || prev.Status != cur.Status
+	if !changed && (in.ReasonCode != "" || strings.TrimSpace(in.Reason) != "") {
+		last, err := q.LastTraceForItem(ctx, runID, in.Key)
+		switch {
+		case isNoRows(err):
+			changed = true
+		case err != nil:
+			return err
+		case last.ReasonCode != in.ReasonCode || last.Reason != in.Reason:
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return q.InsertItemTrace(ctx, domain.ItemTrace{
+		RunID: runID, ItemKey: in.Key, FromStatus: from, ToStatus: string(cur.Status),
+		ReasonCode: in.ReasonCode, Reason: in.Reason, ActorID: &actor.ID, ActorRole: role.Code,
+	})
 }
 
 // CloseRun 中枢接受缺口结束 run：须附原因；要求全部任务已终态且至少一个通过。

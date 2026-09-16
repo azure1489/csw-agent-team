@@ -282,6 +282,7 @@ const (
 	ItemCandidate        ItemStatus = "candidate"         // 已登记的候选（线索）
 	ItemPendingCheck     ItemStatus = "pending_check"     // 待核：关键事实未核实，不计入成熟数量
 	ItemShortlisted      ItemStatus = "shortlisted"       // 研究员建议采用 / 备选
+	ItemDropped          ItemStatus = "dropped"           // 判断后淘汰：与「还没判断」的 candidate 区分开
 	ItemApprovedWrite    ItemStatus = "approved_write"    // Van 批准可写：生成逐条任务
 	ItemApprovedResearch ItemStatus = "approved_research" // 只开研究，不派写作
 	ItemDeferred         ItemStatus = "deferred"
@@ -318,6 +319,58 @@ func ItemDecisionStatus(decision string) (ItemStatus, bool) {
 		return ItemRejected, true
 	}
 	return "", false
+}
+
+// 条目判断的理由码（闭合词表）。淘汰必须给其中之一，机器才能校验「淘汰是否有交代」；
+// 与《生产约定》缺量说明的「为什么缺」五类归因对齐，03 的缺量说明可直接由轨迹汇总得出。
+const (
+	ReasonNoValue           = "no_value"            // 价值不足
+	ReasonNotNew            = "not_new"             // 非新披露，仅为转发
+	ReasonDupPublished      = "dup_published"       // 近期已发同角度
+	ReasonDupRecentRejected = "dup_recent_rejected" // 近期已被否决或暂缓
+	ReasonOutOfWindow       = "out_of_window"       // 不在当期窗口
+	ReasonEvidenceMissing   = "evidence_missing"    // 证据或图片不足
+	ReasonAestheticMismatch = "aesthetic_mismatch"  // 审美或价值不符
+	ReasonSuperseded        = "superseded"          // 被同期更好的条目取代
+	ReasonOther             = "other"               // 其他，须写明理由
+	ReasonAutoWritten       = "auto_written"        // 引擎自动：逐条任务全部通过
+)
+
+// ValidItemReasonCode 校验登记方可写的理由码；内部码（auto_written、决定类）不在其中。
+func ValidItemReasonCode(code string) bool {
+	switch code {
+	case ReasonNoValue, ReasonNotNew, ReasonDupPublished, ReasonDupRecentRejected, ReasonOutOfWindow,
+		ReasonEvidenceMissing, ReasonAestheticMismatch, ReasonSuperseded, ReasonOther:
+		return true
+	}
+	return false
+}
+
+// 采集轮取值（来源台账与采集轮共用平台词表）。
+func ValidSourcePlatform(p string) bool {
+	switch p {
+	case "instagram", "xhs", "web", "other":
+		return true
+	}
+	return false
+}
+
+// ValidSweepTool 采集所用工具。
+func ValidSweepTool(t string) bool {
+	switch t {
+	case "csw_mcp", "opencli", "webfetch", "other":
+		return true
+	}
+	return false
+}
+
+// ValidSweepResult 一轮采集的结果。
+func ValidSweepResult(r string) bool {
+	switch r {
+	case "ok", "failed", "partial":
+		return true
+	}
+	return false
 }
 
 // ItemCounted 计入整期已写成条数的状态。

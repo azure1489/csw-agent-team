@@ -24,9 +24,9 @@ func TestMigrate(t *testing.T) {
 	).Scan(&n); err != nil {
 		t.Fatalf("count tables: %v", err)
 	}
-	// 0014 outbox、0015 run_items、0020–0022 数据子系统 8 张。
-	if n != 33 {
-		t.Fatalf("want 33 tables, got %d", n)
+	// 0014 outbox、0015 run_items、0020–0022 数据子系统 8 张、0028 采集留痕 3 张。
+	if n != 36 {
+		t.Fatalf("want 36 tables, got %d", n)
 	}
 
 	// 0009 新增列：阶段四列 + 任务快照三列。
@@ -44,6 +44,9 @@ func TestMigrate(t *testing.T) {
 		{"runs", "target_count"}, {"tasks", "wait_item_stages"},
 		// 0023 接续告警。
 		{"workflow_stages", "ack_minutes"}, {"workflow_stages", "idle_minutes"}, {"tasks", "ack_minutes"}, {"tasks", "idle_minutes"},
+		{"run_items", "discovered_via"}, {"run_items", "fetched_at"},
+		{"run_items", "evidence_url"}, {"run_items", "dedup_note"},
+		{"intake_sources", "required"}, {"intake_sweeps", "sweep_key"}, {"item_traces", "reason_code"},
 		{"tasks", "ack_notified_at"}, {"tasks", "ack_escalated_at"}, {"tasks", "idle_notified_at"},
 	} {
 		var c int
@@ -263,7 +266,7 @@ func TestSeedDailyNewsV2(t *testing.T) {
 
 // TestSeedDailyNewsV3 验证 0024：v3 为唯一 active；Van 闸只在 03 / 08 / 12；组版前移（08 即完整审核稿）；
 // 小红书 11 改为收集员选图包、与 10 同依赖 08；写作自动派工；时限与接续告警阈值。
-func TestSeedDailyNewsV3(t *testing.T) {
+func TestSeedDailyNewsV5(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -276,8 +279,8 @@ func TestSeedDailyNewsV3(t *testing.T) {
 	if err := db.QueryRow(`SELECT id, version FROM workflows WHERE wf_key='daily_news' AND status='active'`).Scan(&wfID, &ver); err != nil {
 		t.Fatalf("active daily_news: %v", err)
 	}
-	if ver != 4 {
-		t.Fatalf("want v4 active, got v%d", ver)
+	if ver != 5 {
+		t.Fatalf("want v5 active, got v%d", ver)
 	}
 	count := func(q string, args ...any) int {
 		t.Helper()

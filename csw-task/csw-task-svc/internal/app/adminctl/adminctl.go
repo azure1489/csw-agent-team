@@ -5,11 +5,13 @@ package adminctl
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/auth"
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/config"
+	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/domain"
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/engine"
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/store/sqlite"
 	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/workflow"
@@ -22,6 +24,12 @@ const usage = `用法：
                                                    签发 token（明文仅打印一次）
   adminctl token revoke <tokenID>                  吊销 token
   adminctl run-report <runID>                      一期用时报告（作业 / 等主编 / 等 Van / 返工轮次）
+  adminctl intake-check <runID>                    采集与判断是否合理（覆盖率 / 产出落差 / 窗口 / 淘汰交代 / 来源分布）
+  adminctl source list                             来源台账（本期「应该扫哪些」的基准）
+  adminctl source add <platform> <key> [--name N] [--entry URL] [--required] [--ref 依据]
+                                                   登记一条来源（人工确认才进台账）
+  adminctl source disable <platform> <key>         停用一条来源（不再计入覆盖率分母）
+  adminctl source backfill <runID> [--apply]       从实际采集轮找出不在台账的来源；--apply 以停用态写入待转正
   adminctl workflow list                           列已激活工作流
   adminctl workflow validate <wf_key>              校验工作流定义（DAG/入口/中枢/闸）
   adminctl user create <username> --role <r> [--name N] [--password P]
@@ -61,6 +69,10 @@ func Run(args []string) int {
 		return tokenCmd(ctx, store, args[1:])
 	case "run-report":
 		return runReport(ctx, store, args[1:])
+	case "intake-check":
+		return intakeCheck(ctx, store, args[1:])
+	case "source":
+		return sourceCmd(ctx, store, args[1:])
 	case "workflow":
 		return workflowCmd(ctx, store, args[1:])
 	case "user":
@@ -332,4 +344,172 @@ func runReport(ctx context.Context, store *sqlite.Store, args []string) int {
 		fmt.Printf("%-14s %-12s %-10s %6d %8d %10d %8d\n", st.Stage, st.Role, st.Status, st.Versions, st.WorkMin, st.WaitHubMin, st.WaitVanMin)
 	}
 	return 0
+}
+
+// intakeCheck 对一期的采集与判断跑八条判据；输出与退出码照 workflow validate。
+// 没有上报记录的旧 run 输出「不判定」而不是失败——这一点保证新命令对历史数据安全。
+func intakeCheck(ctx context.Context, store *sqlite.Store, args []string) int {
+	if len(args) < 1 {
+		fmt.Println("用法：adminctl intake-check <runID>")
+		return 2
+	}
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		fmt.Println("run id 须为数字")
+		return 2
+	}
+	checks, err := engine.BuildIntakeCheck(ctx, store.Q(), id)
+	if err != nil {
+		fmt.Println("取结论失败：", err)
+		return 1
+	}
+	bad := 0
+	for _, c := range checks {
+		mark := "✅"
+		switch {
+		case c.Skipped:
+			mark = "➖"
+		case !c.OK:
+			mark = "❌"
+			bad++
+		case c.Warn:
+			mark = "⚠️"
+		}
+		line := fmt.Sprintf("%s %s", mark, c.Name)
+		if c.Detail != "" {
+			line += "（" + c.Detail + "）"
+		}
+		fmt.Println(line)
+	}
+	if bad == 0 {
+		fmt.Println("采集过程可核，没有未通过项。")
+		return 0
+	}
+	fmt.Printf("有 %d 项未通过。\n", bad)
+	return 1
+}
+
+// sourceCmd 维护来源台账。台账只由人工维护：若「扫过的源」自动进表，
+// 覆盖率的分母就等于分子，永远 100%，这条判据也就废了。
+func sourceCmd(ctx context.Context, store *sqlite.Store, args []string) int {
+	if len(args) == 0 {
+		fmt.Println(usage)
+		return 2
+	}
+	switch args[0] {
+	case "list":
+		sources, err := store.Q().ListIntakeSources(ctx, false)
+		if err != nil {
+			fmt.Println("列来源失败：", err)
+			return 1
+		}
+		fmt.Printf("%-10s %-22s %-28s %-6s %-6s %s\n", "平台", "来源键", "名称", "启用", "必扫", "最近成功")
+		for _, s := range sources {
+			fmt.Printf("%-10s %-22s %-28s %-6v %-6v %s\n", s.Platform, s.SourceKey, s.Name, s.Enabled, s.Required, s.LastOKAt)
+		}
+		return 0
+	case "add":
+		if len(args) < 3 {
+			fmt.Println("用法：adminctl source add <platform> <key> [--name N] [--entry URL] [--required] [--ref 依据]")
+			return 2
+		}
+		platform, key := args[1], args[2]
+		if !domain.ValidSourcePlatform(platform) {
+			fmt.Println("platform 须为 instagram / xhs / web / other")
+			return 2
+		}
+		f := flags(args[3:])
+		_, required := f["required"]
+		src := domain.IntakeSource{Platform: platform, SourceKey: key, Name: f["name"], EntryURL: f["entry"],
+			Enabled: true, Required: required, AddedBy: "adminctl", SourceRef: f["ref"], Note: f["note"]}
+		if err := store.Q().UpsertIntakeSource(ctx, src); err != nil {
+			fmt.Println("登记失败：", err)
+			return 1
+		}
+		fmt.Printf("已登记来源 %s/%s（必扫 %v）\n", platform, key, required)
+		return 0
+	case "disable":
+		if len(args) < 3 {
+			fmt.Println("用法：adminctl source disable <platform> <key>")
+			return 2
+		}
+		n, err := store.Q().SetIntakeSourceEnabled(ctx, args[1], args[2], false)
+		if err != nil {
+			fmt.Println("停用失败：", err)
+			return 1
+		}
+		if n == 0 {
+			fmt.Println("台账里没有这条来源")
+			return 1
+		}
+		fmt.Printf("已停用 %s/%s\n", args[1], args[2])
+		return 0
+	case "backfill":
+		if len(args) < 2 {
+			fmt.Println("用法：adminctl source backfill <runID> [--apply]")
+			return 2
+		}
+		id, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil {
+			fmt.Println("run id 须为数字")
+			return 2
+		}
+		f := flags(args[2:])
+		_, apply := f["apply"]
+		sweeps, err := store.Q().ListSweepsByRun(ctx, id)
+		if err != nil {
+			fmt.Println("读采集轮失败：", err)
+			return 1
+		}
+		known, err := store.Q().ListIntakeSources(ctx, false)
+		if err != nil {
+			fmt.Println("读台账失败：", err)
+			return 1
+		}
+		have := map[string]bool{}
+		for _, s := range known {
+			have[s.Platform+"/"+s.SourceKey] = true
+		}
+		found := map[string]string{}
+		for _, sw := range sweeps {
+			if sw.SourceKey == "" || sw.SourceKey == "channel" {
+				continue
+			}
+			k := sw.Platform + "/" + sw.SourceKey
+			if !have[k] {
+				found[k] = sw.Platform
+			}
+		}
+		if len(found) == 0 {
+			fmt.Printf("r%d 的采集轮里没有台账之外的来源。\n", id)
+			return 0
+		}
+		keys := make([]string, 0, len(found))
+		for k := range found {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if !apply {
+				fmt.Println("待确认：", k)
+				continue
+			}
+			parts := strings.SplitN(k, "/", 2)
+			src := domain.IntakeSource{Platform: parts[0], SourceKey: parts[1], Name: parts[1],
+				Enabled: false, Required: false, AddedBy: "adminctl backfill",
+				SourceRef: fmt.Sprintf("r%d 采集轮", id), Note: "自动回填，待人工确认后启用"}
+			if err := store.Q().UpsertIntakeSource(ctx, src); err != nil {
+				fmt.Println("写入失败：", k, err)
+				return 1
+			}
+			fmt.Println("已写入（停用态，待转正）：", k)
+		}
+		if !apply {
+			fmt.Printf("共 %d 条；加 --apply 才写入台账（写入后仍是停用态，需人工确认启用）。\n", len(found))
+		}
+		return 0
+	default:
+		fmt.Println(usage)
+		return 2
+	}
 }

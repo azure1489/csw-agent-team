@@ -1,6 +1,6 @@
 ---
 name: csw-task
-version: 3.4.0
+version: 3.5.0
 description: 营事编集室「任务流转服务」客户端 + 编辑部协作协议（v3：十三阶段、引擎单写群播报）。当 agent 需要在工作流里干活时使用：被群消息 @ 唤醒后查任务、接单、下载上游、干活并一步提交产出或补件；（主编）触发实例、派工、审核、定点编辑、录入授权、代录 Van 决定、取消与重开。封装运行面 HTTP API（bearer 鉴权 / 幂等 / 一步式上传提交），agent 不自己拼 HTTP。触发词：触发流程、开批次、我的任务、接单、提交产出、补件、派工、审核、退回、定点编辑、授权、任务进度、编辑部群、CSW 任务流转。
 ---
 
@@ -48,7 +48,9 @@ description: 营事编集室「任务流转服务」客户端 + 编辑部协作�
 | fetch | 各 agent | 见 §2.1 |
 | submit | 执行者 / 主编 | `POST /api/v1/tasks/{id}/deliverables`（multipart；`kind` = output 缺省 / supplement / edit）见 §2.2、§2.3 |
 | run / timeline / progress | 各 agent | `GET /api/v1/runs/{id}` · `…/timeline` · `…/progress`（每个任务的真实卡点与下一步、条目与缺口） |
-| items | 参与角色 / 主编 | `GET /api/v1/runs/{id}/items` · `PUT /api/v1/runs/{id}/items` `{items:[{item_key,title,brand?,product?,source_url?,published_at?,status?,rank?}]}`（登记只能写 candidate 线索 / pending_check 待核 / shortlisted 成熟；成熟可带 rank=primary 主选 \| alt 备选） |
+| items | 参与角色 / 主编 | `GET /api/v1/runs/{id}/items` · `PUT /api/v1/runs/{id}/items` `{items:[{item_key,title,brand?,product?,source_url?,published_at?,status?,rank?,discovered_via?,fetched_at?,evidence_url?,dedup_note?,reason_code?,reason?}]}`（登记只能写 candidate 线索 / pending_check 待核 / shortlisted 成熟 / dropped 淘汰；成熟可带 rank=primary 主选 \| alt 备选；淘汰必须带 reason_code 与 reason） |
+| sweeps | 参与角色 / 主编 | `PUT /api/v1/runs/{id}/sweeps` `{sweeps:[{sweep_key,platform,source_key?,tool?,query?,started_at?,ended_at?,window_from?,window_to?,found,in_window,registered,result,error?,paged_to_end?}]}`（上报采集轮；按 sweep_key 幂等，同键重报即更新；result=failed 必须写 error；单次最多 200 条） |
+| intake-trace | 参与角色 / 主编 | `GET /api/v1/runs/{id}/intake-trace`（采集轮 + 条目溯源 + 判断轨迹 + 来源覆盖；02 / 03 据此判断采集是否合理，不必解压交付物） |
 | decide | 主编 | `POST /api/v1/runs/{id}/items/{item_key}/decision` `{decision, source_quote}`（approve_write / approve_research / defer / reject） |
 | close | 主编 | `POST /api/v1/runs/{id}/close` `{reason}`（接受整期缺口结束 run） |
 | ledger | 各 agent | `GET /api/v1/ledger/posts?since=30d&brand=&q=`（发布记录查重，含合集拆条；`verdict=not_found_in_synced_records` 只表示已同步记录里没有，**不是**「从未发布」） |
@@ -105,6 +107,8 @@ curl -fsS -X POST "$BASE/api/v1/tasks/$TASK_ID/deliverables" -H "Authorization: 
 7. **做不了就报失败**：`fail` 写清原因（来源全部失效 / 缺必要权限 / 版本过低…），不要沉默等待；主编会重开或取消。平台写阶段返回 `authorization_required` = 本期没有这项授权——停手报主编，不找别的办法进后台。
 
 **登记条目（情报收集员 / 选题研究员）**：每条情报在引擎登记为一个条目——`PUT /runs/{id}/items`，条目键 = 品牌英文或拼音小写 + 短横 + 原文链接 sha256 前 6 位（如 `hxo-3fa91c`），生成后不再改；研究员把采用与备选的条目标 `shortlisted`。批准、暂缓、否决只由主编按 Van 原话决定。
+
+**留采集与判断的痕迹（情报收集员 / 选题研究员）**：提交交付物前用 `PUT /runs/{id}/sweeps` 把本次全部采集轮一次报上去（每扫一个来源一条，含找到几条、窗口内几条、登记几条、成败与失败原因）——没有这条记录，主编无法区分「没找到」与「没去找」。每条条目写 `discovered_via`（对应的 sweep_key）、`fetched_at`、`evidence_url`、`dedup_note`。**判断过就不要留在 candidate**：确定不做的标 `dropped` 并给 `reason_code` 与一句理由（`no_value` / `not_new` / `dup_published` / `dup_recent_rejected` / `out_of_window` / `evidence_missing` / `aesthetic_mismatch` / `superseded` / `other`），引擎会自动落一条判断轨迹；反复上报同样内容不会重复记录。
 
 ### 3.1 状态词汇（全员统一，汇报进度只用这些词）
 
@@ -168,7 +172,7 @@ curl -fsS -X POST "$BASE/api/v1/deliverables/$D/reviews" -H "Authorization: Bear
 
 ### 4.3 选题决定（03 Van 闸，按条目）
 
-- 五栏：线索（candidate）、待核（pending_check，关键事实未核实，不计成熟数量）、成熟主选（shortlisted + rank=primary）、成熟备选（shortlisted + rank=alt）、Van 已批准（approve_write / approve_research）。
+- 六栏：线索（candidate，还没判断）、待核（pending_check，关键事实未核实，不计成熟数量）、成熟主选（shortlisted + rank=primary）、成熟备选（shortlisted + rank=alt）、淘汰（dropped，判断过且有理由码——与「还没判断」的线索区分开）、Van 已批准（approve_write / approve_research）。
 - `items` 写 Van 批准的条目键，**只随 Van 闸录入**（主编自审闸带条目会被拒绝，防止写作在 Van 批准前开工）；「保留」「就这条」= 批准可写；「再看看」「继续研究」= 只开研究、不派写作；措辞不明时只问一次受影响的范围。
 - 引擎为每个批准可写的条目生成 04-公众号写作与 05-配图与素材核任务并自动派工（派工单由引擎写明条目、来源与 Van 原话）；07-内容整合稿等这些条目的两项都通过才就绪。
 - 补批或撤回单条：`POST /runs/{id}/items/{item_key}/decision {decision, source_quote}`。撤回只取消该条尚未完成的任务，不影响内容整合稿；已写成的条目不能再改决定。批准晚到时，已开工的内容整合稿会标「补件待返工」，由你决定纳入本期还是留到下期。
@@ -270,7 +274,9 @@ curl -fsS -X POST "$BASE/api/v1/tasks/$TASK_ID/deliverables" -H "Authorization: 
 | 400 `items_require_van_gate` | 在主编自审等中间闸带了条目 | 条目只随 Van 闸（或末闸）录入；中间闸不带 items |
 | 400 `affects_required` / `bad_affects` / `edit_of_required` / `diff_summary_required` | 补件或定点编辑缺字段 | 按 §2.3 / §4.5 补齐 |
 | 400 `doc_type_required` | doc_type 与阶段产出类型都空 | 显式传 `-F doc_type=…` |
-| 400 `bad_item_key` / `bad_item_status` / `bad_decision` | 条目键或状态、决定取值不合法 | 条目键小写字母数字与短横；登记只写 candidate / shortlisted |
+| 400 `bad_item_key` / `bad_item_status` / `bad_decision` | 条目键或状态、决定取值不合法 | 条目键小写字母数字与短横；登记只写 candidate / pending_check / shortlisted / dropped |
+| 400 `drop_reason_required` / `bad_reason_code` | 淘汰没写理由，或理由码不在词表里 | 标 dropped 必须同时给 reason_code 与一句理由 |
+| 400 `bad_sweep_key` / `bad_sweep_platform` / `bad_sweep_tool` / `bad_sweep_result` / `sweep_error_required` / `too_many_sweeps` | 采集轮上报字段不合法 | sweep_key 不能空；platform 取 instagram / xhs / web / other；失败的轮次必须写 error；单次最多 200 条 |
 | 403 `not_participant` | 不是本期 run 的参与角色 | 登记条目只由参与角色或主编做 |
 | 404 `item_not_found` / 409 `item_already_written` | 没有这个条目 / 该条已写成 | 先登记；已写成的要改请重开相关任务 |
 | 409 `run_has_open_tasks` / `run_nothing_passed` | 结束 run 时还有未完成任务 / 没有交付 | 先处理未完成的任务 |

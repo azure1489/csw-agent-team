@@ -197,6 +197,10 @@ type itemDTO struct {
 	Rank           string `json:"rank,omitempty"`
 	DecidedAt      string `json:"decided_at,omitempty"`
 	DecisionSource string `json:"decision_source,omitempty"`
+	DiscoveredVia  string `json:"discovered_via,omitempty"`
+	FetchedAt      string `json:"fetched_at,omitempty"`
+	EvidenceURL    string `json:"evidence_url,omitempty"`
+	DedupNote      string `json:"dedup_note,omitempty"`
 }
 
 func toItemDTOs(items []domain.RunItem) []itemDTO {
@@ -204,7 +208,8 @@ func toItemDTOs(items []domain.RunItem) []itemDTO {
 	for _, it := range items {
 		out = append(out, itemDTO{ItemKey: it.ItemKey, Title: it.Title, Brand: it.Brand, Product: it.Product,
 			SourceURL: it.SourceURL, PublishedAt: it.PublishedAt, Status: string(it.Status), Rank: it.Rank,
-			DecidedAt: it.DecidedAt, DecisionSource: it.DecisionSource})
+			DecidedAt: it.DecidedAt, DecisionSource: it.DecisionSource,
+			DiscoveredVia: it.DiscoveredVia, FetchedAt: it.FetchedAt, EvidenceURL: it.EvidenceURL, DedupNote: it.DedupNote})
 	}
 	return out
 }
@@ -250,10 +255,17 @@ type upsertItemsReq struct {
 		PublishedAt string `json:"published_at"`
 		Status      string `json:"status"`
 		Rank        string `json:"rank"`
+		// 溯源与判断：让采集过程可核，淘汰理由进库而不是只写在交付物里
+		DiscoveredVia string `json:"discovered_via"`
+		FetchedAt     string `json:"fetched_at"`
+		EvidenceURL   string `json:"evidence_url"`
+		DedupNote     string `json:"dedup_note"`
+		ReasonCode    string `json:"reason_code"`
+		Reason        string `json:"reason"`
 	} `json:"items"`
 }
 
-// PUT /runs/:id/items —— 登记 / 更新条目（参与角色或中枢；只能写 candidate / shortlisted）
+// PUT /runs/:id/items —— 登记 / 更新条目（参与角色或中枢；只能写 candidate / pending_check / shortlisted / dropped）
 func (s *Server) handleUpsertItems(c *gin.Context) {
 	id, err := pathID(c, "id")
 	if err != nil {
@@ -268,7 +280,9 @@ func (s *Server) handleUpsertItems(c *gin.Context) {
 	in := make([]engine.ItemInput, 0, len(req.Items))
 	for _, it := range req.Items {
 		in = append(in, engine.ItemInput{Key: it.ItemKey, Title: it.Title, Brand: it.Brand, Product: it.Product,
-			SourceURL: it.SourceURL, PublishedAt: it.PublishedAt, Status: it.Status, Rank: it.Rank})
+			SourceURL: it.SourceURL, PublishedAt: it.PublishedAt, Status: it.Status, Rank: it.Rank,
+			DiscoveredVia: it.DiscoveredVia, FetchedAt: it.FetchedAt, EvidenceURL: it.EvidenceURL,
+			DedupNote: it.DedupNote, ReasonCode: it.ReasonCode, Reason: it.Reason})
 	}
 	agent, role := mwAgent(c)
 	items, err := s.eng.UpsertItems(c.Request.Context(), agent, role, id, in)
