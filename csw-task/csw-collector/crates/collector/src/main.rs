@@ -111,11 +111,9 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    // rustls 走 ring：reqwest 以 rustls-no-provider 接入，进程启动时装一次默认提供者。
-    // aws-lc-rs 要 cmake + nasm，交叉编译到 x86_64 linux 很难过，所以不用它。
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .map_err(|_| anyhow::anyhow!("安装 rustls ring 提供者失败"))?;
+    // rustls 走 ring（aws-lc-rs 要 cmake + nasm，交叉编译过不去）。
+    // 各个客户端构造函数里也会兜底调一次，这里显式装是为了让启动顺序一眼可见。
+    csw_collector_core::ensure_crypto_provider();
 
     let cli = Cli::parse();
     match cli.command {

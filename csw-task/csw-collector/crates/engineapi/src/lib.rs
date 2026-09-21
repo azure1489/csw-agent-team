@@ -13,3 +13,8 @@
 //! 另有 [`admin`]：管理后台的鉴权转发，给工作台的登录用。
 
 pub mod admin;
+pub mod client;
+pub mod types;
+
+pub use client::{EngineClient, EngineError, submit_idem_key};
+pub use types::*;

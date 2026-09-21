@@ -14,3 +14,10 @@ serde_json.workspace = true
 tracing.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
+thiserror.workspace = true
+blake3.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true
+tempdir.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "process"] }

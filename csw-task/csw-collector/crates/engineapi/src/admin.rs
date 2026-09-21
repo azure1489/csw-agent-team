@@ -53,6 +53,7 @@ pub struct AdminClient {
 
 impl AdminClient {
     pub fn new(base_url: &str) -> Result<Self> {
+        csw_collector_core::ensure_crypto_provider();
         Ok(Self {
             base: base_url.trim_end_matches('/').to_string(),
             // 刻意不开 reqwest 的 cookie feature：引擎每次都会轮换 refresh，
