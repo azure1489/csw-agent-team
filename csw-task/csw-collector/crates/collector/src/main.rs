@@ -10,9 +10,11 @@
 //!   xcheck                依赖自检（阶段 0.2：在目标主机上验证重依赖真能跑）
 //!   auth-probe            登录转发自检（阶段 0.6：对一台真引擎跑通 login/refresh/me/CSRF）
 //!   schema                导出契约的 JSON Schema，给前端生成 TS 类型
+//!   m1                    M1 验收：对真数据跑一遍采集媒体信息
 
 mod authprobe;
 mod bff;
+mod m1;
 mod schema;
 mod xcheck;
 
@@ -52,6 +54,21 @@ enum Command {
     Mcp,
     /// 历史反馈回收（离线；每次运行须单独取得同意）
     P5,
+    /// M1 验收：对真数据跑一遍「采集媒体信息」
+    M1 {
+        /// 窗口起点（含），RFC3339 UTC
+        #[arg(long)]
+        from: String,
+        /// 窗口终点（不含）
+        #[arg(long)]
+        to: String,
+        /// 只对前 N 条跑下载识别向量化；0 = 全量（一期约 42 分钟）
+        #[arg(long, default_value_t = 8)]
+        prepare: usize,
+        /// Van 本期补的短码，逗号分隔
+        #[arg(long, default_value = "")]
+        van: String,
+    },
     /// 导出契约 JSON Schema（阶段 1 的契约冻结产物）
     Schema {
         /// 写到哪；不给就打到标准输出
@@ -123,6 +140,34 @@ async fn main() -> anyhow::Result<()> {
         Command::Kb(_) => todo!("阶段 3：知识库同步与导入"),
         Command::Mcp => todo!("阶段 5：本地 MCP 服务"),
         Command::P5 => todo!("阶段 8：历史反馈回收"),
+        Command::M1 {
+            from,
+            to,
+            prepare,
+            van,
+        } => {
+            let cfg =
+                csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
+            let secrets = csw_collector_core::Secrets::from_env();
+            let missing = secrets.missing(false);
+            anyhow::ensure!(missing.is_empty(), "缺环境变量：{}", missing.join("、"));
+            m1::run(
+                &cfg,
+                &secrets,
+                m1::Opts {
+                    from,
+                    to,
+                    prepare,
+                    van_links: van
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .collect(),
+                },
+            )
+            .await
+        }
         Command::Schema { out } => schema::run(out.as_deref()),
         Command::AuthProbe {
             engine,
