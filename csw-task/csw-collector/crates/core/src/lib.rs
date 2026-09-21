@@ -7,6 +7,8 @@
 //! - `config`：env > 配置文件 > 内置默认（与 csw-task-svc 同口径）。密钥只从 env 取，不落配置文件。
 //! - `store`：本地 SQLite。**结构化数据全在这里，LanceDB 只放向量。**
 //! - `record`：模型 / Jev / 向量 / 重排四个客户端的 record｜replay｜passthrough 开关。
+//! - `vector`：向量与重排服务的客户端。**放这一层是因为单卡要求全进程只有一条队列**——
+//!   `harvest` 要向量化、`kb` 要重排，各持一个客户端就等于又并发了（实测并发会让两边都慢 4 倍）。
 //!
 //! 时区口径：**内部一律 UTC**，只在界面与引擎交互的边界换算北京时间。
 
@@ -14,6 +16,7 @@ pub mod config;
 pub mod record;
 pub mod store;
 pub mod types;
+pub mod vector;
 
 pub use config::{Config, Secrets};
 pub use record::{Mode as RecordMode, Recorder};

@@ -1,0 +1,509 @@
+//! csw 贴文库的 HTTP 客户端。
+//!
+//! 实测得到、必须长在代码里的四条（阶段 0.3）：
+//!
+//! 1. **路径前缀是 `/api/v1`**，走 API Key 认证；基址是 `agent-api.campsomewhere.com`
+//!    （`agent.campsomewhere.com` 是前端域名，不是这个）。
+//! 2. **`posts/window` 按 `date_posted` 过滤，不是 `ingestedAt`**
+//!    （`backend/internal/db/posts_window.go:56`）。总方案的窗口口径是「首次入库时间」，
+//!    接口不支持——所以这里取一个**更宽的发布时间窗口**，再在本地按 `ingestedAt` 收口。
+//! 3. **`/accounts` 的 `total` 是页数不是条数**，条数在 `records`；`page`/`size` 分页，size ≤100。
+//! 4. **单页 50 条比 100 稳**：100 条撞上冷启动会碰到 90 秒超时。冷启动首个请求可达 40 秒。
+//!
+//! 还有一条不是接口的事实：**线上版本落后于本地 main**——返回里没有 `tagList`、
+//! `hashtagList`，`mediaList` 里也没有 `shortCaption` / `detailedAlt`。
+//! 所以这些字段一律当可缺，标签补丁部署后自然就有了，代码不用改。
+
+use std::time::Duration;
+
+use anyhow::{Context, Result, bail};
+use csw_collector_core::types::{Candidate, MediaKind, MediaRef, Platform, Timestamp};
+use serde::Deserialize;
+
+/// 取更宽的发布时间窗口再本地按入库时间收口。
+///
+/// 为什么是 7 天：一条 9/17 发布的贴文若 9/20 才被抓到，按入库时间它属于 9/20 那一期；
+/// 用发布时间开窗就会漏掉它。实测 9/17–9/18 那批两者按日完全重合（216 / 222），
+/// 但那只说明爬虫当日入库，不是保证。7 天是「漏掉的代价」与「多取的成本」之间的折中：
+/// 多取的条目在本地一筛就掉，成本只是几次分页。
+pub const WINDOW_LOOKBACK_DAYS: i64 = 7;
+
+#[derive(Debug, Clone)]
+pub struct CswConfig {
+    pub base_url: String,
+    pub api_key: String,
+    /// 单页条数。50 稳，100 撞冷启动会超时。
+    pub page_size: u32,
+    pub timeout: Duration,
+}
+
+pub struct CswClient {
+    cfg: CswConfig,
+    http: reqwest::Client,
+}
+
+/// 外层信封 `{success, data}`。
+#[derive(Debug, Deserialize)]
+struct Envelope<T> {
+    #[serde(default)]
+    success: bool,
+    data: Option<T>,
+    #[serde(default)]
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WindowPage {
+    #[serde(default)]
+    items: Vec<RawPost>,
+    #[serde(default)]
+    total: i64,
+    #[serde(default)]
+    has_more: bool,
+}
+
+/// `/accounts` 的分页与别处不同：`total` 是**页数**，条数在 `records`。
+#[derive(Debug, Deserialize)]
+struct AccountPage {
+    #[serde(default)]
+    items: Vec<RawAccount>,
+    /// 页数
+    #[serde(default)]
+    total: i64,
+    /// 条数
+    #[serde(default)]
+    records: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RawAccount {
+    #[serde(default, rename = "accountName")]
+    pub account_name: String,
+    #[serde(default)]
+    pub account: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default, rename = "countryName")]
+    pub country_name: String,
+    #[serde(default, rename = "typeName")]
+    pub type_name: String,
+}
+
+/// 贴文原始字段。**驼峰**，且一律给默认值——线上版本落后时缺字段是常态。
+#[derive(Debug, Clone, Deserialize)]
+pub struct RawPost {
+    #[serde(default, rename = "postId")]
+    pub post_id: String,
+    #[serde(default)]
+    pub account: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default, rename = "translatedText")]
+    pub translated_text: String,
+    #[serde(default)]
+    pub likes: Option<serde_json::Value>,
+    #[serde(default, rename = "numComments")]
+    pub num_comments: Option<serde_json::Value>,
+    #[serde(default)]
+    pub followers: Option<serde_json::Value>,
+    #[serde(default, rename = "datePosted")]
+    pub date_posted: String,
+    /// 真入库时间（后端取自 `p.created_at`）。窗口按它收口。
+    #[serde(default, rename = "ingestedAt")]
+    pub ingested_at: String,
+    #[serde(default, rename = "contentType")]
+    pub content_type: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default, rename = "mediaList")]
+    pub media_list: Vec<RawMedia>,
+    /// 标签补丁未部署时整个字段都不在
+    #[serde(default, rename = "tagList")]
+    pub tag_list: Vec<RawTag>,
+    #[serde(default, rename = "hashtagList")]
+    pub hashtag_list: Vec<RawHashtag>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RawMedia {
+    #[serde(default, rename = "mediaHash")]
+    pub media_hash: String,
+    #[serde(default, rename = "mediaType")]
+    pub media_type: String,
+    #[serde(default, rename = "mediaUrl")]
+    pub media_url: String,
+    /// 线上还没有，部署标签补丁后才会有
+    #[serde(default, rename = "shortCaption")]
+    pub short_caption: String,
+    #[serde(default, rename = "detailedAlt")]
+    pub detailed_alt: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RawTag {
+    #[serde(default, rename = "tagName")]
+    pub tag_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RawHashtag {
+    #[serde(default, rename = "hashtagName")]
+    pub hashtag_name: String,
+}
+
+impl CswClient {
+    pub fn new(cfg: CswConfig) -> Result<Self> {
+        csw_collector_core::ensure_crypto_provider();
+        anyhow::ensure!(!cfg.api_key.is_empty(), "缺 CSW_API_KEY");
+        let http = reqwest::Client::builder().timeout(cfg.timeout).build()?;
+        Ok(Self { cfg, http })
+    }
+
+    /// 窗口取数。
+    ///
+    /// `start` / `end` 是**发布时间**窗口（接口只支持这个），调用方应当传一个
+    /// 比目标窗口宽 [`WINDOW_LOOKBACK_DAYS`] 天的范围，再用 [`in_ingest_window`] 本地收口。
+    ///
+    /// 返回的是**全部**页，分页由这里负责：调用方不该关心 `has_more`。
+    pub async fn window(&self, start: &str, end: &str) -> Result<Vec<RawPost>> {
+        let mut out = Vec::new();
+        let mut offset = 0u32;
+        loop {
+            let page: WindowPage = self
+                .get(&format!(
+                    "/api/v1/posts/window?start={start}&end={end}&limit={}&offset={offset}",
+                    self.cfg.page_size
+                ))
+                .await
+                .with_context(|| format!("取窗口 {start}~{end} offset={offset}"))?;
+            let n = page.items.len();
+            out.extend(page.items);
+            // 同时看 has_more 与本页条数：接口某天不返回 has_more 也不会死循环
+            if !page.has_more || n == 0 {
+                break;
+            }
+            offset += self.cfg.page_size;
+            // 窗口再大也不该翻过这么多页；翻到这儿说明参数错了，早点炸比默默取一天强
+            if offset > 20_000 {
+                bail!("窗口分页超过 20000 条，疑似参数有误：{start}~{end}");
+            }
+            let _ = page.total;
+        }
+        Ok(out)
+    }
+
+    /// 单条。注意查询参数是 `include-media`（**连字符**，不是下划线）。
+    pub async fn post(&self, short_code: &str) -> Result<RawPost> {
+        self.get(&format!("/api/v1/posts/{short_code}?include-media=true"))
+            .await
+    }
+
+    /// 在册账号。品牌别名表的主要来源。
+    pub async fn accounts(&self) -> Result<Vec<RawAccount>> {
+        let mut out = Vec::new();
+        let mut page = 1u32;
+        loop {
+            let p: AccountPage = self
+                .get(&format!("/api/v1/accounts?page={page}&size=100"))
+                .await?;
+            let pages = p.total.max(1);
+            out.extend(p.items);
+            if page as i64 >= pages {
+                // records 才是条数；对不上就说明分页语义又变了，值得吵一句
+                if p.records > 0 && out.len() as i64 != p.records {
+                    tracing::warn!(
+                        取到 = out.len(),
+                        应有 = p.records,
+                        "账号条数与 records 对不上"
+                    );
+                }
+                break;
+            }
+            page += 1;
+        }
+        Ok(out)
+    }
+
+    /// 已生成过文章的贴文。知识库第三类对照材料。
+    pub async fn generated(&self, max_pages: u32) -> Result<Vec<RawPost>> {
+        let mut out = Vec::new();
+        for page in 1..=max_pages {
+            let p: WindowPage = self
+                .get(&format!("/api/v1/posts/generated?page={page}&size=100"))
+                .await?;
+            let n = p.items.len();
+            out.extend(p.items);
+            if n < 100 {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let url = format!("{}{}", self.cfg.base_url.trim_end_matches('/'), path);
+        // 冷启动首个请求可达 40 秒，重试要留够耐心
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let r = self
+                .http
+                .get(&url)
+                .bearer_auth(&self.cfg.api_key)
+                .send()
+                .await;
+            match r {
+                Ok(resp) => {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    if status.is_success() {
+                        let env: Envelope<T> = serde_json::from_str(&text).with_context(|| {
+                            format!("解析 {path}；原文前 200 字：{}", head(&text))
+                        })?;
+                        if let Some(d) = env.data {
+                            return Ok(d);
+                        }
+                        bail!(
+                            "{path} 返回 success={} 但没有 data：{}",
+                            env.success,
+                            env.message
+                        );
+                    }
+                    if !(status.as_u16() == 429 || status.is_server_error()) || attempt >= 4 {
+                        bail!("{path} 返回 {status}：{}", head(&text));
+                    }
+                }
+                Err(e) if attempt >= 4 => return Err(e).context(format!("请求 {path}")),
+                Err(_) => {}
+            }
+            tokio::time::sleep(Duration::from_secs(2u64.pow(attempt.min(4)))).await;
+        }
+    }
+}
+
+fn head(s: &str) -> String {
+    s.chars().take(200).collect()
+}
+
+/// 数字字段有时是字符串（`"2324"`），有时是数字。两种都收。
+fn as_i64(v: &Option<serde_json::Value>) -> Option<i64> {
+    match v.as_ref()? {
+        serde_json::Value::Number(n) => n.as_i64(),
+        serde_json::Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+fn parse_ts(s: &str) -> Option<Timestamp> {
+    if s.trim().is_empty() {
+        return None;
+    }
+    s.parse::<Timestamp>().ok()
+}
+
+/// 这条贴文的入库时间落在目标窗口里吗。
+///
+/// 窗口是左闭右开：`[from, to)`。边界上的一条被两期都算或都不算，都是错。
+pub fn in_ingest_window(p: &RawPost, from: Timestamp, to: Timestamp) -> bool {
+    match parse_ts(&p.ingested_at) {
+        Some(t) => t >= from && t < to,
+        // 取不到入库时间就退回发布时间：宁可多判一条，也不要漏
+        None => parse_ts(&p.date_posted)
+            .map(|t| t >= from && t < to)
+            .unwrap_or(false),
+    }
+}
+
+/// 归一成统一候选格式。到这一层之后，后面的步骤不必再关心它从哪个采集器来。
+pub fn to_candidate(p: &RawPost, collector: &str) -> Candidate {
+    let media = p
+        .media_list
+        .iter()
+        .enumerate()
+        .map(|(i, m)| MediaRef {
+            source_hash: m.media_hash.clone(),
+            kind: if m.media_type.eq_ignore_ascii_case("Photo") {
+                MediaKind::Photo
+            } else {
+                MediaKind::Video
+            },
+            url: m.media_url.clone(),
+            blake3: None,
+            ordinal: i as u16,
+        })
+        .collect();
+    Candidate {
+        candidate_key: candidate_key(&p.account, &p.url, &p.post_id),
+        platform: Platform::Instagram,
+        source_id: p.post_id.clone(),
+        collector: collector.to_string(),
+        account: p.account.clone(),
+        url: p.url.clone(),
+        text: p.description.clone(),
+        translated: p.translated_text.clone(),
+        posted_at: parse_ts(&p.date_posted),
+        ingested_at: parse_ts(&p.ingested_at),
+        likes: as_i64(&p.likes),
+        comments: as_i64(&p.num_comments),
+        followers: as_i64(&p.followers),
+        heat_ratio: None,
+        content_type: p.content_type.clone(),
+        media,
+        tags: p
+            .tag_list
+            .iter()
+            .map(|t| t.tag_name.clone())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        hashtags: p
+            .hashtag_list
+            .iter()
+            .map(|h| h.hashtag_name.clone())
+            .filter(|s| !s.is_empty())
+            .collect(),
+    }
+}
+
+/// 条目键 = 品牌小写 + `-` + 链接 sha256 前 6 位。与交付物里的条目键同一个，生成后不再改。
+///
+/// 链接为空时退回用 postId——键必须稳定，宁可难看也不能今天一个样明天一个样。
+pub fn candidate_key(account: &str, url: &str, post_id: &str) -> String {
+    use sha2::Digest;
+    let brand: String = account
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_lowercase();
+    let brand = if brand.is_empty() {
+        "src".to_string()
+    } else {
+        brand
+    };
+    let basis = if url.trim().is_empty() { post_id } else { url };
+    // sha2 0.11 的输出不再实现 LowerHex，自己转
+    let hex: String = sha2::Sha256::digest(basis.as_bytes())
+        .iter()
+        .take(3)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("{brand}-{hex}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raw(content_type: &str, kinds: &[&str]) -> RawPost {
+        RawPost {
+            post_id: "3988056105053822940".into(),
+            account: "snowpeak_official".into(),
+            description: "正文".into(),
+            translated_text: String::new(),
+            likes: Some(serde_json::json!("2324")),
+            num_comments: Some(serde_json::json!(5)),
+            followers: None,
+            date_posted: "2026-09-17T05:25:17Z".into(),
+            ingested_at: "2026-09-18T01:10:00Z".into(),
+            content_type: content_type.into(),
+            url: "https://www.instagram.com/p/DbKe9gIkoMb/".into(),
+            media_list: kinds
+                .iter()
+                .map(|k| RawMedia {
+                    media_hash: "h".into(),
+                    media_type: (*k).into(),
+                    media_url: "https://oss/x.jpg".into(),
+                    short_caption: String::new(),
+                    detailed_alt: String::new(),
+                })
+                .collect(),
+            tag_list: vec![],
+            hashtag_list: vec![],
+        }
+    }
+
+    #[test]
+    fn 数字字段字符串与数字都收() {
+        let p = raw("Image", &["Photo"]);
+        let c = to_candidate(&p, "csw_window");
+        assert_eq!(c.likes, Some(2324), "点赞是字符串形态也要收");
+        assert_eq!(c.comments, Some(5));
+        assert_eq!(c.followers, None);
+    }
+
+    #[test]
+    fn 只取图文的判据对齐核心类型() {
+        assert!(to_candidate(&raw("Image", &["Photo"]), "x").is_image_only());
+        assert!(to_candidate(&raw("Carousel", &["Photo", "Photo"]), "x").is_image_only());
+        assert!(!to_candidate(&raw("Carousel", &["Photo", "Video"]), "x").is_image_only());
+        assert!(!to_candidate(&raw("Reel", &["Video"]), "x").is_image_only());
+        assert!(!to_candidate(&raw("Reel", &[]), "x").is_image_only());
+    }
+
+    #[test]
+    fn 窗口按入库时间收口而不是发布时间() {
+        let p = raw("Image", &["Photo"]); // 9/17 发布、9/18 入库
+        let d = |s: &str| s.parse::<Timestamp>().unwrap();
+        // 按发布时间那天的窗口：不该算进来
+        assert!(!in_ingest_window(
+            &p,
+            d("2026-09-17T00:00:00Z"),
+            d("2026-09-18T00:00:00Z")
+        ));
+        // 按入库时间那天的窗口：算进来
+        assert!(in_ingest_window(
+            &p,
+            d("2026-09-18T00:00:00Z"),
+            d("2026-09-19T00:00:00Z")
+        ));
+    }
+
+    #[test]
+    fn 没有入库时间就退回发布时间不漏掉() {
+        let mut p = raw("Image", &["Photo"]);
+        p.ingested_at = String::new();
+        let d = |s: &str| s.parse::<Timestamp>().unwrap();
+        assert!(in_ingest_window(
+            &p,
+            d("2026-09-17T00:00:00Z"),
+            d("2026-09-18T00:00:00Z")
+        ));
+    }
+
+    #[test]
+    fn 窗口左闭右开() {
+        let mut p = raw("Image", &["Photo"]);
+        p.ingested_at = "2026-09-18T00:00:00Z".into();
+        let d = |s: &str| s.parse::<Timestamp>().unwrap();
+        assert!(
+            in_ingest_window(&p, d("2026-09-18T00:00:00Z"), d("2026-09-19T00:00:00Z")),
+            "起点含"
+        );
+        assert!(
+            !in_ingest_window(&p, d("2026-09-17T00:00:00Z"), d("2026-09-18T00:00:00Z")),
+            "终点不含"
+        );
+    }
+
+    #[test]
+    fn 条目键稳定且随链接变() {
+        let a = candidate_key("snowpeak_official", "https://x/p/1", "1");
+        assert_eq!(a, candidate_key("snowpeak_official", "https://x/p/1", "1"));
+        assert_ne!(a, candidate_key("snowpeak_official", "https://x/p/2", "2"));
+        assert!(a.starts_with("snowpeakofficial-"), "实得 {a}");
+        // 链接为空时退回 postId，仍然稳定
+        let b = candidate_key("小红书号", "", "abc");
+        assert!(b.starts_with("src-"), "非 ASCII 账号名退回 src：{b}");
+        assert_eq!(b, candidate_key("小红书号", "", "abc"));
+    }
+
+    #[test]
+    fn 缺标签字段不影响归一() {
+        // 线上版本还没有 tagList / hashtagList，缺了也要能解析
+        let json = r#"{"postId":"1","account":"a","description":"d","contentType":"Image",
+            "mediaList":[{"mediaType":"Photo","mediaUrl":"u"}]}"#;
+        let p: RawPost = serde_json::from_str(json).unwrap();
+        let c = to_candidate(&p, "csw_window");
+        assert!(c.tags.is_empty() && c.hashtags.is_empty());
+        assert_eq!(c.media.len(), 1);
+    }
+}

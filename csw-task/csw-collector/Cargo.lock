@@ -1038,6 +1038,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "jiff",
+ "reqwest 0.13.5",
  "rusqlite",
  "rustls",
  "serde",
@@ -1047,6 +1048,7 @@ dependencies = [
  "toml",
  "tracing",
  "utoipa",
+ "wiremock",
 ]
 
 [[package]]
@@ -1095,12 +1097,17 @@ name = "csw-collector-harvest"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "csw-collector-core",
+ "futures",
+ "jiff",
  "reqwest 0.13.5",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]

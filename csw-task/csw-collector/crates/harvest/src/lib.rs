@@ -7,3 +7,6 @@
 //! 另有自定义采集器三层（外部命令 / HTTP / MCP），**默认关闭**，仅 superadmin 可登记。
 //!
 //! 只取图文的判据是严格的：`contentType ∈ {Image, Carousel}` **且** `mediaList` 里没有 Video。
+
+pub mod csw;
+pub mod download;
