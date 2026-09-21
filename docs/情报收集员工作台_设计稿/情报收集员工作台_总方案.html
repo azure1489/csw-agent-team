@@ -1010,13 +1010,17 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
 </ol>
 <p>不用 Jev 的：依据、三句话、对照说明这类要写字的；深核这类要用工具的；看图；最终结论档。请求格式：不支持请求级 <code>instructions</code>（放进每个问题）；Choice 的选项字段是 <code>criteria</code> 对象。前提：输入发往第三方，贴文正文与图片描述可以，Van 群聊原话是否送出单独拍板。密钥在开发机 <code>~/.typesafe/.env</code>，不入库。</p>
 <h2 id="9-深核-codex-app-server">9. 深核：Codex App Server</h2>
+<blockquote>
+<p><strong>9/22 已在 agent 主机实测通过（十项全过）</strong>，详见 <code>docs/实测记录_codex_app_server部署_20260922.md</code>。装的是 <code>codex-cli 0.155.1</code>，模型 <code>gpt-6-astra</code>，网关 <code>csw-subapi.833233.xyz</code>；建线程、真实回合、结构化输出、本地图片输入、只读沙箱、MCP 只读白名单工具调用全部打通，bwrap 在 root 下正常。下面的要点已按实测更正。</p>
+</blockquote>
 <ul>
 <li><strong>定位</strong>：官方定位是产品内深度集成，自动化建议用 SDK；本方案只让它做深核与将来的对话入口。</li>
 <li><strong>线程口径</strong>：每个推荐或待核候选一个线程，默认并行 3；首批限 4–8 条、10 分钟时间盒；<code>developerInstructions</code> 注入阶段标准、判断框架、该事件的判断结果与缺口；图片先下到线程 <code>cwd</code>，回合输入用 <code>localImage</code>；回合级超时由采集服务管，超时即 <code>turn/interrupt</code>，重试一次再失败向引擎报失败。</li>
-<li><strong>进程与配置</strong>：采集服务以子进程拉起 <code>codex app-server</code>（stdio），独立 <code>CODEX_HOME=/opt/csw-collector/codex-home</code>（个人目录每回合多背约 2 万 token 底座上下文）；<code>model_provider</code> 指向 sub2api（<code>wire_api = "responses"</code>）；<code>web_search</code> 关闭；MCP 只挂 csw 只读白名单 9 个工具与本地 <code>csw_kb</code> MCP。完整配置见开发版 §7.3。</li>
+<li><strong>进程与配置</strong>：采集服务以子进程拉起 <code>codex app-server</code>（stdio），独立 <code>CODEX_HOME=/opt/csw-collector/codex-home</code>；<code>model_provider</code> 指向 sub2api（<code>wire_api = "responses"</code>，<code>base_url</code> 用 <code>csw-subapi.833233.xyz</code>）；<code>web_search</code> 关闭；MCP 只挂 csw 只读白名单 9 个工具与本地 <code>csw_kb</code> MCP。实测每回合底座：挂 9 个 MCP 工具时约 18.7k token，不挂 MCP 时约 11k。完整配置见实测记录第 3 节。</li>
 <li><strong>最大的坑</strong>：<code>approvalPolicy: "never"</code> 会把需要审批的 MCP 工具调用直接拒绝。正确组合：线程级 <code>never</code> + <code>sandbox: "read-only"</code>；MCP 服务上 <code>default_tools_approval_mode = "approve"</code> + <code>enabled_tools</code> 白名单；客户端仍实现三个审批处理器并一律回 <code>decline</code>。</li>
-<li><strong>过程可核</strong>：每条 <code>item/completed</code> 原样落盘，随交付物归档到 <code>trace/</code>；<code>thread/tokenUsage/updated</code> 按 run 汇总；分页历史模式不能创建线程，不用它做审计。</li>
-<li><strong>硬要求</strong>：读循环不阻塞；只用 stdio、固定版本；<code>gpt-6-astra</code> 要求较新的 codex（0.149.0 被拒）；Linux 沙箱依赖 bwrap，agent 主机已装、M0 实测；协议与客户端直接 path 依赖 codex 仓库的 <code>app-server-protocol</code> / <code>app-server-client</code> / <code>app-server-transport</code> crate（锁定提交），MCP 用 <code>rmcp</code> 3.2。</li>
+<li><strong>过程可核</strong>：每条 <code>item/completed</code> 原样落盘，随交付物归档到 <code>trace/</code>；<code>thread/tokenUsage/updated</code> 按 run 汇总。增量事件（<code>item/agentMessage/delta</code>、<code>item/reasoning/summaryTextDelta</code>）量极大，落盘要过滤。分页历史模式在 0.155.1 上不再阻碍建线程（默认即 paginated）。</li>
+<li><strong>协议要点（实测）</strong>：<code>turn/start</code> <strong>是异步的</strong>，响应立刻返回 <code>inProgress</code>，真正的完成信号是 <code>turn/completed</code> 通知；<code>threadId</code> 在 <code>result.thread.id</code>；图片输入格式 <code>{"type": "localImage", "path": "/绝对路径"}</code>；<strong>同一线程上一个回合未结束时，起带不同 <code>outputSchema</code> 的新回合会被拒</strong>（<code>ActiveTurnOutputSchemaMismatch</code>），所以判断步骤若走 app-server 必须一条线程一个回合。</li>
+<li><strong>硬要求</strong>：读循环不阻塞；只用 stdio、固定版本 0.155.1；<code>gpt-6-astra</code> 在 0.155.1 上正常且元数据齐全（<code>gpt-5.6</code> 反而会报元数据缺失警告）；Linux 沙箱依赖 bwrap，实测 root 下正常；协议与客户端直接 path 依赖 codex 仓库的 <code>app-server-protocol</code> / <code>app-server-client</code> / <code>app-server-transport</code> crate（锁定提交），MCP 用 <code>rmcp</code> 3.2。</li>
 </ul>
 <h2 id="10-工作台">10. 工作台</h2>
 <figure class="diagram"><svg viewBox="0 0 1130 356" role="img" aria-label="候选状态：已采集、已合并、有对照材料，然后判成推荐、备选、不推荐或待核；硬性排除只用硬事实且可捞回；推荐进深核、登记、Van 决定；待核可补齐重判或结转关闭；决定回流记忆" style="max-width:100%;height:auto;font-family:inherit"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker><marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4F46E5"/></marker></defs><rect x="20" y="150" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="82.0" y="167.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">已采集</text><text x="82.0" y="183.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">图 · 描述 · 向量</text><rect x="170" y="150" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="232.0" y="167.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">已合并</text><text x="232.0" y="183.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">候选 → 事件</text><rect x="320" y="150" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="#4F46E5" stroke-width="2"/><text x="382.0" y="167.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">有对照材料</text><text x="382.0" y="183.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">五类备齐</text><rect x="490" y="30" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="#4F46E5" stroke-width="2"/><text x="552.0" y="47.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">推荐</text><text x="552.0" y="63.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">结论档</text><rect x="490" y="110" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="552.0" y="127.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">备选</text><text x="552.0" y="143.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">可捞回进首批</text><rect x="490" y="190" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="552.0" y="207.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">不推荐</text><text x="552.0" y="223.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">保留 · 可捞回</text><rect x="490" y="270" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="552.0" y="287.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">待核</text><text x="552.0" y="303.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">写明缺口</text><rect x="170" y="260" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2" stroke-dasharray="6 4"/><text x="232.0" y="277.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">硬性排除</text><text x="232.0" y="293.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">窗口外 · 03 否决同事实</text><rect x="660" y="30" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="722.0" y="47.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">深核中</text><text x="722.0" y="63.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">证据 · 参照 · 时间盒</text><rect x="820" y="30" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="882.0" y="47.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">已登记</text><text x="882.0" y="63.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">引擎条目</text><rect x="980" y="30" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1042.0" y="47.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">Van 决定</text><text x="1042.0" y="63.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">采用 / 否决 / 暂缓</text><rect x="660" y="270" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="722.0" y="287.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">结转</text><text x="722.0" y="303.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">后续期次重评</text><rect x="820" y="270" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="882.0" y="287.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">关闭</text><text x="882.0" y="303.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">到期 · 写原因</text><polyline points="144,170.0 170,170.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="294,170.0 320,170.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="382" y="164" text-anchor="middle" font-size="11" fill="currentColor">缺一不判</text><polyline points="444,170.0 490,50.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="470" y="44" text-anchor="end" font-size="11" fill="currentColor">档</text><polyline points="444,170.0 490,130.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="444,170.0 490,210.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="444,170.0 490,290.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="470" y="284" text-anchor="end" font-size="11" fill="currentColor">缺资料 · 缺图</text><polyline points="232.0,190 232.0,260" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="240" y="248" text-anchor="start" font-size="11" fill="currentColor">硬事实</text><polyline points="614,50.0 660,50.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="784,50.0 820,50.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="802.0" y="44.0" text-anchor="middle" font-size="11" fill="currentColor">条目卡</text><polyline points="944,50.0 980,50.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="962.0" y="44.0" text-anchor="middle" font-size="11" fill="currentColor">台账上</text><polyline points="552.0,110 552.0,70" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)"/><text x="558.0" y="96" text-anchor="start" font-size="11" fill="currentColor">捞回</text><polyline points="552.0,190 552.0,150" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)"/><text x="558.0" y="176" text-anchor="start" font-size="11" fill="currentColor">捞回</text><polyline points="614,290.0 660,290.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="637" y="322" text-anchor="middle" font-size="11" fill="currentColor">当期未补齐</text><polyline points="784,290.0 820,290.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="797" y="322" text-anchor="middle" font-size="11" fill="currentColor">到期</text><polyline points="722.0,270 722.0,70" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)"/><text x="728.0" y="160" text-anchor="start" font-size="11" fill="currentColor">补齐 → 重判</text><polyline points="1042.0,70 1042.0,340" fill="none" stroke="#4F46E5" stroke-width="1.4" marker-end="url(#arrA)"/><polyline points="1042.0,340 382.0,340" fill="none" stroke="#4F46E5" stroke-width="1.4" marker-end="url(#arrA)"/><text x="700" y="334" text-anchor="middle" font-size="11" fill="#4F46E5">决定 + 判断结论 → 03 决定类参考，下一期对照材料读得到</text><polyline points="382.0,340 382.0,190" fill="none" stroke="#4F46E5" stroke-width="1.4" marker-end="url(#arrA)"/></svg><figcaption>图 3 · 一条候选的状态。没有「因口味淘汰」这一档：不推荐照样保留、随时捞回；排除只用硬事实（窗口外、与 03 否决的同一事实同角度）；待核不永久出局。</figcaption></figure>
@@ -1255,7 +1259,7 @@ csw-task/csw-collector-web/  React 18 + Vite 5 + TS + Tailwind v3 + Radix，与�
 <tbody>
 <tr>
 <td><strong>agent 主机</strong> centos9 · 8.138.23.218（ssh 9318）</td>
-<td>8 vCPU · 30 GB（<strong>可用仅 9 GB</strong>）· 866 GB（<strong>已用 85%</strong>，/opt/docker 133 GB）· Tesla P40 24 GB（已用 17.8）· glibc 2.34 · Rust 1.95、bwrap、Docker 27、Node 24 已在，<strong>codex 未装</strong></td>
+<td>8 vCPU · 30 GB（<strong>可用仅 9 GB</strong>）· 866 GB（<strong>已用 85%</strong>，/opt/docker 133 GB）· Tesla P40 24 GB（已用 17.8）· glibc 2.34 · Rust 1.95、bwrap 0.4.1、Docker 27、Node 24 已在；<strong>codex 0.155.1 已于 9/22 装好并实测通过</strong></td>
 <td>Hermes 主网关（无 <code>--profile</code>，挂 csw MCP 与 sub2api，<strong>很可能就是收集员</strong>）与四个 profile 网关；opencli + Chrome；<strong>qwen3-vl-embedding :8022（就是 <code>embedding.aworld.ltd</code>）</strong>；base-nginx；无关的 jellyfin、es、java、llm-wiki × 3、open-webui、pgvector、mysql、clash、frpc</td>
 <td>新采集服务与工作台放这里</td>
 </tr>
@@ -1274,7 +1278,7 @@ csw-task/csw-collector-web/  React 18 + Vite 5 + TS + Tailwind v3 + Radix，与�
 <tr>
 <td><strong>外部</strong></td>
 <td>——</td>
-<td>sub2api（38.49.38.56）、阿里云 OSS、飞书、Bright Data；Grafana / Loki 在 43.133.15.38</td>
+<td>sub2api <code>csw-subapi.833233.xyz</code>（25 个模型，含 <code>gpt-6-astra</code>）、阿里云 OSS、飞书、Bright Data；Grafana / Loki 在 43.133.15.38</td>
 <td>模型、图片、群播报、抓取、观测</td>
 </tr>
 </tbody>
@@ -1391,7 +1395,7 @@ csw-task/csw-collector-web/  React 18 + Vite 5 + TS + Tailwind v3 + Radix，与�
 <tbody>
 <tr>
 <td><strong>M0 可行性验证（闸门）</strong></td>
-<td>agent 主机装固定版本 codex + bwrap 实测；sub2api × Codex 的 Responses 兼容性；只读 MCP；逐条判断两种接口对照（直连 / app-server）；拿 r48 窗口实测「文字 + 实图」逐条判断的速度、费用、重复一致性；Jev 在更多样本上回测（现只有 12 条、3 条有 Van 态度）；<strong>Rust + LanceDB 四项</strong>：codex client crate 跑通一次深核线程、jieba 切中文品牌名的命中率、Qwen3-VL 向量批量入库速度、LanceDB 目录放 OSS 是否可行</td>
+<td>~~agent 主机装固定版本 codex + bwrap 实测~~（9/22 完成）；~~sub2api × Codex 的 Responses 兼容性~~（完成）；~~只读 MCP~~（完成）；逐条判断两种接口对照（直连 / app-server）；拿 r48 窗口实测「文字 + 实图」逐条判断的速度、费用、重复一致性；Jev 在更多样本上回测（现只有 12 条、3 条有 Van 态度）；<strong>Rust + LanceDB 四项</strong>：codex client crate 跑通一次深核线程、jieba 切中文品牌名的命中率、Qwen3-VL 向量批量入库速度、LanceDB 目录放 OSS 是否可行</td>
 <td>给出继续或停止的结论</td>
 </tr>
 <tr>
@@ -1466,6 +1470,11 @@ csw-task/csw-collector-web/  React 18 + Vite 5 + TS + Tailwind v3 + Radix，与�
 <td>范例知识库</td>
 <td><code>docs/知识库/范例/</code>：10 篇、41 条、225 图（190 可作配图）、每篇拆解、<code>kb_import.jsonl</code></td>
 <td>已建成；入引擎待范例标记与导入命令</td>
+</tr>
+<tr>
+<td><strong>codex app-server 部署</strong></td>
+<td><strong>9/22 在 agent 主机实测十项全过</strong>：0.155.1 + <code>gpt-6-astra</code> + <code>csw-subapi</code> 网关；建线程、回合、结构化输出、图片输入、只读沙箱、MCP 只读白名单工具调用；纠正方案六处事实</td>
+<td><strong>M0 第一项完成</strong>，见 <code>docs/实测记录_codex_app_server部署_20260922.md</code></td>
 </tr>
 <tr>
 <td>实验</td>
@@ -1569,8 +1578,8 @@ csw-task/csw-collector-web/  React 18 + Vite 5 + TS + Tailwind v3 + Radix，与�
 </tr>
 <tr>
 <td>13</td>
-<td>codex 固定版本与安装方式；<code>gpt-6-astra</code> 对版本的要求</td>
-<td>M0 第一件事验</td>
+<td>~~codex 固定版本与安装方式；<code>gpt-6-astra</code> 对版本的要求~~</td>
+<td><strong>已定（9/22 实测）：0.155.1 + <code>gpt-6-astra</code></strong>；生产要独立装到 <code>/opt/csw-collector/</code>，不与 Hermes 共用 node</td>
 </tr>
 <tr>
 <td>14</td>
@@ -1736,6 +1745,11 @@ csw-task/csw-collector-web/  React 18 + Vite 5 + TS + Tailwind v3 + Radix，与�
 <td>概要版（第二版）</td>
 <td>——</td>
 <td><code>docs/情报收集员改造方案_概要版_20260919.md</code>（§15 对 Van 反馈的逐项回应）</td>
+</tr>
+<tr>
+<td>codex 部署实测记录</td>
+<td>——</td>
+<td><code>docs/实测记录_codex_app_server部署_20260922.md</code></td>
 </tr>
 <tr>
 <td>Van 反馈原文</td>
