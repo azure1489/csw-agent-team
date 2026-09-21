@@ -9,10 +9,13 @@
 //! - `record`：模型 / Jev / 向量 / 重排四个客户端的 record｜replay｜passthrough 开关。
 //! - `vector`：向量与重排服务的客户端。**放这一层是因为单卡要求全进程只有一条队列**——
 //!   `harvest` 要向量化、`kb` 要重排，各持一个客户端就等于又并发了（实测并发会让两边都慢 4 倍）。
+//! - `model`：生成模型网关的客户端。同理——识别与判断走同一个网关，
+//!   并发上限（实测 8）必须是全进程的，各持一个就等于把并发翻倍、全换成 429。
 //!
 //! 时区口径：**内部一律 UTC**，只在界面与引擎交互的边界换算北京时间。
 
 pub mod config;
+pub mod model;
 pub mod record;
 pub mod store;
 pub mod types;

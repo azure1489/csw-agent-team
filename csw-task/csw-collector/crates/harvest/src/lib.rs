@@ -10,3 +10,4 @@
 
 pub mod csw;
 pub mod download;
+pub mod recognize;
