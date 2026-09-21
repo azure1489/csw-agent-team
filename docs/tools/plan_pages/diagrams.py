@@ -80,75 +80,97 @@ def fig_system():
 
 # ---------- 图 2：每日流程泳道 ----------
 def fig_flow():
-    W = 1180; laneH = 96; lanes = ["数据源", "采集服务（代码）", "模型", "引擎（真相）", "人：主编 · 研究员 · Van"]
+    W = 1170; laneH = 96
+    lanes = ["来源", "采集服务（Rust · LanceDB）", "模型 · 向量服务", "引擎（真相）", "人：主编 · 研究员 · Van"]
     b = ""
     for i, t in enumerate(lanes):
         b += lane(10, 20 + i * laneH, W - 20, laneH, t)
-    Y = [20 + i * laneH + 34 for i in range(5)]  # 每泳道盒子 y
-    # 列 x 位置
-    X = [90, 250, 410, 570, 730, 890, 1030]
-    bw, bh = 130, 44
-    # 数据源
-    b += box(X[0]-bw/2, Y[0], bw, bh, "csw 后端", "前一天到当天全量")
-    b += box(X[4]-bw/2, Y[0], bw, bh, "原始来源", "官方页 · OSS 图")
-    # 代码
-    b += box(X[0]-bw/2, Y[1], bw, bh, "A 取全量", "分页取完 · 计数")
-    b += box(X[1]-bw/2, Y[1], bw, bh, "B 合并与硬事实", "窗口 · 事件 · 缩略图")
-    b += box(X[5]-bw/2, Y[1], bw, bh, "F 登记与交付", "条目 · 采集轮 · 台账")
+    Y = [20 + i * laneH + 34 for i in range(5)]
+    X = [90 + i * 140 for i in range(8)]
+    bw, bh = 124, 44
+    def bx(col, l, t, sub=None, **kw): return box(X[col] - bw / 2, Y[l], bw, bh, t, sub, fs=12, **kw)
+    C = lambda l: Y[l] + bh / 2
+    # 来源
+    b += bx(2, 0, "csw 后端 · OSS", "posts/window · 只图文")
+    b += bx(3, 0, "csw 后台", "生成过文章的贴文")
+    # 采集服务
+    b += bx(1, 1, "1 开工", "ack · 心跳 / 手动")
+    b += bx(2, 1, "2 采集媒体信息", "候选 · 下载 · 识别 · 向量", accent=True)
+    b += bx(3, 1, "3 合并 · 4 对照", "窗口 · 召回 · 重排 · 五类")
+    b += bx(4, 1, "5 逐条判断", "每条都判 · 结论档", accent=True)
+    b += bx(5, 1, "6 深核", "推荐 + 待核 · 时间盒")
+    b += bx(6, 1, "7 登记与交付", "有任务才写引擎")
+    b += bx(7, 1, "9 返工或补件", "每期合并一次")
     # 模型
-    b += box(X[2]-bw/2, Y[2], bw, bh, "C 查重判断", "同一事实或角度？")
-    b += box(X[3]-bw/2, Y[2], bw, bh, "D 打分", "六维度 · 依据 · 三句话", accent=True)
-    b += box(X[4]-bw/2, Y[2], bw, bh, "E 深核", "证据 · 参照 · 完整图")
+    b += bx(2, 2, "视觉模型", "每张图 × 正文")
+    b += bx(3, 2, "Qwen3-VL", "向量 · 重排")
+    b += bx(4, 2, "判断模型", "逐维依据 · 三句话")
+    b += bx(5, 2, "Codex App Server", "线程 · 只读工具")
     # 引擎
-    b += box(X[2]-bw/2, Y[3], bw, bh, "知识库", "正式已发布")
-    b += box(X[3]-bw/2, Y[3], bw, bh, "打分台账", "全部事件")
-    b += box(X[5]-bw/2, Y[3], bw, bh, "条目 · 交付物", "首批校准闸")
-    b += box(X[6]-bw/2, Y[3], bw, bh, "选题记忆", "决定 + 维度分")
+    b += bx(0, 3, "0 派单 05:30", "run · 01 任务")
+    b += bx(3, 3, "刊发记录 · 决定", "记忆 · 同步为索引")
+    b += bx(6, 3, "条目 · 台账 · 交付", "intake-check")
+    b += bx(7, 3, "8 首批校准闸", "→ 02 · 03 · Van 决定")
     # 人
-    b += box(X[3]-bw/2, Y[4], bw, bh, "工作台 · 台账", "捞回 · 改判 · 首批")
-    b += box(X[6]-bw/2, Y[4], bw, bh, "Van 选择", "采用 / 否决 / 暂缓 + 原话")
-    # 箭头
-    c = lambda i, l: (X[i], Y[l] + bh/2)
-    b += arrow(X[0], Y[0]+bh, X[0], Y[1], "posts/window")
-    b += arrow(X[0]+bw/2, Y[1]+bh/2, X[1]-bw/2, Y[1]+bh/2)
-    b += arrow(X[1]+bw/2, Y[1]+bh/2, X[2]-bw/2, Y[2]+bh/2, "事件 + 候选旧文", lx=330, ly=Y[1]+bh+14, anchor="start")
-    b += arrow(X[2], Y[3], X[2], Y[2]+bh, "检索候选", lx=X[2]+8, ly=Y[2]+bh+30, anchor="start")
-    b += arrow(X[2]+bw/2, Y[2]+bh/2, X[3]-bw/2, Y[2]+bh/2, "查重结论", lx=(X[2]+X[3])/2, ly=Y[2]-4)
-    b += arrow(X[3], Y[2]+bh, X[3], Y[3], "每个事件一条", accent=True, lx=X[3]+8, ly=Y[2]+bh+30, anchor="start")
-    b += arrow(X[3]+bw/2, Y[2]+bh/2, X[4]-bw/2, Y[2]+bh/2, "入围 + 待核", lx=(X[3]+X[4])/2, ly=Y[2]-4)
-    b += arrow(X[4], Y[0]+bh, X[4], Y[2], "核事实 · 看图", lx=X[4]+8, ly=Y[1]+bh/2, anchor="start")
-    b += arrow(X[4]+bw/2, Y[2]+bh/2, X[5]-bw/2, Y[1]+bh/2, "条目卡", lx=850, ly=Y[1]+bh+14, anchor="start")
-    b += arrow(X[5], Y[1]+bh, X[5], Y[3], "PUT items · sweeps · scores", lx=X[5]+8, ly=Y[2]+bh+18, anchor="start")
-    b += arrow(X[3], Y[3]+bh, X[3], Y[4], "读台账")
-    b += arrow(X[3]+bw/2, Y[4]+bh/2, X[6]-bw/2, Y[4]+bh/2, "07:15 前送排序表")
-    b += arrow(X[6], Y[4], X[6], Y[3]+bh, "决定连同维度分入库", accent=True, lx=X[6]-8, ly=Y[4]-10, anchor="end")
-    b += arrow(X[6]-bw/2, Y[3]+bh/2, X[4]+bw/2, Y[2]+bh/2, "下一期：案例 · 准则", dashed=True, via=[(X[6]-bw/2-20, Y[3]+bh/2), (X[6]-bw/2-20, Y[2]+bh/2)], lx=(X[6]-bw/2-20+X[4]+bw/2)/2, ly=Y[2]+bh/2-8)
-    return fig(svg(W, 20 + 5*laneH + 10, b, "每日流程：代码取全量与合并，模型查重打分深核，引擎存台账与条目，人看台账并做决定，决定回流记忆"),
-               "图 2 · 每日 01 流程。横向是六步，纵向是谁在做。强调色标出打分：每个事件都在引擎留下一行台账；Van 的每次决定连同当时的维度分入库，下一期的查重与打分读得到。")
+    b += bx(0, 4, "0 手动开启", "方案 · 窗口 · 关联任务")
+    b += bx(7, 4, "主编 · Van", "通过 / 退回 · 勾选")
+    # 两个入口汇到 1 开工
+    jx = X[1] - bw / 2 - 16
+    b += arrow(X[0] + bw / 2, C(3), X[1] - bw / 2, C(1), "派工单", via=[(jx, C(3)), (jx, C(1))], lx=jx - 6, ly=C(2) + 4, anchor="end")
+    b += arrow(X[0] + bw / 2, C(4), jx, C(3) + 6, "点开始", via=[(jx, C(4))], lx=(X[0] + bw / 2 + jx) / 2, ly=C(4) - 6)
+    # 采集主线
+    for c in range(1, 6):
+        b += arrow(X[c] + bw / 2, C(1), X[c + 1] - bw / 2, C(1))
+    # 来源 / 模型 ↔ 采集
+    b += arrow(X[2], Y[0] + bh, X[2], Y[1], "贴文 + 图", lx=X[2] + 6, ly=Y[0] + bh + 14, anchor="start")
+    b += arrow(X[3], Y[0] + bh, X[3], Y[1], "已生成贴文", lx=X[3] + 6, ly=Y[0] + bh + 14, anchor="start")
+    b += arrow(X[2], Y[2], X[2], Y[1] + bh, "描述 · 用途", lx=X[2] + 6, ly=Y[1] + bh + 14, anchor="start")
+    b += arrow(X[3], Y[2], X[3], Y[1] + bh, "向量 · 精排", lx=X[3] + 6, ly=Y[1] + bh + 14, anchor="start")
+    b += arrow(X[4], Y[2], X[4], Y[1] + bh, "判断结果", accent=True, lx=X[4] + 6, ly=Y[1] + bh + 14, anchor="start")
+    b += arrow(X[5], Y[2], X[5], Y[1] + bh, "条目卡", lx=X[5] + 6, ly=Y[1] + bh + 14, anchor="start")
+    # 引擎 ↔ 其余
+    b += arrow(X[3], Y[3], X[3], Y[2] + bh, "同步为索引", dashed=True, lx=X[3] + 6, ly=Y[2] + bh + 14, anchor="start")
+    b += arrow(X[6], Y[1] + bh, X[6], Y[3], "PUT · submit", lx=X[6] + 6, ly=C(2), anchor="start")
+    b += arrow(X[6] + bw / 2, C(3), X[7] - bw / 2, C(3))
+    b += arrow(X[7], Y[3] + bh, X[7], Y[4], "待审", lx=X[7] + 6, ly=Y[3] + bh + 14, anchor="start")
+    b += arrow(X[7], Y[1] + bh, X[7], Y[3], "kind=补件", lx=X[7] + 6, ly=C(2), anchor="start")
+    rx = X[7] + bw / 2 + 14
+    b += arrow(X[7] + bw / 2, C(4), X[7] + bw / 2, C(1), via=[(rx, C(4)), (rx, C(1))])
+    b += f'<text x="{rx + 4}" y="{(C(1) + C(4)) / 2}" font-size="11" fill="currentColor" transform="rotate(-90 {rx + 4} {(C(1) + C(4)) / 2})" text-anchor="middle">退回 → 返工 · 通过 → 补件</text>'
+    # 决定回流记忆
+    yb = Y[4] + bh + 22
+    b += arrow(X[7] - 20, Y[4] + bh, X[3], Y[3] + bh, "决定 + 判断结论入记忆，下一期用", dashed=True, accent=True, via=[(X[7] - 20, yb), (X[3], yb)], lx=(X[3] + X[7]) / 2, ly=yb - 6)
+    return fig(svg(W, yb + 16, b, "每日流程：引擎派单或人手动开启，采集服务采集媒体信息、合并与对照材料、逐条判断、深核、登记交付，主编首批校准，补件，Van 决定回流记忆"),
+               "图 2 · 每日流程。两个入口汇到 1 开工；采集服务这一行是主线，每一步在工作台流程带上可见。强调色是第 2 步（只取图文，取候选、下载、识别、向量化一体）和第 5 步（每条都判，结论档加逐维依据，不打分）。对照材料五类：正式已发布、范例、生成过文章的贴文、03 决定、上一轮台账，刊发记录与决定经向量化同步成 LanceDB 索引。7 登记与交付之后只在关联任务时发生；Van 的每次决定连同判断结论入记忆。")
 
-# ---------- 图 3：事件状态 ----------
+# ---------- 图 3：候选状态 ----------
 def fig_state():
     b = ""
-    bw, bh = 130, 40
-    P = {"merged": (20, 125), "scored": (180, 125), "short": (420, 30), "pending": (420, 125), "excluded": (420, 220),
-         "deep": (600, 30), "registered": (770, 30), "van": (940, 30), "carry": (600, 125), "closed": (770, 125)}
-    L = {"merged": ("已合并", "贴文 → 事件"), "scored": ("已打分", "六维度 · 依据"), "short": ("入围", "排序或人"),
-         "pending": ("待核", "写明缺口"), "excluded": ("硬性排除", "窗口外 · 重复 · 刚被否"), "deep": ("深核中", "证据 · 参照"),
-         "registered": ("已登记", "引擎条目"), "van": ("Van 决定", "采用 / 否决 / 暂缓"), "carry": ("结转", "后续期次重评"), "closed": ("关闭", "到期 · 写原因")}
+    bw, bh = 124, 40
+    P = {"got": (20, 150), "merged": (170, 150), "mat": (320, 150),
+         "rec": (490, 30), "alt": (490, 110), "no": (490, 190), "pend": (490, 270), "excl": (170, 260),
+         "deep": (660, 30), "reg": (820, 30), "van": (980, 30), "carry": (660, 270), "closed": (820, 270)}
+    L = {"got": ("已采集", "图 · 描述 · 向量"), "merged": ("已合并", "候选 → 事件"), "mat": ("有对照材料", "五类备齐"),
+         "rec": ("推荐", "结论档"), "alt": ("备选", "可捞回进首批"), "no": ("不推荐", "保留 · 可捞回"), "pend": ("待核", "写明缺口"),
+         "excl": ("硬性排除", "窗口外 · 03 否决同事实"), "deep": ("深核中", "证据 · 参照 · 时间盒"),
+         "reg": ("已登记", "引擎条目"), "van": ("Van 决定", "采用 / 否决 / 暂缓"), "carry": ("结转", "后续期次重评"), "closed": ("关闭", "到期 · 写原因")}
     for k, (x, y) in P.items():
-        b += box(x, y, bw, bh, L[k][0], L[k][1], accent=(k == "scored"), dashed=(k == "excluded"))
-    R = lambda k: (P[k][0] + bw, P[k][1] + bh/2)   # 右边中点
-    Lf = lambda k: (P[k][0], P[k][1] + bh/2)       # 左边中点
-    b += arrow(*R("merged"), *Lf("scored"), "模型")
-    b += arrow(*R("scored"), *Lf("short"), "排名靠前", lx=352, ly=84)
-    b += arrow(*R("scored"), *Lf("pending"), "缺资料 · 缺图", lx=365, ly=138)
-    b += arrow(*R("scored"), *Lf("excluded"), "硬事实", lx=352, ly=204)
-    b += arrow(*R("short"), *Lf("deep")); b += arrow(*R("deep"), *Lf("registered"), "条目卡"); b += arrow(*R("registered"), *Lf("van"), "台账上")
-    b += arrow(413, 240, 413, 50, "捞回", dashed=True, lx=405, ly=108, anchor="end")
-    b += arrow(*R("pending"), *Lf("carry"), "当期未补齐", lx=575, ly=118)
-    b += arrow(*R("carry"), *Lf("closed"), "到期", lx=750, ly=118)
-    b += arrow(665, 125, 665, 70, "补齐 → 重评", dashed=True, lx=673, ly=104, anchor="start")
-    b += arrow(1005, 70, 1005, 284, None, accent=True); b += arrow(1005, 284, 245, 284, "决定 + 维度分 → 记忆库，下一期可查", accent=True, lx=625, ly=278)
-    b += arrow(245, 284, 245, 165, None, accent=True)
-    return fig(svg(1090, 300, b, "事件状态：已合并、已打分，然后入围、待核或硬性排除；硬性排除可捞回，待核可补齐重评或结转关闭；Van 的决定回流记忆"),
-               "图 3 · 一个事件的状态。没有「因口味淘汰」这一档：排除只用硬事实且可捞回，待核不永久出局。")
+        b += box(x, y, bw, bh, L[k][0], L[k][1], accent=(k in ("rec", "mat")), dashed=(k == "excl"))
+    R = lambda k: (P[k][0] + bw, P[k][1] + bh / 2)
+    Lf = lambda k: (P[k][0], P[k][1] + bh / 2)
+    b += arrow(*R("got"), *Lf("merged")); b += arrow(*R("merged"), *Lf("mat"), "缺一不判", lx=382, ly=164)
+    for k, lab in [("rec", "档"), ("alt", ""), ("no", ""), ("pend", "缺资料 · 缺图")]:
+        b += arrow(*R("mat"), *Lf(k), lab, lx=470, ly=P[k][1] + 14, anchor="end")
+    b += arrow(P["merged"][0] + bw / 2, P["merged"][1] + bh, P["excl"][0] + bw / 2, P["excl"][1], "硬事实", lx=240, ly=248, anchor="start")
+    b += arrow(*R("rec"), *Lf("deep")); b += arrow(*R("deep"), *Lf("reg"), "条目卡"); b += arrow(*R("reg"), *Lf("van"), "台账上")
+    b += arrow(P["alt"][0] + bw / 2, P["alt"][1], P["alt"][0] + bw / 2, P["rec"][1] + bh, "捞回", dashed=True, lx=P["alt"][0] + bw / 2 + 6, ly=P["rec"][1] + bh + 26, anchor="start")
+    b += arrow(P["no"][0] + bw / 2, P["no"][1], P["no"][0] + bw / 2, P["alt"][1] + bh, "捞回", dashed=True, lx=P["no"][0] + bw / 2 + 6, ly=P["alt"][1] + bh + 26, anchor="start")
+    b += arrow(*R("pend"), *Lf("carry"), "当期未补齐", lx=637, ly=P["pend"][1] + bh + 12)
+    b += arrow(*R("carry"), *Lf("closed"), "到期", lx=797, ly=P["carry"][1] + bh + 12)
+    b += arrow(P["deep"][0] + bw / 2, P["carry"][1], P["deep"][0] + bw / 2, P["deep"][1] + bh, "补齐 → 重判", dashed=True, lx=P["deep"][0] + bw / 2 + 6, ly=160, anchor="start")
+    b += arrow(P["van"][0] + bw / 2, P["van"][1] + bh, P["van"][0] + bw / 2, 340, None, accent=True)
+    b += arrow(P["van"][0] + bw / 2, 340, P["mat"][0] + bw / 2, 340, "决定 + 判断结论 → 03 决定类参考，下一期对照材料读得到", accent=True, lx=700, ly=334)
+    b += arrow(P["mat"][0] + bw / 2, 340, P["mat"][0] + bw / 2, P["mat"][1] + bh, None, accent=True)
+    return fig(svg(1130, 356, b, "候选状态：已采集、已合并、有对照材料，然后判成推荐、备选、不推荐或待核；硬性排除只用硬事实且可捞回；推荐进深核、登记、Van 决定；待核可补齐重判或结转关闭；决定回流记忆"),
+               "图 3 · 一条候选的状态。没有「因口味淘汰」这一档：不推荐照样保留、随时捞回；排除只用硬事实（窗口外、与 03 否决的同一事实同角度）；待核不永久出局。")
+

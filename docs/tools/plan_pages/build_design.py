@@ -47,9 +47,9 @@ footer {{ font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule)
 </style>
 <div class="page">
 <header>
-  <div class="eyebrow"><span>营事编集室 · 情报收集员改造</span><span>设计稿 · 2026-09-20</span><span class="chip">征求意见</span></div>
+  <div class="eyebrow"><span>营事编集室 · 情报收集员改造</span><span>设计稿 · 2026-09-20 · 9/21 重写</span><span class="chip">征求意见</span></div>
   <h1>情报收集员工作台<span>Web 客户端 · 设计说明与流程设计图</span></h1>
-  <p class="lede">把改造方案里的「自定义客户端」做成一个 Web 应用：后端仍是常驻的采集服务，前面加一个工作台，让主编、研究员、Van 和开发在同一张打分台账上看到每天的全部候选、每条的依据与缺口，并把人的决定回收成记忆。引擎仍是唯一真相。界面设计稿另见《情报收集员工作台 · 界面设计稿》。</p>
+  <p class="lede">情报收集员从 Hermes agent 换成工作台：后端是一台常驻的 Rust 采集服务（内嵌 LanceDB），前面加一个 Web 工作台，让主编、研究员、Van 和开发在同一张判断台账上看到每天的全部候选、每条的结论档与逐维依据、对照材料与缺口，并把人的决定回收成记忆。流程可由引擎派单驱动，也可在工作台手动开启；引擎仍是唯一真相。界面设计稿另见《情报收集员工作台 · 界面设计稿》。</p>
 </header>
 <nav aria-label="目录"><ol>{toc}</ol></nav>
 <article>{body}</article>

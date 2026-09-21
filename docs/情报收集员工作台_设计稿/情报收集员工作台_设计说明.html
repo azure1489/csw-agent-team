@@ -34,11 +34,11 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
 </style>
 <div class="page">
 <header>
-  <div class="eyebrow"><span>营事编集室 · 情报收集员改造</span><span>设计稿 · 2026-09-20</span><span class="chip">征求意见</span></div>
+  <div class="eyebrow"><span>营事编集室 · 情报收集员改造</span><span>设计稿 · 2026-09-20 · 9/21 重写</span><span class="chip">征求意见</span></div>
   <h1>情报收集员工作台<span>Web 客户端 · 设计说明与流程设计图</span></h1>
-  <p class="lede">把改造方案里的「自定义客户端」做成一个 Web 应用：后端仍是常驻的采集服务，前面加一个工作台，让主编、研究员、Van 和开发在同一张打分台账上看到每天的全部候选、每条的依据与缺口，并把人的决定回收成记忆。引擎仍是唯一真相。界面设计稿另见《情报收集员工作台 · 界面设计稿》。</p>
+  <p class="lede">情报收集员从 Hermes agent 换成工作台：后端是一台常驻的 Rust 采集服务（内嵌 LanceDB），前面加一个 Web 工作台，让主编、研究员、Van 和开发在同一张判断台账上看到每天的全部候选、每条的结论档与逐维依据、对照材料与缺口，并把人的决定回收成记忆。流程可由引擎派单驱动，也可在工作台手动开启；引擎仍是唯一真相。界面设计稿另见《情报收集员工作台 · 界面设计稿》。</p>
 </header>
-<nav aria-label="目录"><ol><li><a href="#1-设计目标">1. 设计目标</a></li><li><a href="#2-用户与场景">2. 用户与场景</a></li><li><a href="#3-系统位置">3. 系统位置</a></li><li><a href="#4-每日流程与工作台的对应">4. 每日流程与工作台的对应</a></li><li><a href="#5-一个事件的状态">5. 一个事件的状态</a></li><li><a href="#6-页面清单与内容">6. 页面清单与内容</a></li><li><a href="#7-数据来源与接口">7. 数据来源与接口</a></li><li><a href="#8-权限">8. 权限</a></li><li><a href="#9-技术要点">9. 技术要点</a></li><li><a href="#10-需要拍板">10. 需要拍板</a></li></ol></nav>
+<nav aria-label="目录"><ol><li><a href="#1-设计目标">1. 设计目标</a></li><li><a href="#2-用户与场景">2. 用户与场景</a></li><li><a href="#3-系统位置">3. 系统位置</a></li><li><a href="#4-每日流程与工作台的对应">4. 每日流程与工作台的对应</a></li><li><a href="#5-一条候选的状态">5. 一条候选的状态</a></li><li><a href="#6-页面清单与内容">6. 页面清单与内容</a></li><li><a href="#7-数据来源与接口">7. 数据来源与接口</a></li><li><a href="#8-权限">8. 权限</a></li><li><a href="#9-技术要点">9. 技术要点</a></li><li><a href="#10-需要拍板">10. 需要拍板</a></li></ol></nav>
 <article><h2 id="1-设计目标">1. 设计目标</h2>
 <div class="table-wrap"><table>
 <thead>
@@ -49,32 +49,40 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
 </thead>
 <tbody>
 <tr>
-<td>每天的候选一条不漏、每条有分有据</td>
-<td>打分台账：全量事件、六维度分、依据、三句话、缺口</td>
+<td>整条流程看得见</td>
+<td>每页顶部的流程带：0 派单或手动开启 → 1 开工 → 2 采集媒体信息 → 3 合并 → 4 对照材料 → 5 逐条判断 → 6 深核 → 7 登记与交付 → 8 首批校准 → 9 补件，每步状态、计数、耗时，可点开看产物与重跑</td>
+</tr>
+<tr>
+<td>每天的候选一条不漏、每条都判</td>
+<td>判断台账：窗口内全部图文贴文，每条一个结论档（推荐 / 备选 / 不推荐 / 待核）、六维度逐项判定与依据、三句话、对照结论、热度与标签、缺口</td>
 </tr>
 <tr>
 <td>看图判断</td>
-<td>台账与详情里直接看代表性实图与完整图集；读不到图的如实标记</td>
+<td>每张图在采集时就有描述与用途判断；台账与详情直接看实图与图集；读不到图的如实标记</td>
+</tr>
+<tr>
+<td>判断有据：知识库、已选记录、Van 框架三样必备</td>
+<td>对照材料按五类分组展示：正式已发布、范例、生成过文章的贴文、03 决定、上一轮台账</td>
 </tr>
 <tr>
 <td>不因口味淘汰，人可以随时捞回</td>
-<td>台账默认显示全部，硬性排除也能展开；一键捞回</td>
+<td>台账按档分组，不推荐照样显示，硬性排除也能展开；一键捞回</td>
 </tr>
 <tr>
 <td>人的决定沉淀为记忆</td>
-<td>Van 与主编在台账上的每次决定，连同当时的维度分一起入库</td>
+<td>Van 与主编在台账上的每次决定，连同当时的判断结论一起入库</td>
 </tr>
 <tr>
 <td>缺什么说清楚</td>
-<td>采集与覆盖页：来源、看图覆盖、失败、待补录账号；待核结转页：缺口与期限</td>
+<td>采集与覆盖页：采集方案、采集器、来源、过滤掉的视频贴文、识别覆盖、失败、待补录账号；待核结转页：缺口与期限</td>
 </tr>
 <tr>
-<td>权重和准则可调且可回测</td>
-<td>判断框架页：维度定义、锚点、权重版本、用历史决定回测</td>
+<td>准则可调、可回测</td>
+<td>判断框架页：维度定义、锚点（引用范例与被否案例）、案例；回测看 Van 的决定落在哪一档。不设权重</td>
 </tr>
 <tr>
 <td>对开发透明</td>
-<td>运行页：模型调用、耗时、费用、失败与重试、版本</td>
+<td>运行页：采集方案、服务状态（LanceDB、向量服务、Codex）、模型调用、耗时、费用、失败与重试、版本</td>
 </tr>
 </tbody>
 </table></div>
@@ -121,7 +129,7 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
 <li><strong>管理后台</strong>不变：定义、成员、监控。工作台不复制它的功能，只在需要时跳转。</li>
 </ul>
 <h2 id="4-每日流程与工作台的对应">4. 每日流程与工作台的对应</h2>
-<figure class="diagram"><svg viewBox="0 0 1180 510" role="img" aria-label="每日流程：代码取全量与合并，模型查重打分深核，引擎存台账与条目，人看台账并做决定，决定回流记忆" style="max-width:100%;height:auto;font-family:inherit"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker><marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4F46E5"/></marker></defs><rect x="10" y="20" width="1160" height="96" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="1"/><text x="22" y="38" font-size="12" font-weight="700" fill="currentColor" opacity=".7">数据源</text><rect x="10" y="116" width="1160" height="96" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="1"/><text x="22" y="134" font-size="12" font-weight="700" fill="currentColor" opacity=".7">采集服务（代码）</text><rect x="10" y="212" width="1160" height="96" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="1"/><text x="22" y="230" font-size="12" font-weight="700" fill="currentColor" opacity=".7">模型</text><rect x="10" y="308" width="1160" height="96" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="1"/><text x="22" y="326" font-size="12" font-weight="700" fill="currentColor" opacity=".7">引擎（真相）</text><rect x="10" y="404" width="1160" height="96" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="1"/><text x="22" y="422" font-size="12" font-weight="700" fill="currentColor" opacity=".7">人：主编 · 研究员 · Van</text><rect x="25.0" y="54" width="130" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="90.0" y="73.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">csw 后端</text><text x="90.0" y="89.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">前一天到当天全量</text><rect x="665.0" y="54" width="130" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="730.0" y="73.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">原始来源</text><text x="730.0" y="89.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">官方页 · OSS 图</text><rect x="25.0" y="150" width="130" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="90.0" y="169.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">A 取全量</text><text x="90.0" y="185.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">分页取完 · 计数</text><rect x="185.0" y="150" width="130" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="250.0" y="169.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">B 合并与硬事实</text><text x="250.0" y="185.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">窗口 · 事件 · 缩略图</text><rect x="825.0" y="150" width="130" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="890.0" y="169.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">F 登记与交付</text><text x="890.0" y="185.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">条目 · 采集轮 · 台账</text><rect x="345.0" y="246" width="130" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="410.0" y="265.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">C 查重判断</text><text x="410.0" y="281.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">同一事实或角度？</text><rect x="505.0" y="246" width="130" height="44" rx="6" fill="var(--surface,#fff)" stroke="#4F46E5" stroke-width="2"/><text x="570.0" y="265.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">D 打分</text><text x="570.0" y="281.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">六维度 · 依据 · 三句话</text><rect x="665.0" y="246" width="130" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="730.0" y="265.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">E 深核</text><text x="730.0" y="281.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">证据 · 参照 · 完整图</text><rect x="345.0" y="342" width="130" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="410.0" y="361.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">知识库</text><text x="410.0" y="377.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">正式已发布</text><rect x="505.0" y="342" width="130" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="570.0" y="361.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">打分台账</text><text x="570.0" y="377.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">全部事件</text><rect x="825.0" y="342" width="130" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="890.0" y="361.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">条目 · 交付物</text><text x="890.0" y="377.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">首批校准闸</text><rect x="965.0" y="342" width="130" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1030.0" y="361.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">选题记忆</text><text x="1030.0" y="377.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">决定 + 维度分</text><rect x="505.0" y="438" width="130" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="570.0" y="457.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">工作台 · 台账</text><text x="570.0" y="473.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">捞回 · 改判 · 首批</text><rect x="965.0" y="438" width="130" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1030.0" y="457.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">Van 选择</text><text x="1030.0" y="473.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">采用 / 否决 / 暂缓 + 原话</text><polyline points="90,98 90,150" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="90.0" y="118.0" text-anchor="middle" font-size="11" fill="currentColor">posts/window</text><polyline points="155.0,172.0 185.0,172.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="315.0,172.0 345.0,268.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="330" y="208" text-anchor="start" font-size="11" fill="currentColor">事件 + 候选旧文</text><polyline points="410,342 410,290" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="418" y="320" text-anchor="start" font-size="11" fill="currentColor">检索候选</text><polyline points="475.0,268.0 505.0,268.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="490.0" y="242" text-anchor="middle" font-size="11" fill="currentColor">查重结论</text><polyline points="570,290 570,342" fill="none" stroke="#4F46E5" stroke-width="1.4" marker-end="url(#arrA)"/><text x="578" y="320" text-anchor="start" font-size="11" fill="#4F46E5">每个事件一条</text><polyline points="635.0,268.0 665.0,268.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="650.0" y="242" text-anchor="middle" font-size="11" fill="currentColor">入围 + 待核</text><polyline points="730,98 730,246" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="738" y="172.0" text-anchor="start" font-size="11" fill="currentColor">核事实 · 看图</text><polyline points="795.0,268.0 825.0,172.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="850" y="208" text-anchor="start" font-size="11" fill="currentColor">条目卡</text><polyline points="890,194 890,342" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="898" y="308" text-anchor="start" font-size="11" fill="currentColor">PUT items · sweeps · scores</text><polyline points="570,386 570,438" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="570.0" y="406.0" text-anchor="middle" font-size="11" fill="currentColor">读台账</text><polyline points="635.0,460.0 965.0,460.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="800.0" y="454.0" text-anchor="middle" font-size="11" fill="currentColor">07:15 前送排序表</text><polyline points="1030,438 1030,386" fill="none" stroke="#4F46E5" stroke-width="1.4" marker-end="url(#arrA)"/><text x="1022" y="428" text-anchor="end" font-size="11" fill="#4F46E5">决定连同维度分入库</text><polyline points="965.0,364.0 945.0,364.0 945.0,268.0 795.0,268.0" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)"/><text x="870.0" y="260.0" text-anchor="middle" font-size="11" fill="currentColor">下一期：案例 · 准则</text></svg><figcaption>图 2 · 每日 01 流程。横向是六步，纵向是谁在做。强调色标出打分：每个事件都在引擎留下一行台账；Van 的每次决定连同当时的维度分入库，下一期的查重与打分读得到。</figcaption></figure>
+<figure class="diagram"><svg viewBox="0 0 1170 520" role="img" aria-label="每日流程：引擎派单或人手动开启，采集服务采集媒体信息、合并与对照材料、逐条判断、深核、登记交付，主编首批校准，补件，Van 决定回流记忆" style="max-width:100%;height:auto;font-family:inherit"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker><marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4F46E5"/></marker></defs><rect x="10" y="20" width="1150" height="96" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="1"/><text x="22" y="38" font-size="12" font-weight="700" fill="currentColor" opacity=".7">来源</text><rect x="10" y="116" width="1150" height="96" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="1"/><text x="22" y="134" font-size="12" font-weight="700" fill="currentColor" opacity=".7">采集服务（Rust · LanceDB）</text><rect x="10" y="212" width="1150" height="96" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="1"/><text x="22" y="230" font-size="12" font-weight="700" fill="currentColor" opacity=".7">模型 · 向量服务</text><rect x="10" y="308" width="1150" height="96" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="1"/><text x="22" y="326" font-size="12" font-weight="700" fill="currentColor" opacity=".7">引擎（真相）</text><rect x="10" y="404" width="1150" height="96" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="1"/><text x="22" y="422" font-size="12" font-weight="700" fill="currentColor" opacity=".7">人：主编 · 研究员 · Van</text><rect x="308.0" y="54" width="124" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="370.0" y="73.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">csw 后端 · OSS</text><text x="370.0" y="89.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">posts/window · 只图文</text><rect x="448.0" y="54" width="124" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="510.0" y="73.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">csw 后台</text><text x="510.0" y="89.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">生成过文章的贴文</text><rect x="168.0" y="150" width="124" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="230.0" y="169.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">1 开工</text><text x="230.0" y="185.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">ack · 心跳 / 手动</text><rect x="308.0" y="150" width="124" height="44" rx="6" fill="var(--surface,#fff)" stroke="#4F46E5" stroke-width="2"/><text x="370.0" y="169.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">2 采集媒体信息</text><text x="370.0" y="185.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">候选 · 下载 · 识别 · 向量</text><rect x="448.0" y="150" width="124" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="510.0" y="169.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">3 合并 · 4 对照</text><text x="510.0" y="185.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">窗口 · 召回 · 重排 · 五类</text><rect x="588.0" y="150" width="124" height="44" rx="6" fill="var(--surface,#fff)" stroke="#4F46E5" stroke-width="2"/><text x="650.0" y="169.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">5 逐条判断</text><text x="650.0" y="185.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">每条都判 · 结论档</text><rect x="728.0" y="150" width="124" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="790.0" y="169.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">6 深核</text><text x="790.0" y="185.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">推荐 + 待核 · 时间盒</text><rect x="868.0" y="150" width="124" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="930.0" y="169.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">7 登记与交付</text><text x="930.0" y="185.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">有任务才写引擎</text><rect x="1008.0" y="150" width="124" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1070.0" y="169.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">9 返工或补件</text><text x="1070.0" y="185.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">每期合并一次</text><rect x="308.0" y="246" width="124" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="370.0" y="265.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">视觉模型</text><text x="370.0" y="281.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">每张图 × 正文</text><rect x="448.0" y="246" width="124" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="510.0" y="265.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">Qwen3-VL</text><text x="510.0" y="281.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">向量 · 重排</text><rect x="588.0" y="246" width="124" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="650.0" y="265.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">判断模型</text><text x="650.0" y="281.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">逐维依据 · 三句话</text><rect x="728.0" y="246" width="124" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="790.0" y="265.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">Codex App Server</text><text x="790.0" y="281.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">线程 · 只读工具</text><rect x="28.0" y="342" width="124" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="90.0" y="361.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">0 派单 05:30</text><text x="90.0" y="377.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">run · 01 任务</text><rect x="448.0" y="342" width="124" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="510.0" y="361.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">刊发记录 · 决定</text><text x="510.0" y="377.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">记忆 · 同步为索引</text><rect x="868.0" y="342" width="124" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="930.0" y="361.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">条目 · 台账 · 交付</text><text x="930.0" y="377.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">intake-check</text><rect x="1008.0" y="342" width="124" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1070.0" y="361.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">8 首批校准闸</text><text x="1070.0" y="377.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">→ 02 · 03 · Van 决定</text><rect x="28.0" y="438" width="124" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="90.0" y="457.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">0 手动开启</text><text x="90.0" y="473.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">方案 · 窗口 · 关联任务</text><rect x="1008.0" y="438" width="124" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1070.0" y="457.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">主编 · Van</text><text x="1070.0" y="473.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">通过 / 退回 · 勾选</text><polyline points="152.0,364.0 152.0,364.0 152.0,172.0 168.0,172.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="146.0" y="272.0" text-anchor="end" font-size="11" fill="currentColor">派工单</text><polyline points="152.0,460.0 152.0,460.0 152.0,370.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="152.0" y="454.0" text-anchor="middle" font-size="11" fill="currentColor">点开始</text><polyline points="292.0,172.0 308.0,172.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="432.0,172.0 448.0,172.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="572.0,172.0 588.0,172.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="712.0,172.0 728.0,172.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="852.0,172.0 868.0,172.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="370,98 370,150" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="376" y="112" text-anchor="start" font-size="11" fill="currentColor">贴文 + 图</text><polyline points="510,98 510,150" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="516" y="112" text-anchor="start" font-size="11" fill="currentColor">已生成贴文</text><polyline points="370,246 370,194" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="376" y="208" text-anchor="start" font-size="11" fill="currentColor">描述 · 用途</text><polyline points="510,246 510,194" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="516" y="208" text-anchor="start" font-size="11" fill="currentColor">向量 · 精排</text><polyline points="650,246 650,194" fill="none" stroke="#4F46E5" stroke-width="1.4" marker-end="url(#arrA)"/><text x="656" y="208" text-anchor="start" font-size="11" fill="#4F46E5">判断结果</text><polyline points="790,246 790,194" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="796" y="208" text-anchor="start" font-size="11" fill="currentColor">条目卡</text><polyline points="510,342 510,290" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)"/><text x="516" y="304" text-anchor="start" font-size="11" fill="currentColor">同步为索引</text><polyline points="930,194 930,342" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="936" y="268.0" text-anchor="start" font-size="11" fill="currentColor">PUT · submit</text><polyline points="992.0,364.0 1008.0,364.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="1070,386 1070,438" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="1076" y="400" text-anchor="start" font-size="11" fill="currentColor">待审</text><polyline points="1070,194 1070,342" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="1076" y="268.0" text-anchor="start" font-size="11" fill="currentColor">kind=补件</text><polyline points="1132.0,460.0 1146.0,460.0 1146.0,172.0 1132.0,172.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="1150.0" y="316.0" font-size="11" fill="currentColor" transform="rotate(-90 1150.0 316.0)" text-anchor="middle">退回 → 返工 · 通过 → 补件</text><polyline points="1050,482 1050,504 510,504 510,386" fill="none" stroke="#4F46E5" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arrA)"/><text x="790.0" y="498" text-anchor="middle" font-size="11" fill="#4F46E5">决定 + 判断结论入记忆，下一期用</text></svg><figcaption>图 2 · 每日流程。两个入口汇到 1 开工；采集服务这一行是主线，每一步在工作台流程带上可见。强调色是第 2 步（只取图文，取候选、下载、识别、向量化一体）和第 5 步（每条都判，结论档加逐维依据，不打分）。对照材料五类：正式已发布、范例、生成过文章的贴文、03 决定、上一轮台账，刊发记录与决定经向量化同步成 LanceDB 索引。7 登记与交付之后只在关联任务时发生；Van 的每次决定连同判断结论入记忆。</figcaption></figure>
 
 <div class="table-wrap"><table>
 <thead>
@@ -132,33 +140,49 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
 </thead>
 <tbody>
 <tr>
-<td>A 取全量</td>
-<td>总览的「采集进度」；采集与覆盖页的采集轮、来源状态</td>
+<td>0 入口：引擎派单，或人在工作台手动开启</td>
+<td>总览出现新一轮：任务驱动显示期次、任务号、派工单、作业标准与首批时限；手动开启显示发起人、采集方案、窗口、是否关联任务</td>
 </tr>
 <tr>
-<td>B 硬事实与事件合并</td>
-<td>台账里合并后的事件，展开可见合并了哪几条贴文；窗口外的在「硬性排除」分组</td>
+<td>1 开工</td>
+<td>流程带全部步置「待开始」；作业标准可读；开工方式标明</td>
 </tr>
 <tr>
-<td>C 查重</td>
-<td>事件卡上的查重标记：重复无新增 / 同品牌有新增 / 不相干，附对照旧文</td>
+<td>2 采集媒体信息（只取图文；取候选、下载图片、识别、向量化一体）</td>
+<td>采集与覆盖页：跑了哪些采集器、各自数量与耗时、过滤掉的视频贴文数、下载成功率、识别进度与未识别清单；候选卡上每张图下一行描述</td>
 </tr>
 <tr>
-<td>D 打分</td>
-<td>台账的六维度分、综合分、依据、三句话、缺口、看图标记</td>
+<td>3 合并与窗口（按首次入库时间）</td>
+<td>台账里合并后的事件，展开可见合并了哪几条贴文；窗口外与「昨日已判」分组</td>
 </tr>
 <tr>
-<td>E 深核</td>
-<td>详情页的证据链接、原始披露时间、比较参照核实、完整图集</td>
+<td>4 对照材料（五类，缺一不判）</td>
+<td>事件卡的对照结论：同一事实无新增 / 同品牌有新增 / 不相干；展开看五类材料各命中什么、知识库同步到哪天</td>
 </tr>
 <tr>
-<td>F 登记与交付</td>
-<td>事件的引擎条目状态、首批提交状态、补件记录</td>
+<td>5 逐条判断（每条都判）</td>
+<td>台账按档分组：推荐 / 备选 / 不推荐 / 待核；六维度逐项判定与依据、三句话、热度与标签、缺口、看图标记</td>
+</tr>
+<tr>
+<td>6 深核（推荐 + 待核，首批限 4–8 条、10 分钟）</td>
+<td>详情页的证据链接、原始披露时间、比较参照核实、完整图集；线程记录</td>
+</tr>
+<tr>
+<td>7 登记与交付（有任务才写引擎）</td>
+<td>条目状态、校验结果、交付物链接；手动开启未关联任务的标「本地」并给「关联到任务」入口</td>
+</tr>
+<tr>
+<td>8 首批校准 · 9 返工或补件</td>
+<td>闸状态、退回原因；补件清单（每期合并一次）</td>
+</tr>
+<tr>
+<td>05 / 11 逐条任务</td>
+<td>同一工作台接单，走「条目取单条」方案：任务清单与进度、每条的原图、描述与核验结果</td>
 </tr>
 </tbody>
 </table></div>
-<h2 id="5-一个事件的状态">5. 一个事件的状态</h2>
-<figure class="diagram"><svg viewBox="0 0 1090 300" role="img" aria-label="事件状态：已合并、已打分，然后入围、待核或硬性排除；硬性排除可捞回，待核可补齐重评或结转关闭；Van 的决定回流记忆" style="max-width:100%;height:auto;font-family:inherit"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker><marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4F46E5"/></marker></defs><rect x="20" y="125" width="130" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="85.0" y="142.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">已合并</text><text x="85.0" y="158.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">贴文 → 事件</text><rect x="180" y="125" width="130" height="40" rx="6" fill="var(--surface,#fff)" stroke="#4F46E5" stroke-width="2"/><text x="245.0" y="142.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">已打分</text><text x="245.0" y="158.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">六维度 · 依据</text><rect x="420" y="30" width="130" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="485.0" y="47.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">入围</text><text x="485.0" y="63.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">排序或人</text><rect x="420" y="125" width="130" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="485.0" y="142.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">待核</text><text x="485.0" y="158.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">写明缺口</text><rect x="420" y="220" width="130" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2" stroke-dasharray="6 4"/><text x="485.0" y="237.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">硬性排除</text><text x="485.0" y="253.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">窗口外 · 重复 · 刚被否</text><rect x="600" y="30" width="130" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="665.0" y="47.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">深核中</text><text x="665.0" y="63.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">证据 · 参照</text><rect x="770" y="30" width="130" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="835.0" y="47.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">已登记</text><text x="835.0" y="63.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">引擎条目</text><rect x="940" y="30" width="130" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1005.0" y="47.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">Van 决定</text><text x="1005.0" y="63.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">采用 / 否决 / 暂缓</text><rect x="600" y="125" width="130" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="665.0" y="142.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">结转</text><text x="665.0" y="158.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">后续期次重评</text><rect x="770" y="125" width="130" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="835.0" y="142.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">关闭</text><text x="835.0" y="158.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">到期 · 写原因</text><polyline points="150,145.0 180,145.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="165.0" y="139.0" text-anchor="middle" font-size="11" fill="currentColor">模型</text><polyline points="310,145.0 420,50.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="352" y="84" text-anchor="middle" font-size="11" fill="currentColor">排名靠前</text><polyline points="310,145.0 420,145.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="365" y="138" text-anchor="middle" font-size="11" fill="currentColor">缺资料 · 缺图</text><polyline points="310,145.0 420,240.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="352" y="204" text-anchor="middle" font-size="11" fill="currentColor">硬事实</text><polyline points="550,50.0 600,50.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="730,50.0 770,50.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="750.0" y="44.0" text-anchor="middle" font-size="11" fill="currentColor">条目卡</text><polyline points="900,50.0 940,50.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="920.0" y="44.0" text-anchor="middle" font-size="11" fill="currentColor">台账上</text><polyline points="413,240 413,50" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)"/><text x="405" y="108" text-anchor="end" font-size="11" fill="currentColor">捞回</text><polyline points="550,145.0 600,145.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="575" y="118" text-anchor="middle" font-size="11" fill="currentColor">当期未补齐</text><polyline points="730,145.0 770,145.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="750" y="118" text-anchor="middle" font-size="11" fill="currentColor">到期</text><polyline points="665,125 665,70" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)"/><text x="673" y="104" text-anchor="start" font-size="11" fill="currentColor">补齐 → 重评</text><polyline points="1005,70 1005,284" fill="none" stroke="#4F46E5" stroke-width="1.4" marker-end="url(#arrA)"/><polyline points="1005,284 245,284" fill="none" stroke="#4F46E5" stroke-width="1.4" marker-end="url(#arrA)"/><text x="625" y="278" text-anchor="middle" font-size="11" fill="#4F46E5">决定 + 维度分 → 记忆库，下一期可查</text><polyline points="245,284 245,165" fill="none" stroke="#4F46E5" stroke-width="1.4" marker-end="url(#arrA)"/></svg><figcaption>图 3 · 一个事件的状态。没有「因口味淘汰」这一档：排除只用硬事实且可捞回，待核不永久出局。</figcaption></figure>
+<h2 id="5-一条候选的状态">5. 一条候选的状态</h2>
+<figure class="diagram"><svg viewBox="0 0 1130 356" role="img" aria-label="候选状态：已采集、已合并、有对照材料，然后判成推荐、备选、不推荐或待核；硬性排除只用硬事实且可捞回；推荐进深核、登记、Van 决定；待核可补齐重判或结转关闭；决定回流记忆" style="max-width:100%;height:auto;font-family:inherit"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker><marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4F46E5"/></marker></defs><rect x="20" y="150" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="82.0" y="167.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">已采集</text><text x="82.0" y="183.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">图 · 描述 · 向量</text><rect x="170" y="150" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="232.0" y="167.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">已合并</text><text x="232.0" y="183.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">候选 → 事件</text><rect x="320" y="150" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="#4F46E5" stroke-width="2"/><text x="382.0" y="167.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">有对照材料</text><text x="382.0" y="183.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">五类备齐</text><rect x="490" y="30" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="#4F46E5" stroke-width="2"/><text x="552.0" y="47.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">推荐</text><text x="552.0" y="63.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">结论档</text><rect x="490" y="110" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="552.0" y="127.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">备选</text><text x="552.0" y="143.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">可捞回进首批</text><rect x="490" y="190" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="552.0" y="207.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">不推荐</text><text x="552.0" y="223.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">保留 · 可捞回</text><rect x="490" y="270" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="552.0" y="287.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">待核</text><text x="552.0" y="303.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">写明缺口</text><rect x="170" y="260" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2" stroke-dasharray="6 4"/><text x="232.0" y="277.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">硬性排除</text><text x="232.0" y="293.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">窗口外 · 03 否决同事实</text><rect x="660" y="30" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="722.0" y="47.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">深核中</text><text x="722.0" y="63.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">证据 · 参照 · 时间盒</text><rect x="820" y="30" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="882.0" y="47.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">已登记</text><text x="882.0" y="63.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">引擎条目</text><rect x="980" y="30" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1042.0" y="47.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">Van 决定</text><text x="1042.0" y="63.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">采用 / 否决 / 暂缓</text><rect x="660" y="270" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="722.0" y="287.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">结转</text><text x="722.0" y="303.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">后续期次重评</text><rect x="820" y="270" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="882.0" y="287.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">关闭</text><text x="882.0" y="303.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">到期 · 写原因</text><polyline points="144,170.0 170,170.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="294,170.0 320,170.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="382" y="164" text-anchor="middle" font-size="11" fill="currentColor">缺一不判</text><polyline points="444,170.0 490,50.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="470" y="44" text-anchor="end" font-size="11" fill="currentColor">档</text><polyline points="444,170.0 490,130.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="444,170.0 490,210.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="444,170.0 490,290.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="470" y="284" text-anchor="end" font-size="11" fill="currentColor">缺资料 · 缺图</text><polyline points="232.0,190 232.0,260" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="240" y="248" text-anchor="start" font-size="11" fill="currentColor">硬事实</text><polyline points="614,50.0 660,50.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="784,50.0 820,50.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="802.0" y="44.0" text-anchor="middle" font-size="11" fill="currentColor">条目卡</text><polyline points="944,50.0 980,50.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="962.0" y="44.0" text-anchor="middle" font-size="11" fill="currentColor">台账上</text><polyline points="552.0,110 552.0,70" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)"/><text x="558.0" y="96" text-anchor="start" font-size="11" fill="currentColor">捞回</text><polyline points="552.0,190 552.0,150" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)"/><text x="558.0" y="176" text-anchor="start" font-size="11" fill="currentColor">捞回</text><polyline points="614,290.0 660,290.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="637" y="322" text-anchor="middle" font-size="11" fill="currentColor">当期未补齐</text><polyline points="784,290.0 820,290.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="797" y="322" text-anchor="middle" font-size="11" fill="currentColor">到期</text><polyline points="722.0,270 722.0,70" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)"/><text x="728.0" y="160" text-anchor="start" font-size="11" fill="currentColor">补齐 → 重判</text><polyline points="1042.0,70 1042.0,340" fill="none" stroke="#4F46E5" stroke-width="1.4" marker-end="url(#arrA)"/><polyline points="1042.0,340 382.0,340" fill="none" stroke="#4F46E5" stroke-width="1.4" marker-end="url(#arrA)"/><text x="700" y="334" text-anchor="middle" font-size="11" fill="#4F46E5">决定 + 判断结论 → 03 决定类参考，下一期对照材料读得到</text><polyline points="382.0,340 382.0,190" fill="none" stroke="#4F46E5" stroke-width="1.4" marker-end="url(#arrA)"/></svg><figcaption>图 3 · 一条候选的状态。没有「因口味淘汰」这一档：不推荐照样保留、随时捞回；排除只用硬事实（窗口外、与 03 否决的同一事实同角度）；待核不永久出局。</figcaption></figure>
 
 <div class="table-wrap"><table>
 <thead>
@@ -170,29 +194,34 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
 </thead>
 <tbody>
 <tr>
-<td>已合并</td>
-<td>贴文合并成事件，尚未打分</td>
+<td>已采集</td>
+<td>贴文取到，图片已下载、已识别、已向量化</td>
 <td>代码</td>
 </tr>
 <tr>
-<td>已打分</td>
-<td>有六维度分与依据</td>
-<td>模型</td>
+<td>已合并</td>
+<td>候选合并成事件，窗口按首次入库时间判定</td>
+<td>代码（模型判同一事件可选）</td>
+</tr>
+<tr>
+<td>有对照材料</td>
+<td>五类材料备齐；缺一样标「对照材料缺」并告警，不进判断</td>
+<td>代码</td>
+</tr>
+<tr>
+<td>推荐 / 备选 / 不推荐 / 待核</td>
+<td>结论档，附六维度逐项判定与依据；不推荐照样保留</td>
+<td>模型；人可改档</td>
 </tr>
 <tr>
 <td>硬性排除</td>
-<td>窗口外 / 与正式已发布同一事实且无新增 / 与近期被否同一事实同角度</td>
-<td>代码或模型，可捞回</td>
+<td>窗口外 / 与 03 否决的同一事实同角度</td>
+<td>代码，可捞回</td>
 </tr>
 <tr>
-<td>待核</td>
-<td>缺资料、缺图或读不到图，写明缺口</td>
-<td>模型或人</td>
-</tr>
-<tr>
-<td>入围</td>
-<td>进入深核</td>
-<td>排序或人</td>
+<td>深核中</td>
+<td>推荐与待核进深核，首批有时间盒</td>
+<td>代码或人</td>
 </tr>
 <tr>
 <td>已登记</td>
@@ -201,7 +230,7 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
 </tr>
 <tr>
 <td>Van 选择 / Van 否决 / Van 暂缓</td>
-<td>她在台账上的标记，附原话</td>
+<td>她在台账上的标记，附原话；经主编代录成 03 决定后转为参考</td>
 <td>Van</td>
 </tr>
 <tr>
@@ -214,47 +243,46 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
 <h2 id="6-页面清单与内容">6. 页面清单与内容</h2>
 <h3 id="6-1-今日总览">6.1 今日总览</h3>
 <ul>
-<li>顶部：期次、窗口（前一天到当天）、当前阶段、距首批时限倒计时。</li>
-<li>四张数字卡：<strong>贴文全量</strong>（取到 / 库内计数是否一致）、<strong>事件数</strong>（合并后）、<strong>已打分</strong>（应为 100%）、<strong>看到实图的比例</strong>。</li>
-<li>进度条：取数 → 合并 → 查重 → 打分 → 深核 → 首批提交，各步耗时。</li>
-<li>告警：来源失败、读不到图的事件数、模型调用失败与重试、超时。</li>
-<li>快捷入口：入围前 10、待核、硬性排除里高分的（提醒主编看一眼）。</li>
+<li>顶部流程带：开工方式（任务驱动 / 手动）、期次或发起人、窗口、距首批时限倒计时；十格：0 派单或手动开启 → 1 开工 → 2 采集媒体信息 → 3 合并 → 4 对照材料 → 5 逐条判断 → 6 深核 → 7 登记与交付 → 8 主编校准 → 9 补件，每格状态、计数、耗时，点开看产物、失败清单与重跑按钮。多轮并行时（05 逐条任务、手动轮）显示轮次列表。</li>
+<li>四张数字卡：<strong>贴文全量</strong>（取到 / 库内计数是否一致）、<strong>只图文</strong>（过滤掉含视频的数量）、<strong>图片识别</strong>（已识别 / 应识别）、<strong>已判断</strong>（应为 100%）。</li>
+<li>告警：必扫采集器失败、对照材料缺、未识别的图、模型调用失败与重试、向量服务不可用、超时。</li>
+<li>快捷入口：推荐档、待核、不推荐档里热度高的（提醒主编看一眼）、「手动开启一轮」。</li>
 </ul>
-<h3 id="6-2-打分台账-核心页">6.2 打分台账（核心页）</h3>
+<h3 id="6-2-判断台账-核心页">6.2 判断台账（核心页）</h3>
 <ul>
-<li><strong>列表行</strong>：缩略图 1–2 张 · 品牌｜一句话标题 · 账号与发布时间 · 综合分 · 六维度迷你条 · 类型 · 优先/降低命中标签 · 查重标记 · 三句话状态（已答 / 缺资料 / 角度未成立 / 价值不足） · 缺口数 · 状态 · 来源（系统 / Van 链接） · 操作。</li>
-<li><strong>左侧筛选</strong>：状态、类型、查重结果、三句话状态、来源、账号、维度阈值、只看有图。</li>
-<li><strong>顶部工具</strong>：权重版本切换（改权重即时重排，不重跑模型）、排序字段、分组（按状态 / 按类型）、导出。</li>
-<li><strong>展开行</strong>：六维度依据各一句、三句话全文、缺口、合并的贴文清单、知识库命中、案例命中、查重对照。</li>
-<li><strong>操作</strong>：加入首批 / 登记条目 / 标待核 / 捞回 / 人工改判（记录人与理由）。</li>
-<li><strong>Van 模式</strong>：只显示品牌、标题、图、三句话与综合分；每行三个按钮「采用 / 否决 / 暂缓」和一格原话；她的标记即时写入记忆库并在主编视图上显示。</li>
-<li><strong>默认排序</strong>：综合分；硬性排除折叠在底部分组，随时展开。</li>
+<li><strong>列表行</strong>：缩略图 1–2 张 · 品牌｜一句话标题 · 账号与发布时间 · <strong>结论档</strong> · 六维度逐项判定（成立 / 不成立 / 不明的小格） · <strong>热度</strong>（点赞、评论及相对该账号常态的倍数） · <strong>csw 标签与话题</strong> · 类型 · 对照结论 · 三句话状态 · 缺口数 · 状态 · 来源（系统 / Van 链接） · 操作。</li>
+<li><strong>左侧筛选</strong>：档、类型、对照结论、三句话状态、来源、账号、标签、只看有图。</li>
+<li><strong>顶部工具</strong>：分组（按档 / 按类型 / 按账号）、排序（档 → 成立维度数 → 热度 → 时间，由代码算）、导出。没有权重、没有综合分。</li>
+<li><strong>展开行</strong>：六维度依据各一句、三句话全文、热度与标签、缺口、合并的贴文清单、<strong>对照材料按五类分组</strong>（正式已发布命中、范例命中、生成过文章的相似贴文、03 决定里的相似案例与原话、上一轮台账）。</li>
+<li><strong>操作</strong>：加入首批 / 登记条目 / 标待核 / 捞回 / 改档（记录人与理由）。</li>
+<li><strong>Van 模式</strong>：只显示品牌、标题、图、三句话与结论档；每行三个按钮「采用 / 否决 / 暂缓」和一格原话；她的标记即时写入记忆库并在主编视图上显示。</li>
+<li><strong>默认分组</strong>：按档；不推荐照样列出；硬性排除折叠在底部分组，随时展开。</li>
 </ul>
 <h3 id="6-3-事件详情">6.3 事件详情</h3>
 <ul>
-<li>左：完整图集（懒加载）、所有合并贴文的原文与账号信息、原始披露时间与转载时间。</li>
-<li>中：六维度分与依据、外观与设计观察、三句话、优先/降低命中、缺口清单。</li>
-<li>右：查重对照（旧文标题、日期、发布状态、是否有新增信息）、知识库命中（相似旧文、品牌历史）、案例命中（Van 的原话）、深核结果（证据链接、核实的事实、比较参照是否准确）。</li>
-<li>底：审计——每次模型调用的阶段、耗时、token、模型版本、准则版本、权重版本；人工操作记录。</li>
+<li>左：完整图集，每张图下一行描述与用途判断（产品图 / 细节图 / 使用场景 / 海报或文字图 …，可否作配图）；所有合并贴文的原文、译文、账号、粉丝、点赞、评论、标签、话题；原始披露时间与转载时间。</li>
+<li>中：结论档；六维度逐项判定与依据；三句话；热度与标签；缺口清单。</li>
+<li>右：对照材料五类分组（正式已发布：旧文标题、日期、角度、是否有新增；范例：像哪一条；生成过文章的贴文：相似的选过并成文的；03 决定：相似案例与原话，含否决；上一轮台账）；深核结果（证据链接、核实的事实、比较参照是否准确）。</li>
+<li>底：审计——每次模型调用的阶段、耗时、token、模型版本、准则版本；人工操作记录。</li>
 </ul>
 <h3 id="6-4-采集与覆盖">6.4 采集与覆盖</h3>
 <ul>
-<li>采集轮表：来源、工具、时间窗、接口返回、去重后、窗口内、已打分、看到图、失败原因。</li>
+<li>采集方案：本轮用的方案（日更采集 / 条目取单条 / 自定义）与采集器清单；每个采集器一行：来源、取到、只图文、图片、已识别、耗时、结果与失败原因。</li>
 <li>来源台账：必扫来源的状态、最近成功时间；Van 补充的来源标为普通来源。</li>
 <li>待补录账号清单：出现在选题里却不在册的账号，各自依据（哪篇推文 / 哪天指定），一键导出。</li>
-<li>图片：下载成功率、读不到图的事件与原因。</li>
+<li>图片：下载成功率、未识别的图与原因、可重试。</li>
 </ul>
 <h3 id="6-5-待核结转">6.5 待核结转</h3>
 <ul>
 <li>列表：事件、缺口类型（缺发售日期 / 缺官方来源 / 图不足 / 读不到图）、首次出现期次、剩余期数、上次重评结果。</li>
 <li>操作：补证后重评、人工关闭并写原因。</li>
 </ul>
-<h3 id="6-6-刊发知识库">6.6 刊发知识库</h3>
+<h3 id="6-6-知识库">6.6 知识库</h3>
 <ul>
-<li>检索：全文检索 + 品牌别名；结果带发布状态标（正式已发布 / 参考范文 / 未发布稿件）。</li>
-<li>品牌页：该品牌的历史报道时间线、角度、近 30 / 90 天是否发过。</li>
-<li>同步状态：最近同步时间、覆盖到哪一天、缺口清单、失败记录。</li>
-<li>范例：十篇正面范例与逐条拆解（选题对象、切口、读者价值、比较参照、编辑判断），标注哪些是待核推断。</li>
+<li>检索：LanceDB 向量 + 全文（jieba）混合召回，Qwen3-VL 重排；输入文字或一张图；结果按五类参考分组，每条带发布状态、日期、出处、原话。</li>
+<li>品牌页：该品牌的历史报道时间线、角度、近 30 / 90 天是否发过；她选过并成文的同品牌贴文。</li>
+<li>同步状态：刊发记录同步到哪一天、生成过文章的贴文同步时间、索引里的向量数、向量服务状态、失败记录。</li>
+<li>范例：十篇（41 条、225 图）的逐条拆解与每张图的说明，标注哪些是待核推断。</li>
 </ul>
 <h3 id="6-7-选题记忆">6.7 选题记忆</h3>
 <ul>
@@ -264,11 +292,12 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
 <li><strong>Van 校准模式</strong>：逐条「对 / 不对 / 改成……」，提交后规则升级为「本人确认」。</li>
 <li>写作表达一线在此只显示入口，内容交主编与文案页面。</li>
 </ul>
-<h3 id="6-8-判断框架与权重">6.8 判断框架与权重</h3>
+<h3 id="6-8-判断框架与锚点">6.8 判断框架与锚点</h3>
 <ul>
-<li>六个维度的定义与每级锚点（引用范例或被否案例）。</li>
-<li>权重版本表：版本、权重、生效期次、谁改的、为什么。</li>
-<li>回测：用历史上 Van 的决定，看当前权重下这些条目的排名分布；重复打分一致性。</li>
+<li>核心问题「这件事有没有足够具体的变化，值得 CSW 帮读者解释一次」；六个维度的定义与「成立 / 不成立 / 不明」的锚点，引用范例条目与被否案例。</li>
+<li>优先七类与降低七类；csw 标签到优先 / 降低提示的映射（如营业时间、选品 → 降低）。</li>
+<li>版本表：准则与锚点的版本、生效期次、谁改的、为什么。不设权重。</li>
+<li>回测：用历史上 Van 的决定，看当前准则下这些条目落在哪一档（采用的应多在推荐 / 备选，否决的应多在不推荐）；重复判断一致性。</li>
 </ul>
 <h3 id="6-9-指标">6.9 指标</h3>
 <ul>
@@ -278,10 +307,12 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
 </ul>
 <h3 id="6-10-运行与设置">6.10 运行与设置</h3>
 <ul>
-<li>服务状态：采集服务、Codex App Server、本地 MCP、csw MCP 连接；版本固定情况。</li>
-<li>模型调用：按阶段的次数、耗时、token、费用；失败与重试；线程记录下载。</li>
-<li>设置：来源台账维护、并行数、缩略图张数、待核结转期限、权重版本切换（改动写审计）。</li>
-<li>回放：选一个历史窗口重跑取数与打分，用于调参与验收。</li>
+<li>服务状态：采集服务、LanceDB（向量数、目录大小、最近写入）、Qwen3-VL 向量与重排服务、Codex App Server、csw 后端连接；版本固定情况。</li>
+<li>模型调用：按阶段（识别、判断、深核）的次数、耗时、token、费用；失败与重试；线程记录下载。</li>
+<li>采集方案：日更采集 / 条目取单条 / 自定义方案的采集器清单、顺序、参数、必扫与启停；改动存版本、写审计。</li>
+<li>手动开启：选方案、窗口、参数、是否关联已接单任务，点开始；发起人与参数写审计。</li>
+<li>设置：来源台账维护、并行数、待核结转期限、首批深核条数与时间盒（改动写审计）。</li>
+<li>回放：选一个历史窗口重跑采集与判断，可指定知识库版本，用于调准则与验收。</li>
 </ul>
 <h2 id="7-数据来源与接口">7. 数据来源与接口</h2>
 <div class="table-wrap"><table>
@@ -338,15 +369,15 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
 </tr>
 <tr>
 <td>operator（主编、研究员）</td>
-<td>台账操作、待核处理、来源维护、回放</td>
+<td>台账操作、改档、待核处理、来源维护、手动开启一轮、回放</td>
 </tr>
 <tr>
 <td>superadmin（开发）</td>
-<td>以上加设置、权重版本、服务操作</td>
+<td>以上加采集方案、准则版本、设置、服务操作</td>
 </tr>
 <tr>
 <td>van</td>
-<td>Van 模式的台账、准则校准、范例与指标；不显示运行与设置</td>
+<td>Van 模式的台账、准则校准、范例与指标；只给链接，不开轮；不显示运行与设置</td>
 </tr>
 </tbody>
 </table></div>
@@ -363,7 +394,8 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
 <ol>
 <li>工作台由采集服务托管、复用管理后台登录——还是并入管理后台成为一组新页面。</li>
 <li>Van 在台账上的勾选是否直接等同于 03 闸的决定，还是只作「Van 选择」由主编提交。</li>
-<li>第一期只做哪些页面：建议总览、打分台账、事件详情、采集与覆盖、待核结转五页先上，其余随知识库与记忆建设推进。</li>
+<li>第一期只做哪些页面：建议总览（含流程带）、判断台账、事件详情、采集与覆盖、待核结转、运行与设置（采集方案与手动开启）六页先上，其余随知识库与记忆建设推进。</li>
+<li>手动开启的权限：operator 与 superadmin 可开，Van 模式只给链接不开轮；手动轮结果关联任务时一律以补件提交。</li>
 </ol></article>
 <footer>配套：《情报收集员改造方案》概要版与开发版、《情报收集员工作台 · 界面设计稿》。</footer>
 </div>
