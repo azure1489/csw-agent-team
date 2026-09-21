@@ -64,7 +64,7 @@ class C:
             ev.append(m)
             if "id" in m:
                 if any(s in meth for s in ("equestApproval", "licitation", "equestUserInput")):
-                    self.reply(m["id"], {"decision": "denied"})
+                    self.reply(m["id"], {"decision": "decline"})
                 else:
                     self.reply(m["id"], {})
             if until_sub and until_sub in meth:

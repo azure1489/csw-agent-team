@@ -143,7 +143,7 @@ thread/start {model, modelProvider, cwd, sandbox, approvalPolicy,
                                   → result.thread.id
 turn/start {threadId, input[], outputSchema?}
                                   → 立刻返回 inProgress，等 turn/completed 通知
-turn/interrupt {threadId}         → 打断
+turn/interrupt {threadId, turnId} → 打断（两个都必填）
 ```
 
 - 图片输入：`{"type": "localImage", "path": "/绝对路径"}`，与文本项同列在 `input` 数组里。
