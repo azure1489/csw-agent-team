@@ -62,9 +62,12 @@ enum Command {
         /// 窗口终点（不含）
         #[arg(long)]
         to: String,
-        /// 只对前 N 条跑下载识别向量化；0 = 全量（一期约 42 分钟）
+        /// 对前 N 条跑下载识别向量化。0 = 只取数。
         #[arg(long, default_value_t = 8)]
         prepare: usize,
+        /// 全量跑完四段。要花模型与 GPU，一期约 42 分钟。
+        #[arg(long)]
+        full: bool,
         /// Van 本期补的短码，逗号分隔
         #[arg(long, default_value = "")]
         van: String,
@@ -144,6 +147,7 @@ async fn main() -> anyhow::Result<()> {
             from,
             to,
             prepare,
+            full,
             van,
         } => {
             let cfg =
@@ -158,6 +162,7 @@ async fn main() -> anyhow::Result<()> {
                     from,
                     to,
                     prepare,
+                    full,
                     van_links: van
                         .split(',')
                         .map(str::trim)

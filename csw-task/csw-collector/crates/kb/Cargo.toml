@@ -16,6 +16,10 @@ lancedb.workspace = true
 futures.workspace = true
 tokio.workspace = true
 
+rusqlite.workspace = true
+jieba-rs.workspace = true
+jiff.workspace = true
+
 [dev-dependencies]
 # 只给阶段 0.3 的 examples/fts_probe 用：全文辅路二选一的对照实验
 rusqlite.workspace = true

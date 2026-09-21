@@ -89,6 +89,9 @@ pub struct Deps<'a> {
     pub vector: &'a VectorClient,
     /// 只取图文。总方案定死：类型是图或轮播，且媒体里一个视频都没有。
     pub image_only: bool,
+    /// 同时处理几条候选。取模型网关的并发上限即可——真正的闸门在客户端里，
+    /// 这里只是别让它们闲着。
+    pub concurrency: usize,
 }
 
 /// 跑一遍取候选：每个采集器一条采集轮账。
@@ -153,6 +156,13 @@ pub async fn collect_all(
 }
 
 /// 下载 → 识别 → 向量化。**一条候选的图全部处理完（成功或标未识别）才算采集完成。**
+///
+/// **候选之间并发**，并发度由 `Deps::concurrency` 给（取模型网关的并发上限即可）。
+///
+/// 这一条是实跑打出来的：最初写成逐条串行，M1 实测每条 71.5 秒、外推一期 7 小时——
+/// 比 0.5 按并发 8 估的 42 分钟慢十倍。真正的闸门在两个客户端里
+/// （模型的信号量 8、GPU 的互斥锁 1），外层再串行只是白白让它们闲着。
+/// 用 `buffered` 而不是 `buffer_unordered`：保序才能让输出稳定、便于比对。
 pub async fn prepare(candidates: Vec<Candidate>, deps: &Deps<'_>) -> Vec<Prepared> {
     // 一次把全部图排进下载队列：并发受限在 Downloader 里，这里不必再切
     let urls: Vec<String> = candidates
@@ -169,8 +179,25 @@ pub async fn prepare(candidates: Vec<Candidate>, deps: &Deps<'_>) -> Vec<Prepare
     let failed_urls: std::collections::HashSet<&str> =
         report.failed.iter().map(|f| f.url.as_str()).collect();
 
-    let mut out = Vec::with_capacity(candidates.len());
-    for mut c in candidates {
+    let conc = deps.concurrency.max(1);
+    let tasks = candidates
+        .into_iter()
+        .map(|c| prepare_one(c, &by_url, &failed_urls, deps));
+    futures::StreamExt::collect::<Vec<_>>(futures::StreamExt::buffered(
+        futures::stream::iter(tasks),
+        conc,
+    ))
+    .await
+}
+
+/// 一条候选走完识别与向量化。下载在外面已经统一做过。
+async fn prepare_one(
+    mut c: Candidate,
+    by_url: &HashMap<String, crate::download::Downloaded>,
+    failed_urls: &std::collections::HashSet<&str>,
+    deps: &Deps<'_>,
+) -> Prepared {
+    {
         let mut failed_media = Vec::new();
         let mut refs = Vec::new();
         for m in c.media.iter_mut().filter(|m| m.kind == MediaKind::Photo) {
@@ -207,15 +234,14 @@ pub async fn prepare(candidates: Vec<Candidate>, deps: &Deps<'_>) -> Vec<Prepare
 
         // 向量化：图文融合一条 + 每张图一条
         let (fused, image_vectors) = embed_for(&c, &refs, &descriptions, deps.vector).await;
-        out.push(Prepared {
+        Prepared {
             candidate: c,
             descriptions,
             fused,
             image_vectors,
             failed_media,
-        });
+        }
     }
-    out
 }
 
 async fn embed_for(

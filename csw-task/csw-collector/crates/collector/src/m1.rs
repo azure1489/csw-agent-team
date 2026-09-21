@@ -3,7 +3,8 @@
 //! 分两段跑，因为两段的成本差三个数量级：
 //! - **取数**只调 csw 接口，几秒钟、不花钱 → 默认跑全窗口。
 //! - **下载 + 识别 + 向量化**要过模型网关与 GPU，一期约 42 分钟
-//!   → 默认只跑 `--prepare N` 条，验证四段真能串起来；要全量就把 N 设成 0。
+//!   → 默认只跑 `--prepare N` 条（N 默认 8）验证四段真能串起来；要全量得**显式加 `--full`**
+//!   ——这么贵的动作不该靠一个默认值触发。
 //!
 //! 计划里写的「只图文 305」是更早一次测量的数，已经对不上了（9/22 实测 358）。
 //! **这条命令的输出就是当日的验收基准**，不照抄旧数字。
@@ -24,8 +25,10 @@ use csw_collector_harvest::pipeline::{self, CollectorDyn, Deps};
 pub struct Opts {
     pub from: String,
     pub to: String,
-    /// 只对前 N 条跑下载识别向量化；0 表示全量（一期约 42 分钟）
+    /// 对前 N 条跑下载识别向量化。0 = 只取数，不往下走。
     pub prepare: usize,
+    /// 全量跑下载识别向量化。**要花模型与 GPU，一期约 42 分钟**，所以要显式要。
+    pub full: bool,
     /// Van 本期补的短码
     pub van_links: Vec<String>,
 }
@@ -110,18 +113,18 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
             .join("、")
     );
 
-    if o.prepare == 0 && cands.len() > 40 {
-        println!(
-            "\n（只跑了取数。要连下载识别向量化一起跑，加 --prepare N；N=0 表示全量，一期约 42 分钟）"
-        );
-        return Ok(());
-    }
-
-    let n = if o.prepare == 0 {
+    // 下面这段要花模型与 GPU 的钱，所以默认只抽几条。全量要显式加 --full。
+    let n = if o.full {
         cands.len()
     } else {
         o.prepare.min(cands.len())
     };
+    if n == 0 {
+        println!(
+            "\n（只跑了取数。加 --prepare N 抽 N 条走完四段；要全量加 --full，一期约 42 分钟）"
+        );
+        return Ok(());
+    }
     println!("\n对前 {n} 条跑下载 → 识别 → 向量化 …");
     let downloader = Downloader::new(DownloadConfig {
         dir: cfg.blob_dir(),
@@ -159,6 +162,8 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
             model: &model,
             vector: &vector,
             image_only: true,
+            // 闸门在客户端里（模型信号量 8、GPU 互斥锁 1），这里只是别让它们闲着
+            concurrency: cfg.model.concurrency,
         },
     )
     .await;
