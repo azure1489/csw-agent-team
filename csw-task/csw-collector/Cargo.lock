@@ -1129,6 +1129,7 @@ name = "csw-collector-kb"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "csw-collector-core",
  "futures",
  "jieba-rs",
@@ -1137,6 +1138,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "tempdir",
  "tokio",
  "tracing",
 ]

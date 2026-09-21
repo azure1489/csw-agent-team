@@ -57,6 +57,13 @@ pub struct Prepared {
     pub image_vectors: Vec<Vec<f32>>,
     /// 下载或识别失败的图
     pub failed_media: Vec<String>,
+    /// 这条候选在模型网关上花的毫秒（识别）。**是占用时长不是墙钟**，
+    /// 多条并发时各自的和会远大于整段墙钟——那正是要看的：
+    /// 和 ÷ 墙钟 ≈ 网关的有效并发度，明显低于并发上限就说明重叠没做起来。
+    pub recognize_ms: u128,
+    /// 这条候选在 GPU 上花的毫秒（向量化）。GPU 是**全局串行**的，
+    /// 所有候选的和就是整段里 GPU 的占用时长，直接和墙钟比就知道是不是卡在显卡上。
+    pub embed_ms: u128,
 }
 
 impl Prepared {
@@ -73,6 +80,35 @@ impl Prepared {
                     .filter(|m| m.kind == MediaKind::Photo)
                     .count()
     }
+}
+
+/// 一段 `prepare` 的耗时账。把「网关时间」与「GPU 时间」分开记——
+/// 两者是不同的资源，混成一个总数就看不出该往哪儿加通道。
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PrepareStats {
+    /// 下载整段的墙钟（下载是统一做的，不分摊到候选头上）
+    pub download_ms: u128,
+    /// 识别 + 向量化整段的墙钟
+    pub wall_ms: u128,
+    /// 各候选在网关上的占用时长之和
+    pub recognize_ms: u128,
+    /// 各候选在 GPU 上的占用时长之和
+    pub embed_ms: u128,
+}
+
+impl PrepareStats {
+    /// 网关的有效并发度 = 占用之和 ÷ 墙钟。逼近并发上限才算把闸门用满了。
+    pub fn gateway_concurrency(&self) -> f64 {
+        ratio(self.recognize_ms, self.wall_ms)
+    }
+    /// GPU 的占用率。逼近 1 就说明瓶颈在显卡，再加模型通道也没用。
+    pub fn gpu_busy(&self) -> f64 {
+        ratio(self.embed_ms, self.wall_ms)
+    }
+}
+
+fn ratio(a: u128, b: u128) -> f64 {
+    if b == 0 { 0.0 } else { a as f64 / b as f64 }
 }
 
 #[derive(Debug, Default)]
@@ -163,14 +199,16 @@ pub async fn collect_all(
 /// 比 0.5 按并发 8 估的 42 分钟慢十倍。真正的闸门在两个客户端里
 /// （模型的信号量 8、GPU 的互斥锁 1），外层再串行只是白白让它们闲着。
 /// 用 `buffered` 而不是 `buffer_unordered`：保序才能让输出稳定、便于比对。
-pub async fn prepare(candidates: Vec<Candidate>, deps: &Deps<'_>) -> Vec<Prepared> {
+pub async fn prepare(candidates: Vec<Candidate>, deps: &Deps<'_>) -> (Vec<Prepared>, PrepareStats) {
     // 一次把全部图排进下载队列：并发受限在 Downloader 里，这里不必再切
     let urls: Vec<String> = candidates
         .iter()
         .flat_map(|c| c.media.iter().filter(|m| m.kind == MediaKind::Photo))
         .map(|m| m.url.clone())
         .collect();
+    let t_dl = std::time::Instant::now();
     let report = deps.downloader.fetch_all(&urls).await;
+    let download_ms = t_dl.elapsed().as_millis();
     let by_url: HashMap<String, _> = report
         .ok
         .iter()
@@ -183,11 +221,18 @@ pub async fn prepare(candidates: Vec<Candidate>, deps: &Deps<'_>) -> Vec<Prepare
     let tasks = candidates
         .into_iter()
         .map(|c| prepare_one(c, &by_url, &failed_urls, deps));
-    futures::StreamExt::collect::<Vec<_>>(futures::StreamExt::buffered(
-        futures::stream::iter(tasks),
-        conc,
-    ))
-    .await
+    let t_prep = std::time::Instant::now();
+    let prepared: Vec<Prepared> = futures::StreamExt::collect::<Vec<_>>(
+        futures::StreamExt::buffered(futures::stream::iter(tasks), conc),
+    )
+    .await;
+    let stats = PrepareStats {
+        download_ms,
+        wall_ms: t_prep.elapsed().as_millis(),
+        recognize_ms: prepared.iter().map(|p| p.recognize_ms).sum(),
+        embed_ms: prepared.iter().map(|p| p.embed_ms).sum(),
+    };
+    (prepared, stats)
 }
 
 /// 一条候选走完识别与向量化。下载在外面已经统一做过。
@@ -221,6 +266,7 @@ async fn prepare_one(
         }
 
         // 识别：按批走；某一批失败只影响那一批，不牵连整条候选
+        let t_rec = std::time::Instant::now();
         let mut descriptions = Vec::new();
         for batch in refs.chunks(recognize::MAX_IMAGES_PER_CALL) {
             match recognize::recognize_batch(deps.model, &c.text, batch).await {
@@ -232,7 +278,10 @@ async fn prepare_one(
             }
         }
 
+        let recognize_ms = t_rec.elapsed().as_millis();
+
         // 向量化：图文融合一条 + 每张图一条
+        let t_emb = std::time::Instant::now();
         let (fused, image_vectors) = embed_for(&c, &refs, &descriptions, deps.vector).await;
         Prepared {
             candidate: c,
@@ -240,6 +289,8 @@ async fn prepare_one(
             fused,
             image_vectors,
             failed_media,
+            recognize_ms,
+            embed_ms: t_emb.elapsed().as_millis(),
         }
     }
 }
@@ -584,6 +635,8 @@ mod tests {
             fused: None,
             image_vectors: vec![],
             failed_media: vec![],
+            recognize_ms: 0,
+            embed_ms: 0,
         };
         assert!(full.image_seen());
         let partial = Prepared {
@@ -592,6 +645,8 @@ mod tests {
             fused: None,
             image_vectors: vec![],
             failed_media: vec![],
+            recognize_ms: 0,
+            embed_ms: 0,
         };
         assert!(!partial.image_seen(), "少一张描述就不算读到实图");
         let failed = Prepared {
@@ -600,6 +655,8 @@ mod tests {
             fused: None,
             image_vectors: vec![],
             failed_media: vec!["x".into()],
+            recognize_ms: 0,
+            embed_ms: 0,
         };
         assert!(!failed.image_seen(), "有下载失败的就不算读到实图");
     }

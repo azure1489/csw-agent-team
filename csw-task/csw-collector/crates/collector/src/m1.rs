@@ -155,7 +155,7 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
     }
 
     let t1 = Instant::now();
-    let prepared = pipeline::prepare(
+    let (prepared, stats) = pipeline::prepare(
         cands.into_iter().take(n).collect(),
         &Deps {
             downloader: &downloader,
@@ -204,6 +204,25 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
         "  外推一期 {} 条    {:.1} 分钟",
         358,
         prep_s / n.max(1) as f64 * 358.0 / 60.0
+    );
+
+    // 把墙钟拆开：网关与 GPU 是两个资源，混成一个总数就看不出该往哪儿加通道
+    println!("\n耗时都花在哪");
+    println!(
+        "  下载          {:.1}s（统一做，不分摊到候选）",
+        stats.download_ms as f64 / 1000.0
+    );
+    println!("  识别+向量墙钟 {:.1}s", stats.wall_ms as f64 / 1000.0);
+    println!(
+        "  网关占用合计  {:.1}s → 有效并发 {:.1}（上限 {}）",
+        stats.recognize_ms as f64 / 1000.0,
+        stats.gateway_concurrency(),
+        cfg.model.concurrency
+    );
+    println!(
+        "  GPU 占用合计  {:.1}s → 占用率 {:.0}%（GPU 全局串行，逼近 100% 就是卡在显卡上）",
+        stats.embed_ms as f64 / 1000.0,
+        stats.gpu_busy() * 100.0
     );
 
     let bad: Vec<_> = prepared
