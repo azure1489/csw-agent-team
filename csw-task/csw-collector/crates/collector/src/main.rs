@@ -1,12 +1,15 @@
 //! 采集服务进程：HTTP 工作台 + 编排 + CLI。
 //!
-//! 子命令与计划一一对应：
+//! 子命令与实施计划一一对应：
 //!   serve                 常驻：任务驱动轮询 + 工作台 HTTP + 进程内定时
 //!   run --manual          手动开启一轮（不关联任务）
 //!   replay                回放一轮（录制回放层，不出网、不花模型钱）
 //!   kb sync | kb import   知识库同步 / 导入
 //!   mcp                   以 stdio 方式跑本地 MCP 服务
 //!   p5                    历史反馈回收（离线，只读打开会话库，每次运行单独取得同意）
+//!   xcheck                依赖自检（阶段 0.2：在目标主机上验证重依赖真能跑）
+
+mod xcheck;
 
 use clap::{Parser, Subcommand};
 
@@ -14,7 +17,7 @@ use clap::{Parser, Subcommand};
 #[command(name = "csw-collector", version, about = "情报收集员工作台 · 采集服务")]
 struct Cli {
     /// 配置文件路径（env > 文件 > 默认；密钥只从 env 取）
-    #[arg(long, env = "CSW_COLLECTOR_CONFIG")]
+    #[arg(long, env = "CSW_COLLECTOR_CONFIG", global = true)]
     config: Option<String>,
 
     #[command(subcommand)]
@@ -44,6 +47,18 @@ enum Command {
     Mcp,
     /// 历史反馈回收（离线；每次运行须单独取得同意）
     P5,
+    /// 依赖自检：SQLite、LanceDB、TLS、axum 各跑一遍
+    Xcheck {
+        /// TLS 握手与根证书链的验证目标（任何 HTTP 状态都算通过）
+        #[arg(long, default_value = "https://agent-api.campsomewhere.com/")]
+        http_url: String,
+        /// 向量维度，与 Qwen3-VL 对齐
+        #[arg(long, default_value_t = 2048)]
+        dim: i32,
+        /// 写入行数
+        #[arg(long, default_value_t = 200)]
+        rows: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -57,12 +72,25 @@ enum KbCommand {
     },
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+            // lance / datafusion 的 INFO 每条记录都刷屏，默认压到 warn；
+            // 要看细节用 RUST_LOG 覆盖。
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                "info,lance=warn,lance_index=warn,lance_core=warn,lance_io=warn,\
+                 lance_encoding=warn,lance_table=warn,datafusion=warn"
+                    .into()
+            }),
         )
         .init();
+
+    // rustls 走 ring：reqwest 以 rustls-no-provider 接入，进程启动时装一次默认提供者。
+    // aws-lc-rs 要 cmake + nasm，交叉编译到 x86_64 linux 很难过，所以不用它。
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|_| anyhow::anyhow!("安装 rustls ring 提供者失败"))?;
 
     let cli = Cli::parse();
     match cli.command {
@@ -72,5 +100,17 @@ fn main() -> anyhow::Result<()> {
         Command::Kb(_) => todo!("阶段 3：知识库同步与导入"),
         Command::Mcp => todo!("阶段 5：本地 MCP 服务"),
         Command::P5 => todo!("阶段 8：历史反馈回收"),
+        Command::Xcheck {
+            http_url,
+            dim,
+            rows,
+        } => {
+            xcheck::run(xcheck::Opts {
+                http_url,
+                dim,
+                rows,
+            })
+            .await
+        }
     }
 }

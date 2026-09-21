@@ -12,3 +12,6 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+lancedb.workspace = true
+futures.workspace = true
+tokio.workspace = true

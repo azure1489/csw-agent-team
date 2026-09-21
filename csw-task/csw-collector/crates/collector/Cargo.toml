@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+build = "build.rs"
+
 [[bin]]
 name = "csw-collector"
 path = "src/main.rs"
@@ -24,3 +26,13 @@ clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+rustls.workspace = true
+reqwest.workspace = true
+rusqlite.workspace = true
+jiff.workspace = true
+lancedb.workspace = true
+futures.workspace = true
+blake3.workspace = true
+sha2.workspace = true

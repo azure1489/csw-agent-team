@@ -35,20 +35,29 @@ anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "time", "fs", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "time", "fs", "net", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 clap = { version = "4", features = ["derive", "env"] }
 
-# 阶段 0.2 起接入的重依赖（版本先钉死，届时逐个打开）
-# lancedb = "=0.39.0"                              # MSRV 1.91 · arrow 58.x · 构建要 protoc
-# rusqlite = { version = "0.37", features = ["bundled"] }
-# reqwest  = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart", "stream"] }
-# axum     = "0.8"
-# blake3   = "1"
-# sha2     = "0.10"
-# zip      = { version = "5", default-features = false, features = ["deflate"] }
-# jiff     = "0.2"
+# 重依赖（版本钉死；升级前重跑阶段 0.2 的交叉编译验证）
+# 钉 0.37.1 而不是最新的 0.39.0：0.38 / 0.39 的 src/job.rs 无条件引用了只在
+# remote feature 下存在的 Error::Http，不开 feature 编不过（上游回归）。开 remote
+# 会拖进第二个 major 的 reqwest（0.12）加 tonic / arrow-flight，且带回 aws-lc-rs。
+# 0.37.1：lance 10.0.0 · arrow 58.x · MSRV 1.91 · jieba 分词器默认已启用 · 构建需 protoc。
+lancedb = "=0.37.1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+# rustls 走 ring：aws-lc-rs 要 cmake + nasm，交叉编译到 x86_64 linux 很难过
+reqwest = { version = "0.13", default-features = false, features = [
+    "rustls-no-provider", "http2", "json", "charset", "stream", "multipart",
+] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+axum = "0.8"
+tower-http = { version = "0.7", features = ["trace", "fs", "compression-gzip"] }
+blake3 = "1"
+sha2 = "0.11"
+jiff = { version = "0.2", features = ["serde"] }
+futures = "0.3"
 
 [profile.release]
 # 生产二进制跑在 agent 主机，体积与启动比编译时长重要
