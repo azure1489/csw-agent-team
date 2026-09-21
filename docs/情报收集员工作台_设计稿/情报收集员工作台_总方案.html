@@ -1,0 +1,1754 @@
+<title>收集员工作台总方案</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&display=swap">
+<style>
+:root { --ground:#F4F5F7; --surface:#FFFFFF; --ink:#1B1F2A; --muted:#5F6673; --rule:#DCDFE6; --accent:#4F46E5; --accent-soft:#EEF0FD; --warn:#B23B2A; --code-bg:#ECEEF3;
+  --sans:"Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif; --serif:"Noto Serif SC","Songti SC",serif; --mono:"IBM Plex Mono",Menlo,monospace; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --ground:#12141A; --surface:#1A1D26; --ink:#E6E8EE; --muted:#9AA1AE; --rule:#2C3140; --accent:#8B85F6; --accent-soft:#232647; --warn:#F08A76; --code-bg:#22263A; } }
+:root[data-theme="dark"] { --ground:#12141A; --surface:#1A1D26; --ink:#E6E8EE; --muted:#9AA1AE; --rule:#2C3140; --accent:#8B85F6; --accent-soft:#232647; --warn:#F08A76; --code-bg:#22263A; }
+body { background:var(--ground); color:var(--ink); font-family:var(--sans); font-size:16px; line-height:1.85; padding-inline:20px; padding-block:44px 96px; }
+.page { max-width:1080px; margin-inline:auto; display:flex; flex-direction:column; gap:28px; }
+.eyebrow { font-size:13px; color:var(--muted); letter-spacing:.08em; display:flex; flex-wrap:wrap; gap:4px 14px; }
+.chip { border:1px solid var(--accent); color:var(--accent); padding:0 8px; border-radius:3px; }
+h1 { font-family:var(--serif); font-weight:700; font-size:clamp(28px,5vw,38px); line-height:1.3; margin:12px 0 14px; text-wrap:balance; }
+h1 span { display:block; font-family:var(--sans); font-size:.5em; font-weight:500; color:var(--accent); margin-top:6px; }
+.lede { font-size:17px; line-height:1.9; margin:0; max-width:46em; }
+.meta { font-size:13.5px; color:var(--muted); margin:10px 0 0; max-width:60em; }
+nav ol { list-style:none; margin:0; padding:0; display:flex; flex-wrap:wrap; gap:6px 8px; }
+nav a { display:block; font-size:13.5px; padding:3px 11px; border:1px solid var(--rule); border-radius:3px; background:var(--surface); color:var(--ink); text-decoration:none; }
+nav a:hover { border-color:var(--accent); color:var(--accent); }
+article { min-width:0; }
+article h2 { font-family:var(--serif); font-weight:700; font-size:24px; margin:56px 0 14px; padding-top:18px; border-top:2px solid var(--ink); text-wrap:balance; }
+article h3 { font-size:17px; font-weight:700; margin:34px 0 8px; color:var(--accent); }
+article p { margin:12px 0; max-width:46em; }
+article ul, article ol { padding-left:1.4em; margin:12px 0; display:flex; flex-direction:column; gap:6px; max-width:46em; }
+code { font-family:var(--mono); font-size:.86em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+pre { background:var(--code-bg); border:1px solid var(--rule); border-radius:6px; padding:14px 16px; overflow-x:auto; font-size:13px; line-height:1.6; margin:16px 0; }
+pre code { background:none; padding:0; font-size:inherit; }
+.table-wrap { overflow-x:auto; margin:18px 0; border:1px solid var(--rule); border-radius:6px; background:var(--surface); }
+table { border-collapse:collapse; width:100%; font-size:14.5px; line-height:1.7; }
+th, td { text-align:left; vertical-align:top; padding:10px 13px; border-bottom:1px solid var(--rule); min-width:6em; }
+th { font-size:13px; color:var(--muted); background:var(--ground); font-weight:700; white-space:nowrap; }
+tr:last-child td { border-bottom:0; }
+.diagram { margin:22px 0; background:var(--surface); border:1px solid var(--rule); border-radius:8px; padding:18px 18px 12px; overflow-x:auto; }
+.diagram svg { display:block; min-width:640px; }
+.diagram figcaption { font-size:13.5px; color:var(--muted); line-height:1.6; margin-top:10px; max-width:60em; }
+footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule); padding-top:16px; }
+@media (max-width:560px) { body { font-size:15.5px; padding-inline:16px; } }
+</style>
+<div class="page">
+<header>
+  <div class="eyebrow"><span>营事编集室 · 情报收集员改造</span><span>总方案 · 2026-09-21</span><span class="chip">合并稿</span></div>
+  <h1>情报收集员工作台<span>总方案</span></h1>
+  <p class="lede">把情报收集员从 Hermes agent 换成一个工作台。一个 Rust 采集服务按引擎派单或人工开启，跑完「采集媒体信息 → 合并 → 对照材料 → 逐条判断 → 深核 → 登记交付」，窗口内每条图文贴文都判、每张图都识别，判断以五类参考和 Van 的框架为依据，过程全部可见、可核、可重跑；引擎仍是唯一真相。</p>
+  <p class="meta">日期：2026-09-21｜发出：开发｜状态：总方案，合并《完整流程》确认稿第 16 版、《设计说明》第 4 版、《架构与部署分析》第 2 版、开发版第三版、概要版第二版与接续记录 §19–§35｜读者：Van、主编、开发</p>
+</header>
+<nav aria-label="目录"><ol><li><a href="#0-这份文档怎么读">0. 这份文档怎么读</a></li><li><a href="#1-为什么改-现状与目标">1. 为什么改：现状与目标</a></li><li><a href="#2-已定的口径-一页纸">2. 已定的口径（一页纸）</a></li><li><a href="#3-总体架构">3. 总体架构</a></li><li><a href="#4-完整流程">4. 完整流程</a></li><li><a href="#5-采集媒体信息">5. 采集媒体信息</a></li><li><a href="#6-对照材料与知识库">6. 对照材料与知识库</a></li><li><a href="#7-判断框架与逐条判断">7. 判断框架与逐条判断</a></li><li><a href="#8-jev-窄判断-初评-核对与七处替代脆弱解析">8. Jev 窄判断：初评、核对与七处替代脆弱解析</a></li><li><a href="#9-深核-codex-app-server">9. 深核：Codex App Server</a></li><li><a href="#10-工作台">10. 工作台</a></li><li><a href="#11-代码落点与引擎侧改动">11. 代码落点与引擎侧改动</a></li><li><a href="#12-部署与运维">12. 部署与运维</a></li><li><a href="#13-里程碑与验收">13. 里程碑与验收</a></li><li><a href="#14-已完成的工作-截至-9-21">14. 已完成的工作（截至 9/21）</a></li><li><a href="#15-待拍板-合并去重">15. 待拍板（合并去重）</a></li><li><a href="#16-风险">16. 风险</a></li><li><a href="#17-下一步-建议顺序">17. 下一步（建议顺序）</a></li><li><a href="#附录-文档索引">附录：文档索引</a></li></ol></nav>
+<article><h2 id="0-这份文档怎么读">0. 这份文档怎么读</h2>
+<p>第 1、2 节讲为什么改、定了什么；第 3 到 9 节讲怎么做（架构、流程、采集、知识库、判断、Jev、深核）；第 10 到 12 节讲怎么落地（工作台、代码与引擎改动、部署）；第 13 到 17 节是里程碑、已完成的工作、待拍板、风险与下一步。全文口径以 9/21 晚为准，与其他文档冲突时以本文为准。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>需要</th>
+<th>看哪里</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>只看结论</td>
+<td>第 2 节「已定的口径」、第 15 节「待拍板」、第 17 节「下一步」</td>
+</tr>
+<tr>
+<td>核对流程每一步</td>
+<td>第 4 节，图 A</td>
+</tr>
+<tr>
+<td>采集怎么扩展、自定义</td>
+<td>第 5 节，图 B</td>
+</tr>
+<tr>
+<td>判断依据是什么、怎么判</td>
+<td>第 6、7、8 节</td>
+</tr>
+<tr>
+<td>动工前的底数</td>
+<td>第 11、12 节，图 4</td>
+</tr>
+<tr>
+<td>界面细节</td>
+<td>《界面设计稿》（11 页静态原型），本文第 10 节只列页面与状态</td>
+</tr>
+<tr>
+<td>协议字段与配置</td>
+<td>开发版 §7（Codex 配置）、§9（代码落点）</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="1-为什么改-现状与目标">1. 为什么改：现状与目标</h2>
+<h3 id="1-1-现状证据-r48-9-18-期">1.1 现状证据（r48，9/18 期）</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>通道</th>
+<th>接口返回</th>
+<th>去重后</th>
+<th>实际看过</th>
+<th>没看过</th>
+<th>登记</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Instagram（csw MCP）</td>
+<td>401</td>
+<td>401</td>
+<td><strong>49</strong></td>
+<td><strong>352</strong></td>
+<td>49</td>
+</tr>
+<tr>
+<td>网页（opencli）</td>
+<td>123</td>
+<td>70</td>
+<td><strong>0</strong></td>
+<td><strong>70</strong></td>
+<td>0</td>
+</tr>
+<tr>
+<td>小红书（opencli）</td>
+<td>37</td>
+<td>37</td>
+<td><strong>1</strong></td>
+<td><strong>36</strong></td>
+<td>1</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li>01 任务首末事件相隔 188 分钟，交了 3 版；数字全是 agent 自报，无法核对。</li>
+<li><strong>来源不全</strong>：这一期 Van 退回两条选题后自己发来 8 条 Instagram 链接，7 篇成稿全部出自这 8 条；按短码核对，8 条里只有 1 条在贴文库。后台在册 460 个账号，近 7 天日均入库 158 条。</li>
+<li><strong>知识库停在 9/15</strong>：生产上没有同步定时器；公众号已出到 vol.260，引擎刊发记录只有 51 篇（15 篇有正文、拆条 6 条），反馈记忆 6 条。</li>
+<li><strong>不看图、无译文</strong>：<code>translated_text</code> 全空，<code>detailed_alt</code> 覆盖率 0；模型只凭正文挑。</li>
+<li><strong>接口取不全</strong>：旧接口 <code>posts/search</code> 最多返回 100 条、页码写死；「前一天到当天」实际 438 条（已用新接口 <code>posts/window</code> 解决，见第 14 节）。</li>
+<li><strong>权限面过大</strong>：Hermes 上的收集员挂着 csw MCP 全部 25 个工具（含推公众号）和终端，读的是不可信输入。</li>
+</ul>
+<p>根因：取不全；单会话装不下；判断标准没落进系统（无知识库、无偏好记忆、不看实图）；确定性工作交给了模型；来源名单与知识库不随时间更新。</p>
+<h3 id="1-2-改造目标-van-9-19-确认版">1.2 改造目标（Van 9/19 确认版）</h3>
+<p>更早、独立地找到她愿意采用的选题，减少她补链接、反复解释和催促。</p>
+<p><strong>目标指标</strong>（数值结合实测再定）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>指标</th>
+<th>记录口径</th>
+<th>埋点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>自主发现情况</td>
+<td>最终采用的选题里，系统在她提供链接之前独立发现了多少</td>
+<td>条目加 <code>origin</code>（system / van_link / editor_link）与 <code>first_seen_at</code></td>
+</tr>
+<tr>
+<td>第一轮推荐质量</td>
+<td>第一轮推荐多少条、采用多少条、随后补选几轮</td>
+<td>03 闸首版条数、Van 首次采用数、03 版本数与退回次数（引擎已有）</td>
+</tr>
+<tr>
+<td>Van 的实际投入</td>
+<td>审题、补充说明、补链接所花时间</td>
+<td>03 与 08 从送达到决定的用时；<code>van_link</code> 条目数；补充说明条数（估算）</td>
+</tr>
+</tbody>
+</table></div>
+<p>她提供链接后的处理结果单独记录，不计入自主发现。</p>
+<p><strong>技术指标</strong>：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>指标</th>
+<th>现状（r48）</th>
+<th>目标</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>审阅覆盖：窗口内图文贴文被逐条判断</td>
+<td>49 / 401</td>
+<td>100%，由代码计数</td>
+</tr>
+<tr>
+<td>看图覆盖：判断时实际看到实图</td>
+<td>0</td>
+<td>如实统计；读不到的标待核</td>
+</tr>
+<tr>
+<td>来源覆盖：采用条目的来源账号在册</td>
+<td>1 / 8</td>
+<td>逐期上升</td>
+</tr>
+<tr>
+<td>召回（只算来源在册的部分）</td>
+<td>无法测</td>
+<td>并行期 ≥ 90%；不单独作为成功依据</td>
+</tr>
+<tr>
+<td>01 用时</td>
+<td>188 分钟</td>
+<td>首批 20 分钟、全量 45 分钟（测试目标）</td>
+</tr>
+<tr>
+<td>写权限面</td>
+<td>25 个 MCP 工具加终端</td>
+<td>只读工具；写引擎仅采集服务代码</td>
+</tr>
+</tbody>
+</table></div>
+<p>速度与覆盖达标之外，要证明推荐更符合要求、她少补题少解释少催促，才算成功。不设「凑满 6 主 2 备」的硬指标，不拿弱题凑数。</p>
+<h2 id="2-已定的口径-一页纸">2. 已定的口径（一页纸）</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>口径</th>
+<th>定于</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>起点是引擎派单</strong>。情报收集员这个角色由 Hermes agent 换成工作台：采集服务持该角色的引擎 token 接单，Web 界面显示接单之后的每一步</td>
+<td>9/20</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>两个入口</strong>：任务驱动（引擎 05:30 派单）与手动开启（人在工作台点开始）。手动轮不关联任务时只出本地台账与报告，不写引擎、不群播报；关联任务时与任务驱动一样交付</td>
+<td>9/21</td>
+</tr>
+<tr>
+<td>3</td>
+<td>取贴文<strong>直接调 csw-agent 的 HTTP 接口，不经 MCP</strong>；按任务的 <code>stage_code</code> 选采集方案：01 用 <code>posts/window</code>，05 / 11 / 补件用 <code>posts/{id}</code> 取单条</td>
+<td>9/20</td>
+</tr>
+<tr>
+<td>4</td>
+<td>第 2 步叫<strong>采集媒体信息</strong>：取候选、下载图片、识别图片、向量化是一个整体；取 csw 贴文只是其中一个采集器，采集方案可配置、可自定义</td>
+<td>9/20</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>只取图文</strong>：Reel 与含视频的轮播不取（约占入库量两成）</td>
+<td>9/21</td>
+</tr>
+<tr>
+<td>6</td>
+<td>贴文库抓取<strong>改为每天 01:00</strong>（已改生产）；窗口按<strong>首次入库时间</strong>判定，发布时间只作 3 天时效上限</td>
+<td>9/21</td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>每条都判、每张图都识别</strong>，不设 top K</td>
+<td>9/21</td>
+</tr>
+<tr>
+<td>8</td>
+<td><strong>对照材料五类缺一不判</strong>：正式已发布、范例、生成过文章的贴文、03 决定、上一轮台账；csw 后台的「勾选」不进评选</td>
+<td>9/21</td>
+</tr>
+<tr>
+<td>9</td>
+<td><strong>不打数字分、不设权重</strong>：输出结论档（推荐 / 备选 / 不推荐 / 待核）+ 六维「成立 / 不成立 / 不明」各配依据 + 三句话 + 对照结论；排序由代码算</td>
+<td>9/21，待第 15 节确认</td>
+</tr>
+<tr>
+<td>10</td>
+<td>点赞、评论、csw 标签、话题是<strong>判断的输入</strong>，不是维度，不否决</td>
+<td>9/21</td>
+</tr>
+<tr>
+<td>11</td>
+<td><strong>Jev（TypeSafe）只做初评、核对与窄判断</strong>，不定档；生成模型给结论档与依据</td>
+<td>9/21，是否引入待拍板</td>
+</tr>
+<tr>
+<td>12</td>
+<td><strong>Codex App Server 只用于深核</strong>（与将来的对话入口）；检索类工具做本地 MCP</td>
+<td>9/20</td>
+</tr>
+<tr>
+<td>13</td>
+<td>技术栈 <strong>Rust 采集服务 + 内嵌 LanceDB + 自部署 Qwen3-VL</strong>；引擎仍是 Go、不动，是流程与记录的真相；两边只经 HTTP 往来</td>
+<td>9/21</td>
+</tr>
+<tr>
+<td>14</td>
+<td>每天的候选<strong>向量化</strong>（图文融合一条、每张图一条）；<strong>历史贴文池不回填</strong></td>
+<td>9/21</td>
+</tr>
+<tr>
+<td>15</td>
+<td>判断框架<strong>由 Van 给出</strong>：核心问题、六个判断层、七类优先、七类降低、三句话；来源不加权；不因口味淘汰；证据不足先待核</td>
+<td>9/19</td>
+</tr>
+<tr>
+<td>16</td>
+<td>05 配图与素材核、11 小红书选图包<strong>由同一工作台接单</strong>，走「条目取单条」方案</td>
+<td>9/20</td>
+</tr>
+<tr>
+<td>17</td>
+<td>引擎仍是唯一真相；群播报仍由引擎单写；01 的主编首批校准闸位置不变；Van 的决定仍经 03 闸生效，主编代录并附原话</td>
+<td>不变</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="3-总体架构">3. 总体架构</h2>
+<figure class="diagram"><svg viewBox="0 0 960 400" role="img" aria-label="系统位置：工作台只经采集服务访问引擎与外部服务；采集服务用 Rust，内嵌 LanceDB，向量与重排调 Qwen3-VL" style="max-width:100%;height:auto;font-family:inherit"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker><marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4F46E5"/></marker></defs><rect x="30" y="40" width="170" height="56" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="115.0" y="65.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">工作台前端</text><text x="115.0" y="81.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">浏览器 · React</text><rect x="30" y="150" width="170" height="56" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="115.0" y="175.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">管理后台</text><text x="115.0" y="191.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">定义 · 成员 · 监控（不变）</text><rect x="300" y="20" width="360" height="230" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="480.0" y="140.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor"></text><text x="480" y="40" text-anchor="middle" font-size="12" font-weight="700" fill="currentColor" opacity=".7">采集服务（Rust，agent 主机）</text><rect x="320" y="52" width="140" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="390.0" y="71.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">采集媒体信息</text><text x="390.0" y="87.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">采集器 · 下载 · 识别</text><rect x="500" y="52" width="140" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="570.0" y="71.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">合并 · 对照材料</text><text x="570.0" y="87.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">窗口 · 召回 · 重排</text><rect x="320" y="108" width="140" height="44" rx="6" fill="var(--surface,#fff)" stroke="#4F46E5" stroke-width="2"/><text x="390.0" y="127.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">逐条判断</text><text x="390.0" y="143.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">正文 + 图 + 对照</text><rect x="500" y="108" width="140" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="570.0" y="127.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">深核</text><text x="570.0" y="143.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">Codex App Server</text><rect x="320" y="164" width="140" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="390.0" y="183.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">工作台接口</text><text x="390.0" y="199.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">台账 · 线程记录</text><rect x="500" y="164" width="140" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="570.0" y="183.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">LanceDB</text><text x="570.0" y="199.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">知识库索引 · 候选 · 图片</text><rect x="740" y="40" width="190" height="56" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="835.0" y="65.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">任务流转引擎</text><text x="835.0" y="81.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">任务 · 条目 · 判断台账 · 交付物</text><rect x="740" y="150" width="190" height="56" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="835.0" y="175.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">刊发记录 · 决定 · 记忆</text><text x="835.0" y="191.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">引擎内 · 真相</text><rect x="300" y="300" width="130" height="50" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="365.0" y="322.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">csw 后端</text><text x="365.0" y="338.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">贴文库 · OSS 图片</text><rect x="445" y="300" width="130" height="50" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="510.0" y="322.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">sub2api</text><text x="510.0" y="338.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">gpt-6-astra</text><rect x="590" y="300" width="130" height="50" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="655.0" y="322.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">Qwen3-VL</text><text x="655.0" y="338.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">向量 · 重排</text><rect x="735" y="300" width="130" height="50" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="800.0" y="322.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">opencli</text><text x="800.0" y="338.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">小红书 · 网页</text><polyline points="200,68 300,68" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="250" y="60" text-anchor="middle" font-size="11" fill="currentColor">JWT</text><polyline points="30,178 18,178 18,380 945,380 945,68 930,68" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)"/><text x="480" y="374" text-anchor="middle" font-size="11" fill="currentColor">读写定义与监控（不变）</text><polyline points="660,74 740,68" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="700" y="52" text-anchor="middle" font-size="11" fill="currentColor">任务 · 台账 · 交付物</text><polyline points="740,178 660,186" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="700" y="172" text-anchor="middle" font-size="11" fill="currentColor">同步为索引</text><polyline points="365,300 365,250" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="373" y="278" text-anchor="start" font-size="11" fill="currentColor">posts/window</text><polyline points="510,300 510,250" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="518" y="278" text-anchor="start" font-size="11" fill="currentColor">Responses</text><polyline points="655,300 655,250" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="647" y="278" text-anchor="end" font-size="11" fill="currentColor">向量 · 重排</text><polyline points="800,300 800,268 680,268 680,240 660,240" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="740" y="262" text-anchor="middle" font-size="11" fill="currentColor">受控调用</text></svg><figcaption>图 1 · 系统位置。工作台前端只和采集服务说话；采集服务用 Rust 写，内嵌 LanceDB 存知识库索引与候选，对外接 csw 后端、模型服务、Qwen3-VL 向量与重排服务、opencli，对内读写引擎；刊发记录、决定与记忆的真相在引擎，同步进 LanceDB 作索引。管理后台保持只管定义与监控。</figcaption></figure>
+
+<p><strong>代码管采集与记录，模型按 Van 的框架逐条判断并写依据，引擎仍是唯一真相。</strong></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>工作</th>
+<th>性质</th>
+<th>用什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>取数、只取图文、下载、去重、合并、判窗口、计数、登记、结转、交付物生成</td>
+<td>确定性</td>
+<td>采集服务代码（Rust）</td>
+</tr>
+<tr>
+<td>图片识别（每张图 × 该条正文）</td>
+<td>视觉理解</td>
+<td>视觉模型（经 sub2api）</td>
+</tr>
+<tr>
+<td>六维初评、依据核对、同一事件、对照结论、昨日已判</td>
+<td>窄判断、要概率</td>
+<td>Jev（TypeSafe）</td>
+</tr>
+<tr>
+<td>逐条综合判断：结论档、逐维判定与依据、三句话、对照解释</td>
+<td>批量的单步判断</td>
+<td>生成模型（经 sub2api；直连 Responses 接口或 app-server 线程，M0 对照后定）</td>
+</tr>
+<tr>
+<td>推荐与待核条目的深核</td>
+<td>多步、带工具、看完整图、可打断</td>
+<td>Codex App Server（子进程）</td>
+</tr>
+<tr>
+<td>向量化与重排</td>
+<td>多模态检索</td>
+<td>Qwen3-VL Embedding / Reranker（agent 主机 :8022）</td>
+</tr>
+<tr>
+<td>知识库索引、候选、判断台账副本、图片</td>
+<td>本机存储</td>
+<td>LanceDB（嵌入式）+ 本地文件</td>
+</tr>
+<tr>
+<td>任务、条目、采集轮、判断台账、交付物、闸、授权、刊发记录、决定、记忆</td>
+<td>真相</td>
+<td>引擎（Go + SQLite，不动）</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>三条边界</strong>：</p>
+<ul>
+<li><strong>与引擎</strong>：采集服务只经运行面 HTTP（bearer token）读 my-tasks、tasks/:id、ledger、memory，写 items、sweeps、intake-judgements、deliverables、fail。工作台登录复用引擎的 JWT 密钥（HS256），不自己发号。</li>
+<li><strong>与 csw-agent</strong>：只读，一把收集员 API key；不写 csw 库；补录账号仍由人在 csw 后台做。</li>
+<li><strong>与模型</strong>：识别与判断走 sub2api；深核走 codex 子进程，<code>sandbox=read-only</code>、<code>approvalPolicy=never</code>、只读 MCP 白名单；写引擎的动作只有采集服务代码能做。</li>
+</ul>
+<p>唤醒不依赖飞书 @：采集服务每 30 秒查一次 <code>my-tasks</code>。群播报仍由引擎单写。</p>
+<h2 id="4-完整流程">4. 完整流程</h2>
+<figure class="diagram"><svg viewBox="0 0 1180 1008" role="img" aria-label="完整流程：引擎派单或人在工作台手动开启，工作台开工后采集媒体信息（只取图文，取候选、下载、识别一体）、合并、取对照材料、逐条综合判断、深核；关联任务时登记交付，主编首批校准，补件，下游与 Van 决定回流" style="max-width:100%;height:auto;font-family:inherit"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker><marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4F46E5"/></marker></defs><rect x="40" y="14" width="260" height="988" fill="none" stroke="currentColor" stroke-opacity=".22"/><text x="170.0" y="36" text-anchor="middle" font-size="12.5" font-weight="700" fill="currentColor" opacity=".75">引擎（真相）</text><rect x="300" y="14" width="340" height="988" fill="none" stroke="currentColor" stroke-opacity=".22"/><text x="470.0" y="36" text-anchor="middle" font-size="12.5" font-weight="700" fill="currentColor" opacity=".75">情报收集员工作台（采集服务 + Web）</text><rect x="640" y="14" width="310" height="988" fill="none" stroke="currentColor" stroke-opacity=".22"/><text x="795.0" y="36" text-anchor="middle" font-size="12.5" font-weight="700" fill="currentColor" opacity=".75">来源 · 模型</text><rect x="950" y="14" width="190" height="988" fill="none" stroke="currentColor" stroke-opacity=".22"/><text x="1045.0" y="36" text-anchor="middle" font-size="12.5" font-weight="700" fill="currentColor" opacity=".75">人</text><rect x="85.0" y="56" width="170" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="170.0" y="75.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">0 派单 05:30</text><text x="170.0" y="91.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">引擎触发 run · 01 派给收集员</text><rect x="980.0" y="56" width="130" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1045.0" y="75.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">0 手动开启</text><text x="1045.0" y="91.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">方案 · 窗口 · 关联任务</text><rect x="350.0" y="122" width="240" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="470.0" y="141.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">1 接单 / 手动开工</text><text x="470.0" y="157.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">任务：ack · 心跳 · 读作业标准</text><rect x="85.0" y="122" width="170" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="170.0" y="141.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">任务：已接单</text><text x="170.0" y="157.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">派工单 · 作业标准 · 首批时限</text><polyline points="255.0,78.0 470.0,78.0 470.0,122" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="263.0" y="70.0" text-anchor="start" font-size="11" fill="currentColor">派工单 · 群播报</text><polyline points="980.0,78.0 470.0,78.0 470.0,122" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="725.0" y="70.0" text-anchor="middle" font-size="11" fill="currentColor">人在工作台点开始 · 参数写审计</text><polyline points="350.0,144.0 255.0,144.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="302.5" y="136.0" text-anchor="middle" font-size="11" fill="currentColor">ack · 心跳</text><rect x="308" y="182" width="324" height="222" rx="8" fill="none" stroke="#4F46E5" stroke-width="1.6"/><text x="316" y="197" font-size="12" font-weight="700" fill="#4F46E5">2 采集媒体信息</text><text x="316" y="397" font-size="11" fill="#4F46E5" opacity=".85">取候选 · 下载 · 识别不拆开</text><rect x="350.0" y="206" width="240" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="470.0" y="225.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">2a 取候选</text><text x="470.0" y="241.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">只取图文 · 按任务类型跑采集方案</text><rect x="685.0" y="206" width="220" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="795.0" y="225.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">来源（采集器各跑一轮）</text><text x="795.0" y="241.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">csw 贴文 · 小红书 · 网页 · 链接 · 可加</text><polyline points="685.0,228.0 590.0,228.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="637.5" y="220.0" text-anchor="middle" font-size="11" fill="currentColor">统一候选</text><rect x="350.0" y="272" width="240" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="470.0" y="291.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">2b 下载图片</text><text x="470.0" y="307.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">缩略 · 05 / 11 取原图 · 哈希</text><rect x="685.0" y="272" width="220" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="795.0" y="291.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">OSS</text><text x="795.0" y="307.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">缩略 w_768 · 原图按需</text><polyline points="685.0,294.0 590.0,294.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="637.5" y="286.0" text-anchor="middle" font-size="11" fill="currentColor">文件</text><rect x="350.0" y="338" width="240" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="470.0" y="357.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">2c 识别图片</text><text x="470.0" y="373.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">每张 × 该条正文 · 描述 + 用途判断</text><rect x="685.0" y="338" width="220" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="795.0" y="357.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">模型（视觉）</text><text x="795.0" y="373.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">对应正文哪点 · 画面 · 可否作配图</text><polyline points="685.0,360.0 590.0,360.0" fill="none" stroke="#4F46E5" stroke-width="1.4" marker-end="url(#arrA)"/><text x="637.5" y="352.0" text-anchor="middle" font-size="11" fill="#4F46E5">描述</text><rect x="350.0" y="420" width="240" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="470.0" y="439.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">3 合并与窗口</text><text x="470.0" y="455.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">候选 → 事件 · 窗口外标注不删</text><rect x="685.0" y="420" width="220" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2" stroke-dasharray="6 4"/><text x="795.0" y="439.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">Jev 窄判断</text><text x="795.0" y="455.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">是否同一事件 · 昨日已判</text><polyline points="685.0,442.0 590.0,442.0" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)"/><text x="637.5" y="434.0" text-anchor="middle" font-size="11" fill="currentColor">判定</text><rect x="350.0" y="486" width="240" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="470.0" y="505.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">4 对照材料</text><text x="470.0" y="521.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">知识库 · 已挑选记录 · 框架，缺一不判</text><rect x="85.0" y="486" width="170" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="170.0" y="505.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">知识库 · 决定 · 记忆</text><text x="170.0" y="521.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">正式已发布 · 03 决定 · 案例</text><rect x="685.0" y="486" width="220" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="795.0" y="505.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">csw 后台</text><text x="795.0" y="521.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">Van 的挑选记录</text><polyline points="255.0,508.0 350.0,508.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="302.5" y="500.0" text-anchor="middle" font-size="11" fill="currentColor">旧文 · 决定</text><polyline points="685.0,508.0 590.0,508.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="637.5" y="500.0" text-anchor="middle" font-size="11" fill="currentColor">已选贴文</text><rect x="350.0" y="552" width="240" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="470.0" y="571.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">5 逐条综合判断</text><text x="470.0" y="587.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">Jev 初评 → 生成模型 → Jev 核对</text><rect x="685.0" y="552" width="220" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="795.0" y="571.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">Jev + 判断模型</text><text x="795.0" y="587.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">六维概率 · 结论档 · 依据 · 三句话</text><polyline points="685.0,574.0 590.0,574.0" fill="none" stroke="#4F46E5" stroke-width="1.4" marker-end="url(#arrA)"/><text x="637.5" y="566.0" text-anchor="middle" font-size="11" fill="#4F46E5">判断结果</text><rect x="350.0" y="618" width="240" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="470.0" y="637.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">6 深核</text><text x="470.0" y="653.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">推荐 + 待核 · 可打断 · 线程落盘</text><rect x="685.0" y="618" width="220" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="795.0" y="637.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">Codex App Server</text><text x="795.0" y="653.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">只读工具 · 完整图 · 原始来源</text><polyline points="685.0,640.0 590.0,640.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="637.5" y="632.0" text-anchor="middle" font-size="11" fill="currentColor">条目卡</text><rect x="350.0" y="684" width="240" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="470.0" y="703.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">7 登记与交付</text><text x="470.0" y="719.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">有任务才写引擎 · 否则只出本地报告</text><rect x="85.0" y="684" width="170" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="170.0" y="703.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">引擎落库</text><text x="170.0" y="719.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">条目 · 采集轮 · 台账 · 交付物</text><polyline points="350.0,706.0 255.0,706.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="302.5" y="698.0" text-anchor="middle" font-size="11" fill="currentColor">PUT · submit</text><polyline points="470.0,166 470.0,206" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="470.0,250 470.0,272" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="470.0,316 470.0,338" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="470.0,382 470.0,420" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="470.0,464 470.0,486" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="470.0,530 470.0,552" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="470.0,596 470.0,618" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="470.0,662 470.0,684" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><rect x="85.0" y="750" width="170" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="170.0" y="769.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">8 首批校准闸</text><text x="170.0" y="785.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">待主编审 · 群播报</text><rect x="980.0" y="750" width="130" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1045.0" y="769.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">主编</text><text x="1045.0" y="785.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">看台账 · 通过 / 退回</text><polyline points="255.0,764.0 980.0,764.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="617.5" y="756.0" text-anchor="middle" font-size="11" fill="currentColor">待审</text><polyline points="980.0,780.0 255.0,780.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="617.5" y="796.0" text-anchor="middle" font-size="11" fill="currentColor">通过 / 退回（方向 + 位置）</text><rect x="350.0" y="816" width="240" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="470.0" y="835.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">9 返工或补件</text><text x="470.0" y="851.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">退回则返工 · 通过后其余候选以补件追加</text><rect x="85.0" y="816" width="170" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="170.0" y="835.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">补件挂在已通过任务</text><text x="170.0" y="851.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">下游按需返工</text><polyline points="1045.0,794 1045.0,838.0 590.0,838.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="350.0,838.0 255.0,838.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="302.5" y="830.0" text-anchor="middle" font-size="11" fill="currentColor">kind=补件</text><rect x="85.0" y="882" width="170" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="170.0" y="901.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">02 → 03 → Van 选题</text><text x="170.0" y="917.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">研究员评估 · 主编方案 · 03 闸</text><rect x="350.0" y="882" width="240" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="470.0" y="901.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">台账 · Van 模式</text><text x="470.0" y="917.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">研究员读台账 · Van 勾选 + 原话</text><rect x="980.0" y="882" width="130" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1045.0" y="901.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">Van · 主编</text><text x="1045.0" y="917.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">勾选 + 原话 · 主编代录</text><polyline points="980.0,904.0 590.0,904.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="785.0" y="896.0" text-anchor="middle" font-size="11" fill="currentColor">勾选</text><polyline points="350.0,904.0 255.0,904.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="302.5" y="896.0" text-anchor="middle" font-size="11" fill="currentColor">03 决定</text><polyline points="85.0,914.0 16,914.0 16,518.0 85.0,518.0" fill="none" stroke="#4F46E5" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arrA)"/><text x="30" y="710.0" font-size="11" fill="#4F46E5" transform="rotate(-90 30 710.0)" text-anchor="middle">决定 + 判断结论入记忆，下一期用</text><rect x="85.0" y="948" width="170" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="170.0" y="967.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">05 配图 · 11 选图包</text><text x="170.0" y="983.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">逐条派工 · 同起点</text><rect x="350.0" y="948" width="240" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="470.0" y="967.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">05 / 11 接单</text><text x="470.0" y="983.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">采集媒体信息（单条 · 原图）· 核素材 · 交付</text><rect x="685.0" y="948" width="220" height="44" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="795.0" y="967.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">agent.campsomewhere.com</text><text x="795.0" y="983.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">GET posts/{id}?include-media</text><polyline points="255.0,970.0 350.0,970.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="302.5" y="962.0" text-anchor="middle" font-size="11" fill="currentColor">派工单</text><polyline points="685.0,970.0 590.0,970.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="637.5" y="962.0" text-anchor="middle" font-size="11" fill="currentColor">单条 + 媒体</text></svg><figcaption>图 A · 完整流程。每一行是一步，列是谁在做。两种入口汇到同一条线：引擎派单，或人在工作台手动开启一轮。工作台这一列是主线：开工之后的每一步都在它上面可见；7 登记与交付、8 首批校准、9 补件和下游只在关联任务时发生，手动开启不关联任务的只出本地台账与报告。强调色框出与 9/20 设计稿不同之处：第 2 步只取图文，把取候选、下载、识别合成一个整体；第 5 步每条候选都判，判断的输入是正文、图片与第 4 步的三样对照材料（知识库、已挑选记录、Van 判断框架），缺一样不判。虚线只剩第 3 步的模型判定，是可选的。</figcaption></figure>
+
+<h3 id="4-1-十步">4.1 十步</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>步</th>
+<th>谁</th>
+<th>做什么</th>
+<th>产出</th>
+<th>失败时</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>0 入口</strong></td>
+<td>引擎 或 人</td>
+<td>贴文库 01:00 抓完（约半小时内入库）。任务驱动：引擎 05:30 触发 run（周一窗口到上周五），01 派给「情报收集员」角色，群播报由引擎单写。手动开启：主编、研究员或开发在工作台点「开始一轮」，选任务类型或采集方案、窗口、参数、是否关联已接单任务；发起人与参数写审计</td>
+<td>run · 任务 · 派工单；或本地开工记录</td>
+<td>引擎触发失败照旧走引擎告警；手动参数不合法当场拒绝</td>
+</tr>
+<tr>
+<td><strong>1 开工</strong></td>
+<td>采集服务</td>
+<td>任务驱动：30 秒轮询 my-tasks，发现 open 任务即 ack、心跳，从 <code>GET /tasks/:id</code> 读作业标准原样注入。手动：直接开工，作业标准取当前定义</td>
+<td>已接单 / 本地开工记录</td>
+<td>ack 失败重试；超时由引擎升级中枢</td>
+</tr>
+<tr>
+<td><strong>2 采集媒体信息</strong></td>
+<td>采集服务 → 来源 · OSS · 视觉模型 · 向量服务</td>
+<td>一步四段，每条候选连着做完才算采集完成：<strong>a</strong> 按 <code>stage_code</code> 跑采集方案，采集器直接调来源接口，只取图文，归一成统一候选格式（含点赞、评论、粉丝、csw 标签、话题），按（来源，id）去重；<strong>b</strong> 下载全部图片（w_768 缩略，05 / 11 取原图），按哈希存本地；<strong>c</strong> 每张图连同该条正文送视觉模型，出「对应正文哪一点、画面内容、正文提到但画面没有的、图片类型、可否作配图」；<strong>d</strong> 算图文融合向量与每张图的图片向量入 LanceDB 候选表</td>
+<td>完整候选 + 每个采集器一条采集轮（found / in_window 由代码算）</td>
+<td>必扫采集器重试三次仍失败：本步标失败、停在这里告警，<strong>不用旧接口兜底</strong>；非必扫失败记采集轮继续。单张下载或识别失败重试一次，仍失败标「未识别」，不算看过，不阻塞</td>
+</tr>
+<tr>
+<td><strong>3 合并与窗口</strong></td>
+<td>采集服务（代码为主，Jev 辅助）</td>
+<td>窗口按「首次入库时间在上次运行之后」判定，发布时间只作 3 天时效上限；上一轮已判的标「已判」。同账号、同文案开头先粗并；候选对由品牌、时间、向量相似预筛后由 Jev 判「同一事件」；跨账号按品牌产品实体加时间近邻合并</td>
+<td>events；事件 ↔ 候选映射</td>
+<td>模型判定失败按粗并结果继续，标「未经模型判定」</td>
+</tr>
+<tr>
+<td><strong>4 对照材料</strong></td>
+<td>采集服务 → LanceDB · 引擎 · csw 后台</td>
+<td>给每条候选备齐五类材料（第 6 节），缺一样不进第 5 步，标「对照材料缺」并告警。向量 + jieba 全文召回几十条，Qwen3-VL 重排到 8 条以内；候选与每条旧文的对照结论先由 Jev 三选一</td>
+<td>每条候选一份对照材料</td>
+<td>知识库或挑选记录读不到：本步标失败并告警，不跳过</td>
+</tr>
+<tr>
+<td><strong>5 逐条判断</strong></td>
+<td>Jev + 生成模型</td>
+<td>每条都判，三小步：<strong>a</strong> Jev 初评（六维三档概率、类型、「值得解释」概率）；<strong>b</strong> 生成模型综合判断（输入正文与译文、每张图的描述与实图缩略、五类对照材料、作业标准、Jev 概率；要么同意要么在依据里说明分歧）；<strong>c</strong> Jev 核对每条依据是否支持该维度成立。输出见第 7 节。每批若干候选、每批新会话、并行</td>
+<td>判断台账：每条候选一行</td>
+<td>某批失败只重跑该批；仍失败的标「未判」并计数，不算判过</td>
+</tr>
+<tr>
+<td><strong>6 深核</strong></td>
+<td>Codex App Server</td>
+<td>推荐档与待核档各起线程：核原始披露时间、找原始来源、核比较参照、看完整图；只挂只读白名单；线程事件流落盘。首批只做前 4–8 条、限 10 分钟，超时的按待核交，其余以补件追加</td>
+<td>条目卡：披露时间、证据链接、对照说明、事实、配图、缺口</td>
+<td>单线程超时或失败标「深核未完成」，条目仍可登记并写明缺口</td>
+</tr>
+<tr>
+<td><strong>7 登记与交付</strong></td>
+<td>采集服务 → 引擎</td>
+<td>只在关联任务时：<code>PUT items</code>（带 origin）、<code>PUT sweeps</code>、<code>PUT intake-judgements</code>（引擎待新增）；生成 <code>index.md</code> + <code>images/</code> + <code>trace/</code> 打 zip；提交前本地跑 <code>intake-check</code>；submit（产出 / 补件）。推荐与待核登记为条目；其余每条也进判断台账。手动未关联：不写引擎，只出本地报告，事后可关联到任务以补件提交</td>
+<td>引擎里的条目、采集轮、判断台账、交付物；或本地报告</td>
+<td>intake-check 不过则不提交并列出不过项；submit 失败重试，幂等键固定</td>
+</tr>
+<tr>
+<td><strong>8 首批校准</strong></td>
+<td>引擎闸 · 主编</td>
+<td>引擎群播报「待审」；主编在工作台看台账、图与描述、缺口，回引擎通过或退回（方向 + 位置）</td>
+<td>已交付 / 需返工</td>
+<td>超时由引擎照旧提醒</td>
+</tr>
+<tr>
+<td><strong>9 返工或补件</strong></td>
+<td>采集服务 → 引擎</td>
+<td>退回：按 <code>latest_review</code> 返工重交。通过：其余候选与补证以补件追加到已通过任务，<strong>每期合并一次</strong>；只让已开工的直接下游返工</td>
+<td>补件记录</td>
+<td>同 7</td>
+</tr>
+<tr>
+<td><strong>下游</strong></td>
+<td>引擎 · 研究员 · 主编 · Van</td>
+<td>02 读判断台账与 intake-trace 评估；03 主编合成方案；Van 在工作台 Van 模式勾选并留原话，主编代录 03 决定；决定连同当时的判断结论入选题记忆，下一期第 4、5 步读得到</td>
+<td>03 决定；记忆案例</td>
+<td>——</td>
+</tr>
+<tr>
+<td><strong>05 / 11</strong></td>
+<td>引擎 → 同一采集服务</td>
+<td>05 配图与素材核（<code>material</code>，逐条自动派工）与 11 小红书选图包（<code>xhs_pick</code>，逐条手动派工）同样接单，走「条目取单条」：取该贴文、下原图、识别与用途判断，再核素材与版权、逐条交付（0 闸）；不走合并、对照、判断、深核</td>
+<td>逐条交付物</td>
+<td>同 1、2</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="4-2-两种开工方式">4.2 两种开工方式</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>项目</th>
+<th>任务驱动</th>
+<th>手动开启</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>谁发起</td>
+<td>引擎定时触发，或主编在管理后台触发</td>
+<td>主编、研究员、开发在工作台点「开始一轮」</td>
+</tr>
+<tr>
+<td>参数来自</td>
+<td>任务：<code>stage_code</code>、run 的窗口、作业标准与自检</td>
+<td>人选：任务类型或采集方案、窗口、采集器参数、是否关联某个已接单的任务</td>
+</tr>
+<tr>
+<td>走哪几步</td>
+<td>1 到 9 全走</td>
+<td>2 到 6 全走；7 到 9 只在关联任务时走</td>
+</tr>
+<tr>
+<td>写不写引擎</td>
+<td>写：条目、采集轮、判断台账、交付物</td>
+<td>不关联：不写。关联：与任务驱动相同，以补件或产出提交</td>
+</tr>
+<tr>
+<td>群播报</td>
+<td>引擎单写</td>
+<td>无；关联并提交后由引擎照旧播报</td>
+</tr>
+<tr>
+<td>典型用途</td>
+<td>每天 05:30 那一期；05 / 11 逐条任务</td>
+<td>并行验证期只出报告；回放历史窗口调准则与锚点；试新采集器或新来源；白天临时补采 Van 给的链接；某一步失败后只重跑那一步</td>
+</tr>
+<tr>
+<td>审计</td>
+<td>引擎的任务事件</td>
+<td>发起人、参数、时间写审计；本地台账标「手动」，与任务驱动的轮次分开列</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="4-3-早上的时间表">4.3 早上的时间表</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>时刻</th>
+<th>发生什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>01:00</td>
+<td><code>instagram-data</code> 触发 Bright Data 抓取，约 01:30 前入库（一次 170–230 条）</td>
+</tr>
+<tr>
+<td>05:30</td>
+<td>引擎触发 run，01 派给收集员角色；采集服务 30 秒内接单</td>
+</tr>
+<tr>
+<td>05:30 起</td>
+<td>采集媒体信息：取数约 2 秒；识别新图约 5–7 分钟（10 路并行、每张约 4 秒粗估）；向量化约 9 分钟（GPU 串行，放识别之后）</td>
+</tr>
+<tr>
+<td>约 05:45</td>
+<td>合并、对照材料、逐条判断（Jev 初评全量约 30 秒；生成模型分批并行）</td>
+</tr>
+<tr>
+<td>约 05:50</td>
+<td>首批深核（4–8 条、10 分钟时间盒）→ 登记与交付 → 引擎播报待审</td>
+</tr>
+<tr>
+<td>07:00 前</td>
+<td>主编首批校准；其余候选以补件追加</td>
+</tr>
+<tr>
+<td>07:15</td>
+<td>03 选题方案送 Van（生产约定草案）</td>
+</tr>
+</tbody>
+</table></div>
+<p>01 阶段的定义值：时限 40 分钟、接单 5 分钟、无活动 10 分钟。首批 20 分钟、全量 45 分钟是测试目标，M0 实测后修正。</p>
+<h2 id="5-采集媒体信息">5. 采集媒体信息</h2>
+<figure class="diagram"><svg viewBox="0 0 1040 384" role="img" aria-label="采集媒体信息：任务类型选采集方案，采集器各跑一轮，只取图文，结果归一后逐条下载图片、逐张识别，带描述入暂存库并记采集轮；方案可在工作台改，也可挂自定义采集器" style="max-width:100%;height:auto;font-family:inherit"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker><marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4F46E5"/></marker></defs><rect x="20" y="40" width="180" height="48" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="110.0" y="61.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">任务类型</text><text x="110.0" y="77.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">intake · material · xhs_pick …</text><rect x="260" y="40" width="180" height="48" rx="6" fill="var(--surface,#fff)" stroke="#4F46E5" stroke-width="2"/><text x="350.0" y="61.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">采集方案</text><text x="350.0" y="77.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">有序采集器清单 · 版本</text><rect x="20" y="190" width="180" height="48" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="110.0" y="211.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">工作台 · 设置页</text><text x="110.0" y="227.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">增删 · 排序 · 参数 · 回放</text><rect x="260" y="190" width="180" height="48" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="350.0" y="211.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">来源台账</text><text x="350.0" y="227.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">必扫 / 启停 / 实例参数</text><rect x="520" y="20" width="270" height="322" rx="6" fill="none" stroke="currentColor" stroke-opacity=".35" stroke-dasharray="6 4"/><text x="655" y="40" text-anchor="middle" font-size="12" font-weight="700" fill="currentColor" opacity=".7">采集器（每个各跑一轮，记采集轮）</text><rect x="540" y="52" width="230" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="655.0" y="69.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">csw 贴文窗口</text><text x="655.0" y="85.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">posts/window · 只图文</text><rect x="540" y="98" width="230" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="655.0" y="115.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">csw 单条</text><text x="655.0" y="131.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">GET posts/{id}</text><rect x="540" y="144" width="230" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="655.0" y="161.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">小红书</text><text x="655.0" y="177.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">opencli 受控调用</text><rect x="540" y="190" width="230" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="655.0" y="207.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">网页 / RSS</text><text x="655.0" y="223.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">域名白名单抓取</text><rect x="540" y="236" width="230" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="655.0" y="253.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">Van 链接</text><text x="655.0" y="269.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">解析后交对应采集器</text><rect x="540" y="282" width="230" height="40" rx="6" fill="var(--surface,#fff)" stroke="#4F46E5" stroke-width="2" stroke-dasharray="6 4"/><text x="655.0" y="299.0" text-anchor="middle" font-size="12" font-weight="600" fill="currentColor">自定义采集器</text><text x="655.0" y="315.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">外部命令 / HTTP 端点 / MCP 工具</text><rect x="850" y="40" width="170" height="52" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="935.0" y="63.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">统一候选格式</text><text x="935.0" y="79.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">来源 · id · 正文 · 时间 · 媒体</text><rect x="850" y="130" width="170" height="52" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="935.0" y="153.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">下载图片</text><text x="935.0" y="169.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">缩略 / 原图 · 哈希 · 失败标记</text><rect x="850" y="220" width="170" height="52" rx="6" fill="var(--surface,#fff)" stroke="#4F46E5" stroke-width="2"/><text x="935.0" y="243.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">识别图片</text><text x="935.0" y="259.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">每张 × 正文 · 描述 + 用途</text><rect x="850" y="310" width="170" height="52" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="935.0" y="333.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">暂存库 + 采集轮</text><text x="935.0" y="349.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">去重 · discovered_via · 计数</text><polyline points="200,64 260,64" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="230" y="56" text-anchor="middle" font-size="11" fill="currentColor">选方案</text><polyline points="440,64 520,64" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="480" y="56" text-anchor="middle" font-size="11" fill="currentColor">按序跑</text><polyline points="790,180 820,180 820,66 850,66" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="826" y="150" text-anchor="start" font-size="11" fill="currentColor">各自返回</text><polyline points="935,92 935,130" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="943" y="115" text-anchor="start" font-size="11" fill="currentColor">每条候选</text><polyline points="935,182 935,220" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="943" y="205" text-anchor="start" font-size="11" fill="currentColor">每张图</text><polyline points="935,272 935,310" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="943" y="295" text-anchor="start" font-size="11" fill="currentColor">带描述入库</text><polyline points="200,214 260,214" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="230" y="206" text-anchor="middle" font-size="11" fill="currentColor">改方案</text><polyline points="350,190 350,88" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="358" y="144" text-anchor="start" font-size="11" fill="currentColor">实例参数</text></svg><figcaption>图 B · 采集媒体信息。任务类型决定跑哪套采集方案；方案是一份有序的采集器清单，每个采集器各跑一轮、各记一条采集轮；结果归一成同一种候选格式后，不分来源地逐条下载图片、逐张识别，带着描述进暂存库；含视频的贴文在采集器里就过滤掉。取 csw-agent 贴文只是清单里的一项，加来源是改清单，加取法是加一个采集器；改方案在工作台设置页操作，每次改动写审计并存版本。</figcaption></figure>
+
+<h3 id="5-1-三个概念">5.1 三个概念</h3>
+<ul>
+<li><strong>采集器</strong>：一种取法（怎么访问一个来源、怎么翻页、返回什么）。</li>
+<li><strong>来源</strong>：采集器的一个实例，参数在来源台账里（账号、地址、必扫、启停）。</li>
+<li><strong>采集方案</strong>：按任务类型编的一份有序采集器清单，写明跑哪些采集器、各带什么参数、哪些必扫；有版本，改动写审计。</li>
+</ul>
+<p>跑完把结果归一成同一种候选格式再合并，然后不分来源地对每条候选下载、识别、向量化，所以后面的步骤不关心候选从哪来，加新采集器也不用管下载与识别。</p>
+<h3 id="5-2-任务类型决定采集方案">5.2 任务类型决定采集方案</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>任务类型</th>
+<th>采集方案（默认）</th>
+<th>取什么</th>
+<th>后续走哪几步</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>01 情报逐条（<code>intake</code>）</td>
+<td>「日更采集」：csw 贴文窗口（只图文）+ Van 链接；来源台账里启用的小红书、网页采集器</td>
+<td>窗口内全部图文贴文与媒体，缺省前一天到当天，周一到上周五；她给的链接按 id 取单条</td>
+<td>3 → 4 → 5 → 6 → 7 → 8</td>
+</tr>
+<tr>
+<td>05 配图与素材核（<code>material</code>，逐条）</td>
+<td>「条目取单条」：csw 单条</td>
+<td>已批条目的来源贴文与全部媒体（原图）</td>
+<td>识别 → 核素材与版权 → 逐条交付（0 闸）</td>
+</tr>
+<tr>
+<td>11 小红书选图包（<code>xhs_pick</code>，逐条、手动派工）</td>
+<td>「条目取单条」</td>
+<td>同上</td>
+<td>按资讯分组原图 → 交付（0 闸）</td>
+</tr>
+<tr>
+<td>补件 / 重开</td>
+<td>「条目取单条」</td>
+<td>已登记条目的来源贴文</td>
+<td>只补缺的图或事实，挂到已通过任务</td>
+</tr>
+<tr>
+<td>以后的新任务类型</td>
+<td>新建一套方案</td>
+<td>由方案决定</td>
+<td>由方案决定</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="5-3-只取图文-量有多大">5.3 只取图文：量有多大</h3>
+<p>近一周贴文库实际量（在册账号，按入库日，UTC）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>入库日</th>
+<th>贴文</th>
+<th>只有图片的贴文</th>
+<th>其中图片张数</th>
+<th>含视频的贴文</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>09-14</td>
+<td>135</td>
+<td>100</td>
+<td>541</td>
+<td>35</td>
+</tr>
+<tr>
+<td>09-15</td>
+<td>169</td>
+<td>136</td>
+<td>715</td>
+<td>33</td>
+</tr>
+<tr>
+<td>09-16</td>
+<td>162</td>
+<td>124</td>
+<td>647</td>
+<td>38</td>
+</tr>
+<tr>
+<td>09-17</td>
+<td>217</td>
+<td>177</td>
+<td>915</td>
+<td>40</td>
+</tr>
+<tr>
+<td>09-18</td>
+<td>223</td>
+<td>182</td>
+<td>1,011</td>
+<td>41</td>
+</tr>
+<tr>
+<td>09-19</td>
+<td>160</td>
+<td>123</td>
+<td>716</td>
+<td>37</td>
+</tr>
+<tr>
+<td>09-20（周日）</td>
+<td>103</td>
+<td>82</td>
+<td>392</td>
+<td>21</td>
+</tr>
+<tr>
+<td>一次窗口（发布于 09-18 至 09-19）</td>
+<td>383</td>
+<td>305</td>
+<td>1,727</td>
+<td>78</td>
+</tr>
+</tbody>
+</table></div>
+<p>只有图片的贴文占八成，平均每条约 5.5 张图（单图占四分之一，十张以上占一成半）。两天窗口有一天重叠，扣掉上一轮已判的，每天新判工作日约 120–180 条、650–1,000 张图，周末减半。媒体类型只有 Photo / Video，content_type 为 Carousel / Image / Reel。</p>
+<h3 id="5-4-内置采集器">5.4 内置采集器</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>采集器</th>
+<th>来源</th>
+<th>取法</th>
+<th>参数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>csw 贴文窗口</td>
+<td>agent.campsomewhere.com</td>
+<td><code>GET /api/v1/posts/window</code>（<code>start</code> / <code>end</code> / <code>include_hidden</code> / <code>include_media</code> / <code>limit</code> ≤ 2000 / <code>offset</code>，按 <code>has_more</code> 续取；返回 <code>ingestedAt</code>、点赞、评论、粉丝；标签与话题的补丁待部署）</td>
+<td>窗口、是否含隐藏、limit</td>
+</tr>
+<tr>
+<td>csw 单条</td>
+<td>agent.campsomewhere.com</td>
+<td><code>GET /api/v1/posts/{id}?include-media=true</code></td>
+<td>贴文 id 清单（从条目 <code>source_url</code> 解析）</td>
+</tr>
+<tr>
+<td>小红书</td>
+<td>opencli，已登录 Chrome</td>
+<td>按账号或关键词受控调用，随机间隔</td>
+<td>账号 / 关键词、条数上限</td>
+</tr>
+<tr>
+<td>网页 / RSS</td>
+<td>品牌官网、媒体页</td>
+<td>域名白名单抓取，体积上限</td>
+<td>入口地址、解析规则</td>
+</tr>
+<tr>
+<td>Van 链接</td>
+<td>工作台粘贴与分享的链接</td>
+<td>解析平台与 id 后交给对应采集器；<code>origin=van_link</code>，单独统计</td>
+<td>——</td>
+</tr>
+</tbody>
+</table></div>
+<p>请求带重试与较长超时：csw-agent 空闲后的首个请求实测可能 40 秒无响应，之后 0.6 秒。</p>
+<h3 id="5-5-下载与识别">5.5 下载与识别</h3>
+<p>每条候选的全部图片下到本地：w_768 缩略，05 / 11 取原图；按哈希存、去重。每张图连同该条正文送视觉模型，结构化输出：对应正文哪一点、画面里的产品 / 场景 / 文字、正文提到但画面没有的、图片类型（产品图 / 细节图 / 使用场景 / 海报或文字图 / 人物穿搭 / 截图 / 无关）、可否作配图。描述存 <code>media_descriptions</code>（候选 id、图片哈希、描述、模型与提示词版本），候选卡上每张图下一行描述。一条候选只有图片全部处理完（成功或标「未识别」）才算采集完成。app-server 不接受远程图片地址，所以深核也用本地图片。</p>
+<h3 id="5-6-向量化">5.6 向量化</h3>
+<p>每条候选一条图文融合向量（正文 + 代表图）、每张图一条图片向量，识别完即算、存 LanceDB 候选表。四个用处：第 4 步用它当查询检索参考库；第 3 步跨账号合并同一件事（零售商转发同一张产品图）；次日判「昨日已判」；Van 一旦在这条上做了决定，它就地变成 03 决定类参考。工作日约 1,200 个向量、9 分钟，GPU 串行、放识别之后。历史贴文池不回填：跨期转载由深核用 csw 后台自己的搜索查近 30 天；实测漏判多再按需加。</p>
+<h3 id="5-7-自定义三层-都不改主流程">5.7 自定义三层（都不改主流程）</h3>
+<ol>
+<li><strong>改方案</strong>：在工作台「运行与设置」里增删采集器、调顺序、改参数、标必扫或停用；每次改动存版本、记谁改的、从哪一期生效；可用历史窗口回放验证。覆盖「加一个账号」「多扫一个网站」「某来源暂停」。<strong>第一期建议只做这一层。</strong></li>
+<li><strong>加适配器</strong>：写一个外部命令或 HTTP 端点，遵守同一份输入输出契约（输入：任务、窗口、参数；输出：统一候选格式清单、计数、错误），在方案里以「自定义采集器」登记路径或地址。沿用引擎数据子系统的外部命令方式。</li>
+<li><strong>挂 MCP 工具</strong>：指定 MCP 服务器与工具名，加一段字段映射，采集服务以 MCP 客户端身份直接调工具、不经模型。</li>
+</ol>
+<h3 id="5-8-统一候选格式与叠加规则">5.8 统一候选格式与叠加规则</h3>
+<p>每个采集器都得给到：来源平台、来源键、外部 id、链接、账号、账号粉丝数、正文原文与语言、发布时间、抓取时间、点赞数、评论数、csw 标签、话题、媒体清单（类型、地址、哈希）、原始返回。缺发布时间或媒体的照收，但标出来。</p>
+<p>多个采集器同时跑，结果按（来源平台，外部 id）去重；同一候选被几个采集器找到就记几条 <code>discovered_via</code>；来源之间不加权、不设配额。必扫采集器失败让本步标失败并告警，非必扫的只记采集轮继续。</p>
+<h2 id="6-对照材料与知识库">6. 对照材料与知识库</h2>
+<h3 id="6-1-五类参考-入库打类型-检索按类型分组给模型">6.1 五类参考，入库打类型，检索按类型分组给模型</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>类型</th>
+<th>来源与数量</th>
+<th>它证明什么</th>
+<th>判断时怎么用</th>
+<th>强弱与时效</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>正式已发布条目</td>
+<td>引擎刊发记录（公众号同步，每天两次）；估 300–350 篇、拆条约 1,500、图约 8,000</td>
+<td>CSW 报过什么、从什么角度报</td>
+<td>查重对象：同一事实无新增 / 同品牌有新增；也给「角度」参照</td>
+<td>事实，不衰减</td>
+</tr>
+<tr>
+<td>范例</td>
+<td>Van 认可的十篇，41 条、225 图（已建成，<code>docs/知识库/范例/</code>）</td>
+<td>她认可的报道方式：选题对象、切口、读者价值、比较参照、表达</td>
+<td>六维度的锚点与表达参照；「像范例里的哪一条」</td>
+<td>最强的正面标杆，篇数少，只给上限</td>
+</tr>
+<tr>
+<td>生成过文章的贴文</td>
+<td>csw 后台 <code>GET /api/v1/posts/generated</code>；1,911 条、9,373 图，2025-07 至 2026-07-27（之后的文章由引擎生产，决定在引擎）</td>
+<td>她选过并成了文章，附成文标题与日期</td>
+<td>「她以前选过类似的，成了文章 X」；同一 post_id 再出现直接判已报</td>
+<td>强，按时间衰减</td>
+</tr>
+<tr>
+<td>03 决定</td>
+<td>引擎历次 Van 决定：采用 / 否决 / 暂缓 + 原话；2026-09 起每天新增</td>
+<td>她最近的明确态度，唯一含否决的一类</td>
+<td>否决的同一事实同角度硬性排除（可捞回）；采用与否决各给最近的相似案例</td>
+<td>最强、最新，带原话</td>
+</tr>
+<tr>
+<td>上一轮判断台账</td>
+<td>系统自己的判断，未经人确认</td>
+<td>昨天判过什么</td>
+<td>只用来标「昨日已判」，避免重复提报；不作口味证据</td>
+<td>不算证据</td>
+</tr>
+</tbody>
+</table></div>
+<p>「已挑选记录」= 中间三类。csw 后台的「勾选」记录（<code>instagram_user_post_selection</code>，2,044 条）不进评选：勾选只说明看过一眼。同一贴文在多类里出现的按 post_id 合并成一条，保留全部标记。范例与成文都是正面例子，反面只有 03 决定里的否决，所以判断阈值以 03 决定为准，范例与成文只定方向。</p>
+<p>发布状态三分（Van 二·4）：<code>ledger_published_posts</code> 补 <code>publish_evidence</code>（freepublish / masssend_stats / public_page）与 <code>is_reference</code>；<code>state='published'</code> 且有发布依据才是「正式已发布」，只有它参与查重；csw 后台 <code>articles</code>（系统生成的稿）一律 <code>draft</code>，只作「已有成果」提示。</p>
+<h3 id="6-2-检索-lancedb-qwen3-vl">6.2 检索：LanceDB + Qwen3-VL</h3>
+<p>真相在引擎（<code>ledger_*</code>、<code>run_items</code>、<code>selection_*</code>），采集服务把它们连同 csw 后台的「生成过文章的贴文」和十篇范例同步成 LanceDB 索引表：每个条目一条文本向量、每张图一条图片向量、每条一条图文融合向量，由 <code>Qwen3-VL-Embedding-2B</code>（2048 维，已归一化）生成；全文用 LanceDB 内置的 jieba 分词做品牌、产品、别名命中；查询侧加 instruction、入库侧不加。</p>
+<p>召回流程：候选的正文 + 代表图做图文融合向量 → 向量召回与全文命中合并到几十条 → <code>Qwen3-VL-Reranker-2B</code> 精排到 8 条以内 → 按五类分组作第 4 步对照材料。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>项</th>
+<th>数量</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>判断参考库</td>
+<td>约 4,000 条文本、18,000 张图</td>
+</tr>
+<tr>
+<td>向量</td>
+<td>约 22,000 个、175 MB；一次性向量化约 2 小时（图片串行）</td>
+</tr>
+<tr>
+<td>每天增量</td>
+<td>约 1,200 个向量、9 分钟</td>
+</tr>
+<tr>
+<td>若加近 90 天 Instagram 图做以图查重</td>
+<td>再加约 63,000 张、600 MB（暂不做）</td>
+</tr>
+</tbody>
+</table></div>
+<p>向量服务限制：单 GPU 串行、网关 60 秒超时、每次 ≤32 段文本或 ≤8 张图；图片约 0.42 秒/张，重排 0.12 秒/段文本、0.43 秒/张图；图片用 base64。不选 pgvector（2048 维超过 <code>vector</code> 索引上限 2000，且要把表放进 csw 的库）。</p>
+<h3 id="6-3-刊发记录持续同步-现在缺">6.3 刊发记录持续同步（现在缺）</h3>
+<p>引擎主机新增 <code>csw-ledger-sync.timer</code>，每天两次（每日触发之前一次、晚间一次），执行 <code>syncer sync --platform wechat --days 3</code>，幂等。「发布」类走官方接口，「群发」类按 <code>content_url</code> 抓公开页；解析器分两种页面结构（普通图文取 <code>js_content</code>，贴图文取 <code>content_noencode</code> 与图片列表），十篇范例已验证无拦截。每次写 <code>ledger_sync_runs</code>，连续两次失败通知主编；对照材料里写明「知识库同步到哪一天」。早期文章回填到接口能给的最早日期，取不到的由开发出缺口清单，不让 Van 逐篇找链接。</p>
+<h3 id="6-4-选题记忆">6.4 选题记忆</h3>
+<p>回收范围：2026-06 起 Van 本人在编辑部群与所有智能体私聊里的要求、判断、修改意见和选题决定，保留提案与回应上下文。底料在 agent 主机九个 profile 的会话库（主编私聊 62、群聊 247；文案私聊 91，语言表达类反馈主要在这里）；两处缺口须如实写进覆盖清单：各库只存了路由给该智能体的群消息，完整群记录要经飞书接口另取（权限待拍板）；<code>open_id</code> 按应用隔离，须先做身份映射。</p>
+<p>提炼分两条线：<code>track=topic</code>（选题偏好，供收集员、研究员、主编）与 <code>track=writing</code>（写作表达，交主编与文案，不进收集员判断）。三种身份：<code>case</code>（具体案例）/ <code>inferred</code>（模型推断）/ <code>confirmed</code>（本人确认的长期规则），每条带原话、对象、适用条件；准则卡交 Van 校准（15–20 分钟）；她在 03 闸上的每次决定自动追加为案例。9/16 那段原话全部按 <code>case</code> 保存；「不是新品的不报」已删除。发言分类可用 Jev（第 8 节第 5 条），原话原样保留、不生成。</p>
+<h2 id="7-判断框架与逐条判断">7. 判断框架与逐条判断</h2>
+<h3 id="7-1-van-的框架-9-19-确认版">7.1 Van 的框架（9/19 确认版）</h3>
+<p>核心判断：<strong>这件事有没有足够具体的变化，值得 CSW 帮读者解释一次。</strong>不能满足于汇总「户外圈发生了什么」；非新品也可因有依据的设计、文化、历史或当下关联形成报道价值。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>键</th>
+<th>写稿前应识别的内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>变化必须具体</td>
+<td><code>change</code></td>
+<td>结构或使用方式改了什么、品牌首次做了什么、原产品为什么改、某种户外行为有什么新做法；「某品牌发布新品」通常不够</td>
+</tr>
+<tr>
+<td>与真实使用有关</td>
+<td><code>use</code></td>
+<td>人怎么穿、搭、住、跑、移动，怎样在城市与户外之间切换；产品为什么这样设计。纯配色、普通 logo 联名、没有新信息的复刻通常优先级低</td>
+</tr>
+<tr>
+<td>有 CSW 读者能理解的价值</td>
+<td><code>gain</code></td>
+<td>新的使用思路、值得了解的设计逻辑、文化背景、户外生活变化的解释，或帮助理解某类产品</td>
+</tr>
+<tr>
+<td>最好有比较参照</td>
+<td><code>compare</code></td>
+<td>与上一代、品牌以往做法或同类产品有什么不同、为什么现在出现；参照要准确，不虚构旧款问题</td>
+</tr>
+<tr>
+<td>能产生有事实支持的编辑判断</td>
+<td><code>explain</code></td>
+<td>能解释某个设计影响什么使用动作、改款对应什么需求；只有「好看」「有趣」通常还不成熟</td>
+</tr>
+<tr>
+<td>CSW 视角（调性适配）</td>
+<td><code>csw</code></td>
+<td>是否符合 CSW 的报道角度与读者</td>
+</tr>
+</tbody>
+</table></div>
+<p>「具体变化 × 使用关联 × 信息增量 × 可解释性 × CSW 视角」只用于比较、排序、解释，不做机械乘法，没有一票否决。<strong>品牌知名度不是首要标准</strong>，不作维度。七类优先关注（老产品结构性改款；装备解决具体使用问题；品牌新的空间、社群或服务方式；装备进入新生活场景且有超出造型挪用的信息；小众品类值得解释的新设计；有真实争议或取舍的产品；能从产品解释有证据的消费或生活方式变化）与七类降低优先级（只有新配色或普通 logo 联名；换材质说不出差异；宣称创新无可核实变化；纯明星带货；缺可靠来源先补证；只能说好看；必须强行拔高成趋势）是倾向，不是黑名单。成稿前三句话：<strong>发生了什么变化？为什么值得户外用户知道？它和以前有什么不一样？</strong>答不清先不写，查明是缺资料、角度未成立还是价值不足。</p>
+<p>她纠正过的五处，全部已落进本方案：初筛要看代表性实图；「不是新品的不报」不是她的意思；30 天查重针对同一事实或角度；知识库区分发布状态；证据或图片不足先待核、补齐后重评。</p>
+<h3 id="7-2-每条都判-三小步">7.2 每条都判，三小步</h3>
+<p><strong>a Jev 初评</strong>：对全部候选，六个维度各给三档概率（不成立 / 不明 / 成立）、类型、「值得解释」概率；输入正文、译文、每张图的描述、标签、相对热度。一天约 300 条、30 秒、3 美分。</p>
+<p><strong>b 生成模型综合判断</strong>：输入正文与译文、每张图的描述与实图缩略、五类对照材料（每条带类型、日期、出处、原话）、任务下发的作业标准、Jev 的六维概率；模型要么同意，要么在依据里说明分歧。每批若干候选、每批新会话、并行。</p>
+<p><strong>c Jev 核对</strong>：对每条依据问「这句话是否支持该维度成立」，抓编造的依据；不一致的标出来给人看。</p>
+<h3 id="7-3-输入">7.3 输入</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>输入</th>
+<th>从哪来</th>
+<th>给模型什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>贴文本身</td>
+<td>第 2 步</td>
+<td>正文与译文、每张图的描述与用途、实图缩略、账号与发布时间；点赞与评论及相对该账号近 90 天中位点赞的倍数、粉丝数；csw 标签（91 个，近一周覆盖 97%）与话题（覆盖 82%）</td>
+</tr>
+<tr>
+<td>五类对照材料</td>
+<td>第 4 步</td>
+<td>按类型分组：旧文命中（标题、日期、角度、发布状态）、范例命中、相似的成文贴文、03 决定里的相似案例与原话、上一轮台账</td>
+</tr>
+<tr>
+<td>Van 判断框架</td>
+<td>选题记忆（准则卡 + 案例库）</td>
+<td>核心问题、六维与锚点、三句话、优先 / 降低七类、相关案例原话</td>
+</tr>
+<tr>
+<td>作业标准</td>
+<td>任务下发（<code>GET /tasks/:id</code>）</td>
+<td>当期 01 的作业内容、自检、验收，原样注入</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="7-4-输出-json-schema-约束-每条候选一条">7.4 输出（JSON Schema 约束，每条候选一条）</h3>
+<pre><code class="language-json">{
+  &quot;candidate_key&quot;: &quot;...&quot;,
+  &quot;tier&quot;: &quot;recommend | alternate | not_recommend | pending_check&quot;,
+  &quot;dims&quot;: {&quot;change&quot;: {&quot;verdict&quot;: &quot;yes|no|unclear&quot;, &quot;basis&quot;: &quot;依据，引正文或某张图&quot;},
+           &quot;use&quot;: {}, &quot;gain&quot;: {}, &quot;compare&quot;: {}, &quot;explain&quot;: {}, &quot;csw&quot;: {}},
+  &quot;three_sentences&quot;: {&quot;what_changed&quot;: &quot;...&quot;, &quot;why_it_matters&quot;: &quot;...&quot;, &quot;how_different&quot;: &quot;...&quot;},
+  &quot;unanswered&quot;: &quot;none | missing_material | angle_not_formed | low_value&quot;,
+  &quot;comparison&quot;: {&quot;verdict&quot;: &quot;same_fact_no_gain | same_brand_with_gain | unrelated&quot;, &quot;against&quot;: &quot;对照对象&quot;, &quot;note&quot;: &quot;...&quot;},
+  &quot;heat_note&quot;: &quot;369 赞 · 常态 71 的 5.2×；标签：新品、事件、装备&quot;,
+  &quot;look&quot;: &quot;实图里看到的外观与设计要点&quot;,
+  &quot;image_seen&quot;: true,
+  &quot;gaps&quot;: [&quot;缺发售日期&quot;, &quot;只有一张图&quot;],
+  &quot;priority_hits&quot;: [&quot;老产品结构性改款&quot;],
+  &quot;lower_hits&quot;: [&quot;只有新配色&quot;],
+  &quot;jev_disagreement&quot;: &quot;Jev 判 use 不成立 0.9，本判成立，因为图 3 有穿着场景&quot;,
+  &quot;kb_refs&quot;: [], &quot;memory_refs&quot;: []
+}
+</code></pre>
+<ul>
+<li><code>image_seen=false</code> 的候选标 <code>pending_check</code> 并写明「未读到实图」，不算看过，不因此淘汰。</li>
+<li>三句话答不清的，<code>unanswered</code> 写明是缺资料、角度未成立还是价值不足。</li>
+<li>Van 的每次决定连同当时的判断结论一起存档，成为 03 决定类参考。</li>
+</ul>
+<h3 id="7-5-排序与-不打分">7.5 排序与「不打分」</h3>
+<p>排序由代码算：先按档，再按成立的维度数，再按相对账号基线的热度，最后按发布时间；只用于台账顺序。不打数字分、不设权重、没有综合分，理由：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>打分本来想解决什么</th>
+<th>现在怎么解决</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>几百条候选要有个顺序</td>
+<td>每条都判，四档就是顺序；档内按成立维度数排</td>
+</tr>
+<tr>
+<td>判断要可核</td>
+<td>逐维「成立 / 不成立 / 不明」加一句依据，比一个 0.73 更好核；依据指向正文或某张图</td>
+</tr>
+<tr>
+<td>准则要能调、能回测</td>
+<td>调的是维度定义、锚点和案例；回测看她的采用 / 否决落在哪一档</td>
+</tr>
+<tr>
+<td>不因口味淘汰</td>
+<td>不推荐档照样保留、可捞回</td>
+</tr>
+</tbody>
+</table></div>
+<p>加权求和恰恰是她说的机械乘法；模型给的分本身不稳定，权重一改全表重排，是假精度；综合分让人只看头部，与「每条都判」相反。以后真要精细排序，再从逐维结论按代码派生可解释的分。</p>
+<h3 id="7-6-热度与标签">7.6 热度与标签</h3>
+<p>点赞、评论、标签、话题是输入信号，模型要在依据里引用，代码用相对热度做档内排序。近一周点赞中位 76、平均 172、p90 433、最高 6,416，评论中位 0；账号之间近 90 天中位点赞从 0 到 3,113（p50 约 72），所以热度按账号自身基线归一，小账号的好东西点赞天然少、不用它否决。csw 标签里的营业时间、选品、举办日、报名日给降低提示，新品、事件、装备给优先提示，只是提示。</p>
+<h3 id="7-7-锚点与回测">7.7 锚点与回测</h3>
+<p>每一档的锚点引用范例条目（<code>docs/知识库/范例/*/范例拆解.md</code>）与被否案例。范例上六维几乎全「成立」（41 条里只 1 条 <code>use</code> 不明），只能给上限；阈值以 03 决定里的否决为准。界面设计稿用 13 个真实事件回测：两条被 Van 否的联名落在推荐 / 备选，说明「联名」锚点要收紧。M3 做重复判断的一致性检验。</p>
+<h2 id="8-jev-窄判断-初评-核对与七处替代脆弱解析">8. Jev 窄判断：初评、核对与七处替代脆弱解析</h2>
+<p>Jev（TypeSafe System One，<code>jev-1.13.0</code>）返回带概率的类型化答案（三档 Score、Choice、Noul），快、便宜、稳定，但只读文字、不写字、不看对照材料。两次实测：9/20 用 477 条（148 秒、0.028 美元）时 Van 亲选排第 258、否决的排第 13 与 19；9/21 用 13 个真实事件按六维三档打（12.9 秒、3.2 万 token、0.0013 美元）：补货一条稳稳判低，类型分类全部合理，「使用关联」「调性适配」区分度高，但 Van 采用的 gnuhr「值得」只有 0.48，她否决的两条联名反而 0.60 与 0.75。<strong>结论：做初评、核对与窄判断，不做结论档。</strong></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>用法</th>
+<th>问什么</th>
+<th>放在哪一步</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>六维度初评</td>
+<td>六个三档 Score + 类型 Choice + 「值得解释」Noul</td>
+<td>第 5 步 a，全部候选；概率进生成模型输入，也是回测与校准的连续量</td>
+</tr>
+<tr>
+<td>依据核对</td>
+<td>「这句依据是否支持该维度成立」（Noul）</td>
+<td>第 5 步 c</td>
+</tr>
+<tr>
+<td>同一事件</td>
+<td>两条候选是否同一件事（Noul），候选对预筛后逐对问</td>
+<td>第 3 步</td>
+</tr>
+<tr>
+<td>对照结论</td>
+<td>同一事实无新增 / 同品牌有新增 / 不相干（Choice）</td>
+<td>第 4 步，生成模型只解释</td>
+</tr>
+<tr>
+<td>昨日已判、03 否决同事实同角度</td>
+<td>Noul</td>
+<td>第 3、4 步</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>七处替代脆弱解析</strong>（代码先找候选，Jev 从候选里选，选出的值原样复制，不生成）：</p>
+<ol>
+<li><strong>公众号文章拆条</strong>：引擎 <code>ledger/split.go</code> 与范例脚本都靠正则与启发式；改为对每个段落块分类（条目序号 / 品牌行 / 标题行 / 正文 / 导读 / 尾部 / 图注），代码按块类型组装。</li>
+<li><strong>发售日期、价格、规格</strong>：正则找出全部日期与金额作候选，Jev 选哪一个是这件产品的；日期比较仍在代码。替代 intake-check 里的多格式时间解析，也给深核用。</li>
+<li><strong>品牌与产品名</strong>：候选来自 csw 标签、账号名、大写词、别名表，Jev 选出，喂全文查重与跨账号合并。</li>
+<li><strong>待补录账号对账</strong>：文章里的品牌名对候选账号，判哪一个是官方号。</li>
+<li><strong>反馈记忆回收</strong>：Van 每条发言分成选题决定 / 写作表达 / 其他，对象从当期候选里选，身份判案例还是长期规则；原话原样保留。</li>
+<li><strong>退回原因归类</strong>：退回原话归到反馈标签集。</li>
+<li><strong>intake-check 的「淘汰交代」「查重对照」</strong>：从查非空改为判这段文字是否真的给了理由或结论。</li>
+</ol>
+<p>不用 Jev 的：依据、三句话、对照说明这类要写字的；深核这类要用工具的；看图；最终结论档。请求格式：不支持请求级 <code>instructions</code>（放进每个问题）；Choice 的选项字段是 <code>criteria</code> 对象。前提：输入发往第三方，贴文正文与图片描述可以，Van 群聊原话是否送出单独拍板。密钥在开发机 <code>~/.typesafe/.env</code>，不入库。</p>
+<h2 id="9-深核-codex-app-server">9. 深核：Codex App Server</h2>
+<ul>
+<li><strong>定位</strong>：官方定位是产品内深度集成，自动化建议用 SDK；本方案只让它做深核与将来的对话入口。</li>
+<li><strong>线程口径</strong>：每个推荐或待核候选一个线程，默认并行 3；首批限 4–8 条、10 分钟时间盒；<code>developerInstructions</code> 注入阶段标准、判断框架、该事件的判断结果与缺口；图片先下到线程 <code>cwd</code>，回合输入用 <code>localImage</code>；回合级超时由采集服务管，超时即 <code>turn/interrupt</code>，重试一次再失败向引擎报失败。</li>
+<li><strong>进程与配置</strong>：采集服务以子进程拉起 <code>codex app-server</code>（stdio），独立 <code>CODEX_HOME=/opt/csw-collector/codex-home</code>（个人目录每回合多背约 2 万 token 底座上下文）；<code>model_provider</code> 指向 sub2api（<code>wire_api = "responses"</code>）；<code>web_search</code> 关闭；MCP 只挂 csw 只读白名单 9 个工具与本地 <code>csw_kb</code> MCP。完整配置见开发版 §7.3。</li>
+<li><strong>最大的坑</strong>：<code>approvalPolicy: "never"</code> 会把需要审批的 MCP 工具调用直接拒绝。正确组合：线程级 <code>never</code> + <code>sandbox: "read-only"</code>；MCP 服务上 <code>default_tools_approval_mode = "approve"</code> + <code>enabled_tools</code> 白名单；客户端仍实现三个审批处理器并一律回 <code>decline</code>。</li>
+<li><strong>过程可核</strong>：每条 <code>item/completed</code> 原样落盘，随交付物归档到 <code>trace/</code>；<code>thread/tokenUsage/updated</code> 按 run 汇总；分页历史模式不能创建线程，不用它做审计。</li>
+<li><strong>硬要求</strong>：读循环不阻塞；只用 stdio、固定版本；<code>gpt-6-astra</code> 要求较新的 codex（0.149.0 被拒）；Linux 沙箱依赖 bwrap，agent 主机已装、M0 实测；协议与客户端直接 path 依赖 codex 仓库的 <code>app-server-protocol</code> / <code>app-server-client</code> / <code>app-server-transport</code> crate（锁定提交），MCP 用 <code>rmcp</code> 3.2。</li>
+</ul>
+<h2 id="10-工作台">10. 工作台</h2>
+<figure class="diagram"><svg viewBox="0 0 1130 356" role="img" aria-label="候选状态：已采集、已合并、有对照材料，然后判成推荐、备选、不推荐或待核；硬性排除只用硬事实且可捞回；推荐进深核、登记、Van 决定；待核可补齐重判或结转关闭；决定回流记忆" style="max-width:100%;height:auto;font-family:inherit"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker><marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4F46E5"/></marker></defs><rect x="20" y="150" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="82.0" y="167.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">已采集</text><text x="82.0" y="183.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">图 · 描述 · 向量</text><rect x="170" y="150" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="232.0" y="167.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">已合并</text><text x="232.0" y="183.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">候选 → 事件</text><rect x="320" y="150" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="#4F46E5" stroke-width="2"/><text x="382.0" y="167.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">有对照材料</text><text x="382.0" y="183.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">五类备齐</text><rect x="490" y="30" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="#4F46E5" stroke-width="2"/><text x="552.0" y="47.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">推荐</text><text x="552.0" y="63.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">结论档</text><rect x="490" y="110" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="552.0" y="127.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">备选</text><text x="552.0" y="143.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">可捞回进首批</text><rect x="490" y="190" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="552.0" y="207.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">不推荐</text><text x="552.0" y="223.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">保留 · 可捞回</text><rect x="490" y="270" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="552.0" y="287.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">待核</text><text x="552.0" y="303.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">写明缺口</text><rect x="170" y="260" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2" stroke-dasharray="6 4"/><text x="232.0" y="277.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">硬性排除</text><text x="232.0" y="293.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">窗口外 · 03 否决同事实</text><rect x="660" y="30" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="722.0" y="47.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">深核中</text><text x="722.0" y="63.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">证据 · 参照 · 时间盒</text><rect x="820" y="30" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="882.0" y="47.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">已登记</text><text x="882.0" y="63.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">引擎条目</text><rect x="980" y="30" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1042.0" y="47.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">Van 决定</text><text x="1042.0" y="63.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">采用 / 否决 / 暂缓</text><rect x="660" y="270" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="722.0" y="287.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">结转</text><text x="722.0" y="303.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">后续期次重评</text><rect x="820" y="270" width="124" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="882.0" y="287.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">关闭</text><text x="882.0" y="303.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">到期 · 写原因</text><polyline points="144,170.0 170,170.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="294,170.0 320,170.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="382" y="164" text-anchor="middle" font-size="11" fill="currentColor">缺一不判</text><polyline points="444,170.0 490,50.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="470" y="44" text-anchor="end" font-size="11" fill="currentColor">档</text><polyline points="444,170.0 490,130.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="444,170.0 490,210.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="444,170.0 490,290.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="470" y="284" text-anchor="end" font-size="11" fill="currentColor">缺资料 · 缺图</text><polyline points="232.0,190 232.0,260" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="240" y="248" text-anchor="start" font-size="11" fill="currentColor">硬事实</text><polyline points="614,50.0 660,50.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="784,50.0 820,50.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="802.0" y="44.0" text-anchor="middle" font-size="11" fill="currentColor">条目卡</text><polyline points="944,50.0 980,50.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="962.0" y="44.0" text-anchor="middle" font-size="11" fill="currentColor">台账上</text><polyline points="552.0,110 552.0,70" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)"/><text x="558.0" y="96" text-anchor="start" font-size="11" fill="currentColor">捞回</text><polyline points="552.0,190 552.0,150" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)"/><text x="558.0" y="176" text-anchor="start" font-size="11" fill="currentColor">捞回</text><polyline points="614,290.0 660,290.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="637" y="322" text-anchor="middle" font-size="11" fill="currentColor">当期未补齐</text><polyline points="784,290.0 820,290.0" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="797" y="322" text-anchor="middle" font-size="11" fill="currentColor">到期</text><polyline points="722.0,270 722.0,70" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)"/><text x="728.0" y="160" text-anchor="start" font-size="11" fill="currentColor">补齐 → 重判</text><polyline points="1042.0,70 1042.0,340" fill="none" stroke="#4F46E5" stroke-width="1.4" marker-end="url(#arrA)"/><polyline points="1042.0,340 382.0,340" fill="none" stroke="#4F46E5" stroke-width="1.4" marker-end="url(#arrA)"/><text x="700" y="334" text-anchor="middle" font-size="11" fill="#4F46E5">决定 + 判断结论 → 03 决定类参考，下一期对照材料读得到</text><polyline points="382.0,340 382.0,190" fill="none" stroke="#4F46E5" stroke-width="1.4" marker-end="url(#arrA)"/></svg><figcaption>图 3 · 一条候选的状态。没有「因口味淘汰」这一档：不推荐照样保留、随时捞回；排除只用硬事实（窗口外、与 03 否决的同一事实同角度）；待核不永久出局。</figcaption></figure>
+
+<h3 id="10-1-一条候选的状态">10.1 一条候选的状态</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>状态</th>
+<th>含义</th>
+<th>谁改</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>已采集</td>
+<td>贴文取到，图片已下载、已识别、已向量化</td>
+<td>代码</td>
+</tr>
+<tr>
+<td>已合并</td>
+<td>候选合并成事件，窗口按首次入库时间判定</td>
+<td>代码（Jev 判同一事件）</td>
+</tr>
+<tr>
+<td>有对照材料</td>
+<td>五类备齐；缺一样标「对照材料缺」并告警，不进判断</td>
+<td>代码</td>
+</tr>
+<tr>
+<td>推荐 / 备选 / 不推荐 / 待核</td>
+<td>结论档，附六维判定与依据；不推荐照样保留</td>
+<td>模型；人可改档</td>
+</tr>
+<tr>
+<td>硬性排除</td>
+<td>窗口外 / 与 03 否决的同一事实同角度</td>
+<td>代码，可捞回</td>
+</tr>
+<tr>
+<td>深核中</td>
+<td>推荐与待核进深核，首批有时间盒</td>
+<td>代码或人</td>
+</tr>
+<tr>
+<td>已登记</td>
+<td>已成引擎条目</td>
+<td>代码</td>
+</tr>
+<tr>
+<td>Van 选择 / 否决 / 暂缓</td>
+<td>她在台账上的标记，附原话；经主编代录成 03 决定后转为参考</td>
+<td>Van</td>
+</tr>
+<tr>
+<td>结转 / 关闭</td>
+<td>待核转入后续期次，或到期关闭并写明原因</td>
+<td>代码</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="10-2-页面清单-11-页-细节见-界面设计稿">10.2 页面清单（11 页，细节见《界面设计稿》）</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>页</th>
+<th>内容</th>
+<th>第一期</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>今日总览</td>
+<td>顶部流程带（开工方式、期次或发起人、窗口、首批倒计时；十格各显示状态、计数、耗时，点开看产物、失败清单与重跑）；四张卡：贴文全量、只图文、图片识别、已判断；告警；快捷入口</td>
+<td>✔</td>
+</tr>
+<tr>
+<td>判断台账（核心页）</td>
+<td>按档分组；每行缩略图、品牌｜标题、账号与时间、结论档、六维小格、热度、标签与话题、对照结论、三句话状态、缺口、来源；展开看依据、三句话、对照材料五类；操作：加入首批 / 登记 / 标待核 / 捞回 / 改档（记人与理由）；Van 模式只显示品牌、标题、图、三句话与档，三个按钮加原话</td>
+<td>✔</td>
+</tr>
+<tr>
+<td>事件详情</td>
+<td>左：图集与每张图的描述与用途、所有合并贴文的原文译文与热度标签；中：结论档、逐维依据、三句话、缺口；右：对照材料五类、深核结果；底：模型调用与人工操作审计</td>
+<td>✔</td>
+</tr>
+<tr>
+<td>采集与覆盖</td>
+<td>本轮采集方案与每个采集器一行（取到、只图文、图片、已识别、耗时、结果）；来源台账；待补录账号清单；图片下载与未识别清单</td>
+<td>✔</td>
+</tr>
+<tr>
+<td>待核结转</td>
+<td>事件、缺口类型、首次出现期次、剩余期数、上次重评；补证后重评、人工关闭</td>
+<td>✔</td>
+</tr>
+<tr>
+<td>知识库</td>
+<td>混合检索（文字或一张图）按五类分组；品牌页；同步状态；范例拆解</td>
+<td>随 M2</td>
+</tr>
+<tr>
+<td>选题记忆</td>
+<td>准则卡（身份、原话、对象、适用条件）；案例库；覆盖清单；Van 校准模式</td>
+<td>随 P5</td>
+</tr>
+<tr>
+<td>判断框架与锚点</td>
+<td>核心问题、六维定义与锚点、优先 / 降低七类、标签映射；版本表（无权重）；回测</td>
+<td>随 M3</td>
+</tr>
+<tr>
+<td>指标</td>
+<td>Van 的三项与技术指标，按期次折线</td>
+<td>随 M5</td>
+</tr>
+<tr>
+<td>运行与设置</td>
+<td>服务状态（采集服务、LanceDB、向量服务、codex、csw 连接）；模型调用统计；采集方案编辑（存版本、写审计）；手动开启表单；来源台账、并行数、结转期限、首批条数与时间盒；回放</td>
+<td>✔</td>
+</tr>
+<tr>
+<td>Van 模式</td>
+<td>台账的精简视图，手机优先</td>
+<td>✔</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="10-3-权限">10.3 权限</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>角色</th>
+<th>能做</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>viewer</td>
+<td>只读全部页面</td>
+</tr>
+<tr>
+<td>operator（主编、研究员）</td>
+<td>台账操作、改档、待核处理、来源维护、手动开启一轮、回放</td>
+</tr>
+<tr>
+<td>superadmin（开发）</td>
+<td>以上加采集方案、准则版本、设置、服务操作</td>
+</tr>
+<tr>
+<td>van</td>
+<td>Van 模式的台账、准则校准、范例与指标；只给链接，不开轮；不显示运行与设置</td>
+</tr>
+</tbody>
+</table></div>
+<p>所有写操作记录操作者与时间；台账的每次人工操作都是幂等写引擎，带 <code>Idempotency-Key</code>。工作台不直接连 csw 后端与模型服务，所有外部访问都经采集服务。</p>
+<h2 id="11-代码落点与引擎侧改动">11. 代码落点与引擎侧改动</h2>
+<h3 id="11-1-rust-工作区-csw-task-csw-collector">11.1 Rust 工作区 <code>csw-task/csw-collector/</code></h3>
+<pre><code>csw-task/csw-collector/
+  Cargo.toml                 工作区；path 依赖 codex-rs 的三个 app-server crate（锁定提交）与 rmcp
+  crates/collector/          常驻服务（axum）：任务驱动与手动开启、流程带状态、/api/* 工作台接口、/ui/* 静态托管
+  crates/harvest/            采集媒体信息：采集器 trait 与五个内置采集器、自定义采集器（外部命令 / HTTP / MCP）、下载与哈希、识别调用、采集轮计数
+  crates/kb/                 LanceDB：知识库索引（条目 / 图片 / 成文贴文 / 决定案例）、候选与判断台账副本、Qwen3-VL 客户端、jieba 全文
+  crates/judge/              合并与窗口、对照材料、逐条判断：提示词拼装、图片输入、输出校验、Jev 客户端、接口适配（直连 / app-server）
+  crates/deepcheck/          Codex App Server 深核线程：审批处理器、只读白名单、事件流落盘、打断与时间盒
+  crates/mcpsrv/             本地 MCP（rmcp）：kb_search / kb_similar_selected / memory_lookup / fetch_page / xhs_search
+  crates/engineapi/          my-tasks / ack / items / sweeps / intake-judgements / deliverables / fail
+  crates/deliver/            index.md、images/、trace/ 的生成与打包；intake-check 预检
+csw-task/csw-collector-web/  React 18 + Vite 5 + TS + Tailwind v3 + Radix，与管理后台同栈；TanStack Table + Virtual；产物 dist/ 交采集服务托管
+</code></pre>
+<p>主要 crate：tokio · axum · tower-http · reqwest（rustls）· serde / schemars · lancedb / lance / arrow · rusqlite（轮次状态机、审计、待提交队列）· image · jsonwebtoken · rmcp 3.2 · tracing · clap。测试用 wiremock 模拟 csw-agent、引擎与向量服务。</p>
+<h3 id="11-2-引擎侧-迁移-0036-起-只加列与新表-不整表重建">11.2 引擎侧（迁移 0036 起，只加列与新表，不整表重建）</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>改动</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>判断台账</td>
+<td><code>intake_judgements</code>（run、候选键、贴文引用、结论档、六维判定与依据、<code>image_seen</code>、缺口、三句话、对照结论、准则版本）；<code>PUT/GET /runs/:id/intake-judgements</code></td>
+</tr>
+<tr>
+<td>刊发记录</td>
+<td><code>ledger_published_posts</code> 加 <code>publish_evidence</code>、<code>is_reference</code>；范例导入命令读 <code>docs/知识库/范例/kb_import.jsonl</code></td>
+</tr>
+<tr>
+<td>选题记忆</td>
+<td><code>selection_rules</code>、<code>selection_cases</code>（<code>track</code> / <code>identity</code> / <code>object_ref</code> / <code>applicability</code> / 版本）</td>
+</tr>
+<tr>
+<td>自主发现</td>
+<td><code>run_items</code> 加 <code>origin</code>、<code>first_seen_at</code>；<code>adminctl selection-report</code> 出三项目标指标</td>
+</tr>
+<tr>
+<td>待核结转</td>
+<td>01 的任务详情随附近几期未结的 <code>pending_check</code> 与缺口</td>
+</tr>
+<tr>
+<td>只读接口</td>
+<td><code>/ledger/*</code>、<code>/memory/rules</code>、<code>/memory/cases</code>；<code>/kb/*</code> 由采集服务提供</td>
+</tr>
+<tr>
+<td><code>syncer</code></td>
+<td><code>kb-backfill</code>、<code>kb-split</code>、<code>memory-import</code>；公开页解析器（两种结构）</td>
+</tr>
+<tr>
+<td>定时同步</td>
+<td><code>deploy.sh</code> 增加 <code>csw-ledger-sync.service</code> 与 <code>.timer</code></td>
+</tr>
+<tr>
+<td>工作流定义</td>
+<td>先行项 P2 升一版：01 / 02 / 03 作业标准写入判断框架、三句话、查重口径、待核不永久淘汰、来源不加权</td>
+</tr>
+<tr>
+<td><code>intake-check</code></td>
+<td>加判据：csw 贴文窗口采集器 <code>unreviewed</code> 为 0；<code>image_seen=false</code> 的条目须为待核；「产出落差」改读判断台账（现判据「已审的都落了状态」与登记规则冲突）</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="12-部署与运维">12. 部署与运维</h2>
+<figure class="diagram"><svg viewBox="0 0 1170 372" role="img" aria-label="部署拓扑：新采集服务与工作台放在 agent 主机，与向量服务同机；引擎与 csw-agent 各在自己的主机；模型网关、OSS、飞书、Bright Data 在外部" style="max-width:100%;height:auto;font-family:inherit"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker><marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4F46E5"/></marker></defs><rect x="20" y="20" width="580" height="340" rx="8" fill="none" stroke="currentColor" stroke-opacity=".5" stroke-width="1.2"/><text x="32" y="39" font-size="12.5" font-weight="700" fill="currentColor">agent 主机 centos9 · 8.138.23.218（ssh 9318）</text><text x="32" y="56" font-size="10.5" fill="currentColor" opacity=".65">8 vCPU · 30 GB（可用 9）· 866 GB（用 85%）· P40 24 GB · CentOS 9 · Rust 1.95 · bwrap · Docker</text><rect x="40" y="72" width="240" height="44" rx="6" fill="var(--surface,#fff)" stroke="#4F46E5" stroke-width="2"/><text x="160.0" y="91.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">csw-collector（新，Rust）</text><text x="160.0" y="107.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">systemd · :8090 · LanceDB · 图片</text><rect x="40" y="128" width="240" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="160.0" y="145.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">codex app-server（新装）</text><text x="160.0" y="161.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">子进程 · stdio · 独立 CODEX_HOME</text><rect x="40" y="180" width="240" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="160.0" y="197.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">opencli + Chrome（已在）</text><text x="160.0" y="213.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">小红书 · 网页</text><rect x="40" y="232" width="240" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2" stroke-dasharray="6 4"/><text x="160.0" y="249.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">Hermes 网关 · 收集员（已在）</text><text x="160.0" y="265.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">切换时停；其余角色照常</text><rect x="340" y="72" width="240" height="44" rx="6" fill="var(--surface,#fff)" stroke="#4F46E5" stroke-width="2"/><text x="460.0" y="91.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">qwen3-vl-embedding（已在）</text><text x="460.0" y="107.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">Docker · :8022 · 单 GPU 串行</text><rect x="340" y="128" width="240" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="460.0" y="145.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">base-nginx（已在）</text><text x="460.0" y="161.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">80 / 443 · *.aworld.ltd 证书</text><rect x="340" y="180" width="240" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="460.0" y="197.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">csw-collector-web（新）</text><text x="460.0" y="213.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">静态文件 · 由 collector 托管</text><rect x="340" y="232" width="240" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="460.0" y="249.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">无关负载（已在）</text><text x="460.0" y="265.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">jellyfin · es · llm-wiki · open-webui</text><polyline points="280,94 340,94" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="310" y="86" text-anchor="middle" font-size="11" fill="currentColor">本机 :8022</text><polyline points="160,116 160,128" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="160,168 160,180" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="460,180 460,168" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="40" y="296" font-size="11" fill="currentColor" opacity=".8">入口：collector.aworld.ltd → base-nginx :443 → 127.0.0.1:8090（JWT 复用引擎密钥）</text><text x="40" y="316" font-size="11" fill="currentColor" opacity=".8">目录：/opt/csw-collector/{bin, collector.env, data/lancedb, data/images, data/threads, logs}</text><text x="40" y="336" font-size="11" fill="currentColor" opacity=".8">出站：csw-agent API · 引擎 API · sub2api · OSS 图片直链 · 本机向量服务</text><rect x="640" y="20" width="300" height="160" rx="8" fill="none" stroke="currentColor" stroke-opacity=".5" stroke-width="1.2"/><text x="652" y="39" font-size="12.5" font-weight="700" fill="currentColor">引擎主机 · 8.138.43.109 · tasks.aworld.ltd</text><text x="652" y="56" font-size="10.5" fill="currentColor" opacity=".65">2 vCPU · 3 GB · 30 GB 可用 · Go + SQLite</text><rect x="660" y="72" width="260" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="790.0" y="89.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">server :8080 · adminsrv :8081</text><text x="790.0" y="105.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">nginx: /api/v1 · /admin · SPA</text><rect x="660" y="122" width="260" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="790.0" y="139.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">csw-daily-trigger.timer 05:30</text><text x="790.0" y="155.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">run · 派单 · 群播报</text><rect x="640" y="200" width="300" height="160" rx="8" fill="none" stroke="currentColor" stroke-opacity=".5" stroke-width="1.2"/><text x="652" y="219" font-size="12.5" font-weight="700" fill="currentColor">csw-agent 主机 · 47.245.60.56</text><text x="652" y="236" font-size="10.5" fill="currentColor" opacity=".65">agent.campsomewhere.com · Docker</text><rect x="660" y="252" width="260" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="790.0" y="269.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">csw-agent-prod :8000 · pgvector</text><text x="790.0" y="285.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">posts/window · posts/{id} · generated</text><rect x="660" y="302" width="260" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="790.0" y="319.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">instagram-data 抓取器（screen）</text><text x="790.0" y="335.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">01:00 触发 Bright Data → webhook 入库</text><rect x="980" y="72" width="170" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1065.0" y="89.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">sub2api · 38.49.38.56</text><text x="1065.0" y="105.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">gpt-6-astra · Responses</text><rect x="980" y="132" width="170" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1065.0" y="149.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">阿里云 OSS</text><text x="1065.0" y="165.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">cws-file · 贴文图片</text><rect x="980" y="212" width="170" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1065.0" y="229.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">飞书</text><text x="1065.0" y="245.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">群播报 · Hermes 网关</text><rect x="980" y="272" width="170" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1065.0" y="289.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">Bright Data</text><text x="1065.0" y="305.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">Instagram 采集</text><polyline points="600,92 660,92" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="630" y="84" text-anchor="middle" font-size="11" fill="currentColor">bearer · HTTPS</text><polyline points="600,272 660,272" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="630" y="264" text-anchor="middle" font-size="11" fill="currentColor">API key · HTTPS</text><polyline points="600,190 955,190 955,92 980,92" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="780" y="184" text-anchor="middle" font-size="11" fill="currentColor">HTTPS：模型调用 · 图片直链</text><polyline points="955,152 980,152" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="940,142 966,142 966,232 980,232" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="972" y="200" text-anchor="start" font-size="11" fill="currentColor">播报</text><polyline points="940,322 966,322 966,292 980,292" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="972" y="340" text-anchor="start" font-size="11" fill="currentColor">触发 · 回写</text></svg><figcaption>图 4 · 部署拓扑。新增的只有 agent 主机上的 csw-collector（含工作台静态文件）和 codex 子进程；向量服务本来就在这台机上，走本机端口不经 nginx。引擎主机与 csw-agent 主机不动，只各加一个接口。</figcaption></figure>
+
+<h3 id="12-1-主机-9-21-实查">12.1 主机（9/21 实查）</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>主机</th>
+<th>规格</th>
+<th>已经在跑</th>
+<th>与本项目</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>agent 主机</strong> centos9 · 8.138.23.218（ssh 9318）</td>
+<td>8 vCPU · 30 GB（<strong>可用仅 9 GB</strong>）· 866 GB（<strong>已用 85%</strong>，/opt/docker 133 GB）· Tesla P40 24 GB（已用 17.8）· glibc 2.34 · Rust 1.95、bwrap、Docker 27、Node 24 已在，<strong>codex 未装</strong></td>
+<td>Hermes 主网关（无 <code>--profile</code>，挂 csw MCP 与 sub2api，<strong>很可能就是收集员</strong>）与四个 profile 网关；opencli + Chrome；<strong>qwen3-vl-embedding :8022（就是 <code>embedding.aworld.ltd</code>）</strong>；base-nginx；无关的 jellyfin、es、java、llm-wiki × 3、open-webui、pgvector、mysql、clash、frpc</td>
+<td>新采集服务与工作台放这里</td>
+</tr>
+<tr>
+<td><strong>引擎主机</strong> 8.138.43.109 · tasks.aworld.ltd</td>
+<td>2 vCPU · 3 GB</td>
+<td>csw-task :8080、adminsrv :8081、05:30 timer；nginx <code>/api/v1 → 8080</code>、<code>/admin → 8081</code></td>
+<td>只加表与接口，不放向量与图片</td>
+</tr>
+<tr>
+<td><strong>csw-agent 主机</strong> 47.245.60.56 · agent.campsomewhere.com</td>
+<td>Docker</td>
+<td>csw-agent-prod :8000、pgvector pg18（<code>csw_pgv</code>）、<code>instagram-data</code> 抓取器（screen <code>in-data</code>）</td>
+<td>只读接口</td>
+</tr>
+<tr>
+<td><strong>外部</strong></td>
+<td>——</td>
+<td>sub2api（38.49.38.56）、阿里云 OSS、飞书、Bright Data；Grafana / Loki 在 43.133.15.38</td>
+<td>模型、图片、群播报、抓取、观测</td>
+</tr>
+</tbody>
+</table></div>
+<p>从 agent 主机出站全部可达（csw-agent 200 / 0.9 秒，引擎 <code>/healthz</code> 200，sub2api 与向量服务需密钥）。</p>
+<h3 id="12-2-放哪-怎么跑">12.2 放哪、怎么跑</h3>
+<ul>
+<li><strong>放 agent 主机，划地盘</strong>：向量服务同机走 <code>127.0.0.1:8022</code>，小红书要用这台机上已登录的 Chrome，切换期与 Hermes 并存、切回快。systemd 单元 <code>csw-collector.service</code>（<code>Restart=always</code>、<code>EnvironmentFile=/opt/csw-collector/collector.env</code> 0600、<code>MemoryMax=4G</code>、<code>CPUWeight</code> 调低）；一个进程管全部，codex 是它的子进程，深核完就停；不拆微服务。</li>
+<li><strong>数据</strong>：引擎 SQLite 存真相（每天几百行，随 <code>deploy.sh</code> 备份）；<code>/opt/csw-collector/data/lancedb</code> 起步约 0.2 GB、每天 +8 MB，可重建、每周 tar 到 OSS；<code>data/images</code> 每天 80–100 MB，候选图保留 120 天、参考图永久；线程记录与日志保留 90 天。</li>
+<li><strong>构建与上线</strong>：目标 glibc 2.34，在 Mac 上用 <code>rockylinux:9</code> 容器 <code>cargo build --release</code>，产物一个二进制加 <code>web/</code>；<code>csw-task/deploy-collector.sh</code> 照 <code>deploy.sh</code>：备份 → 上传 → <code>systemctl restart</code> → 等 <code>/healthz</code> → 失败自动换回。首次另加：装 codex 固定版本、建目录、写 env、加 nginx 站点 <code>collector.aworld.ltd</code>（证书已有）→ <code>127.0.0.1:8090</code>。</li>
+<li><strong>切换与回退（M5 → M6）</strong>：并行期采集服务只跑手动轮不写引擎；切换日开任务驱动、停 Hermes 收集员网关（先确认主网关是不是它）；回退反过来两条命令，五分钟内。Hermes profile 目录原样保留。</li>
+<li><strong>GPU 分时</strong>：向量入库单线程分批放夜间；白天只做增量与重排。</li>
+</ul>
+<h3 id="12-3-单点与失败面">12.3 单点与失败面</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>依赖</th>
+<th>断了会怎样</th>
+<th>怎么办</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>csw-agent API</td>
+<td>第 2 步取不到，整轮停</td>
+<td>重试三次后标失败告警，不用旧接口兜底</td>
+</tr>
+<tr>
+<td>向量与重排服务（单 GPU）</td>
+<td>向量化与召回失败，判断标「对照材料缺」</td>
+<td>健康检查；只影响当轮；GPU 被占满时同样表现，要定分时</td>
+</tr>
+<tr>
+<td>sub2api</td>
+<td>识别、判断、深核全停</td>
+<td>重试加熔断；备用模型通道（拍板）；总览告警</td>
+</tr>
+<tr>
+<td>引擎</td>
+<td>接不到单、写不进结果</td>
+<td>缓存未提交结果，恢复后按幂等键重放</td>
+</tr>
+<tr>
+<td>codex 子进程</td>
+<td>深核失败</td>
+<td>时间盒；条目仍可登记并写明缺口</td>
+</tr>
+<tr>
+<td>agent 主机</td>
+<td>全停（向量服务、Chrome、Hermes 全在上面）</td>
+<td>最大单点：短期 systemd 自启与监控；中期迁走 jellyfin、es，清镜像</td>
+</tr>
+<tr>
+<td>内存与磁盘</td>
+<td>OOM 或写满</td>
+<td><code>MemoryMax</code>、保留期、磁盘水位告警（85% 已到）</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="12-4-安全与监控">12.4 安全与监控</h3>
+<ul>
+<li>采集服务只持只读 csw key 与收集员角色的引擎 token；写引擎只有登记与交付；不写 csw 库。codex 子进程只读沙箱、只读 MCP 白名单。工作台在 TLS 后、JWT 校验、写操作全审计。向量服务只在本机端口。送往第三方的数据：sub2api（贴文正文与图）、TypeSafe（若启用，正文与图片描述）；Van 群聊原话单独拍板。</li>
+<li><code>/healthz</code> 与 <code>/metrics</code>：每步耗时、失败、队列、向量服务延迟、磁盘与内存水位。告警两条线：流程失败经引擎 <code>fail</code> 由引擎播报编辑部群；运维告警发开发群。日志与指标可接已有的 Grafana / Loki。</li>
+</ul>
+<h2 id="13-里程碑与验收">13. 里程碑与验收</h2>
+<h3 id="13-1-先行项-不依赖新服务-van-要求尽早见效-逐项须同意">13.1 先行项（不依赖新服务，Van 要求尽早见效；逐项须同意）</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>内容</th>
+<th>动到哪里</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P1</td>
+<td>来源对账，出待补录账号清单；GO OUT、CAMP HACK 写入 <code>intake_sources</code>（普通来源，不加权）</td>
+<td>生产库一处写入；csw 后台补录由人操作</td>
+</tr>
+<tr>
+<td>P2</td>
+<td>工作流定义升一版：01 / 02 / 03 写入判断框架、三句话、查重口径、待核处理、来源不加权；重出阶段文档</td>
+<td>迁移加部署</td>
+</tr>
+<tr>
+<td>P3</td>
+<td>发布状态两列、公开页解析器、<code>csw-ledger-sync.timer</code>；回填历史</td>
+<td>迁移加部署</td>
+</tr>
+<tr>
+<td>P4</td>
+<td>十篇范例逐条拆解随任务详情下发（拆解已建成）</td>
+<td>离线批处理加部署</td>
+</tr>
+<tr>
+<td>P5</td>
+<td>历史反馈回收（九个会话库，只读）；出覆盖清单、选题准则卡交 Van 校准、写作表达整理交主编与文案</td>
+<td>agent 主机只读；结果入生产库</td>
+</tr>
+</tbody>
+</table></div>
+<p>必须等新服务的只有三件：窗口内图文贴文每条都判、判断时看实图、数量由代码统计。</p>
+<h3 id="13-2-新服务">13.2 新服务</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>内容</th>
+<th>验收</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>M0 可行性验证（闸门）</strong></td>
+<td>agent 主机装固定版本 codex + bwrap 实测；sub2api × Codex 的 Responses 兼容性；只读 MCP；逐条判断两种接口对照（直连 / app-server）；拿 r48 窗口实测「文字 + 实图」逐条判断的速度、费用、重复一致性；Jev 在更多样本上回测（现只有 12 条、3 条有 Van 态度）；<strong>Rust + LanceDB 四项</strong>：codex client crate 跑通一次深核线程、jieba 切中文品牌名的命中率、Qwen3-VL 向量批量入库速度、LanceDB 目录放 OSS 是否可行</td>
+<td>给出继续或停止的结论</td>
+</tr>
+<tr>
+<td>M1 采集媒体信息</td>
+<td>采集器直接调 <code>posts/window</code>（只图文）、下载、识别、向量化、LanceDB 候选表、代码计数的采集轮</td>
+<td>对「前一天到当天」取数与库内一致（9/17–9/18 应为 438，只图文 305）；识别与向量化全覆盖</td>
+</tr>
+<tr>
+<td>M2 知识库</td>
+<td>拆条、发布状态、LanceDB 索引（向量 + 全文 + 重排）、<code>/kb/*</code> 与本地 MCP、同步定时器</td>
+<td>近 30 天已发条目检索命中率抽检 ≥ 95%</td>
+</tr>
+<tr>
+<td>M3 判断框架</td>
+<td>判断说明与各档锚点（引用范例条目与被否案例）；Jev 初评与生成判断用十篇范例与历史决定回测</td>
+<td>范例条目普遍落在推荐 / 备选，被否案例多落在不推荐；重复判断一致</td>
+</tr>
+<tr>
+<td>M4 端到端</td>
+<td>合并、对照材料、逐条判断（初评 / 生成 / 核对）、深核、登记、判断台账、待核结转、手动开启；工作台第一期六页；05 最小实现</td>
+<td>本机对引擎副本端到端跑通；<code>intake-check</code> 全过</td>
+</tr>
+<tr>
+<td>M5 并行运行</td>
+<td>只出本地报告、不写引擎，与真实 run 及 Van 的实际决定对比；开始记录三项目标指标</td>
+<td>覆盖 100%；召回 ≥ 90%；三项目标指标有基线</td>
+</tr>
+<tr>
+<td>M6 切换</td>
+<td>01 与 05 由新服务接管，停 Hermes 收集员网关</td>
+<td>一期真实 run 走通；回退演练过</td>
+</tr>
+<tr>
+<td>后续</td>
+<td>11 选图包；自定义采集器第二、三层；飞书问答入口；评估研究员是否同样迁移</td>
+<td>——</td>
+</tr>
+</tbody>
+</table></div>
+<p>M5 取得结果后由 Van 与开发共同决定是否切换。验收指标见第 1.2 节。</p>
+<h2 id="14-已完成的工作-截至-9-21">14. 已完成的工作（截至 9/21）</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>类别</th>
+<th>内容</th>
+<th>状态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>csw-agent 生产</td>
+<td><code>GET /api/v1/posts/window</code> 9/20 上线（镜像 <code>20b94c3b2f77</code>，回退方式见接续记录 §22）；实测默认窗口 381 条 2.1 秒，<code>start=09-17&amp;end=09-18</code> 438 条与库内一致</td>
+<td>已上线</td>
+</tr>
+<tr>
+<td>csw-agent 本地</td>
+<td><code>posts_window.go</code> 补 <code>tag_list</code> / <code>hashtag_list</code>，build / vet / handlers 测试通过，linux 二进制已重建</td>
+<td><strong>待同意后部署</strong>；仓库改动未提交</td>
+</tr>
+<tr>
+<td>instagram-data 生产</td>
+<td>抓取 cron 由 05:00 改 01:00（备份 <code>config.yaml.bak-20260921</code>，screen <code>in-data</code> 内重启，<code>/health</code> ok）</td>
+<td>已生效</td>
+</tr>
+<tr>
+<td>csw-claude-plugin</td>
+<td><code>csw_posts_window</code> MCP 工具本地已做；只对过渡期 Hermes 收集员有用</td>
+<td>未推送，由用户定</td>
+</tr>
+<tr>
+<td>范例知识库</td>
+<td><code>docs/知识库/范例/</code>：10 篇、41 条、225 图（190 可作配图）、每篇拆解、<code>kb_import.jsonl</code></td>
+<td>已建成；入引擎待范例标记与导入命令</td>
+</tr>
+<tr>
+<td>实验</td>
+<td>Codex App Server 机制实测（工具往返、outputSchema）；TypeSafe 477 条与 13 事件两次实测；13 事件六维图文判定与热度标签元数据</td>
+<td>脚本与结果在 <code>docs/tools/collector_experiments/</code></td>
+</tr>
+<tr>
+<td>数据底数</td>
+<td>贴文库量级、只图文比例、点赞与标签分布、参考库数量级、三台主机实查</td>
+<td>写进本文各节</td>
+</tr>
+<tr>
+<td>文档与网页</td>
+<td>确认稿 v16、设计说明 v4、界面设计稿 v2（11 页真实数据）、架构分析 v2、开发版第三版、概要版第二版；本总方案</td>
+<td>见附录</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="15-待拍板-合并去重">15. 待拍板（合并去重）</h2>
+<h3 id="a-流程口径">A. 流程口径</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>事项</th>
+<th>建议</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>只取图文：严格（贴文里只要有视频就不取）还是宽松（只排除 Reel，混合轮播取其中的图片）</td>
+<td>先严格</td>
+</tr>
+<tr>
+<td>2</td>
+<td>第 5 步不打数字分、不设权重，改为结论档 + 逐维依据</td>
+<td>同意</td>
+</tr>
+<tr>
+<td>3</td>
+<td>图片描述与用途判断是否回写 csw 库的 <code>detailed_alt</code></td>
+<td>第一期不回写，保持对 csw 只读</td>
+</tr>
+<tr>
+<td>4</td>
+<td>必扫采集器失败时停在第 2 步告警、不用旧接口兜底</td>
+<td>同意</td>
+</tr>
+<tr>
+<td>5</td>
+<td>提交前是否允许主编先在工作台调整首批再提交</td>
+<td>做成可选项，默认不需要，不改闸的位置</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Van 模式的勾选是否直接等同 03 闸决定</td>
+<td>只记「Van 选择」，主编代录并附原话，闸不变</td>
+</tr>
+<tr>
+<td>7</td>
+<td>自定义采集器第一期做到哪一层</td>
+<td>只做「改方案」</td>
+</tr>
+<tr>
+<td>8</td>
+<td>手动开启的权限（operator 与 superadmin 可开，Van 只给链接）；手动轮结果关联任务时一律以补件提交</td>
+<td>同意</td>
+</tr>
+<tr>
+<td>9</td>
+<td>是否引入 TypeSafe（Jev）做初评、核对与七处窄判断；Van 群聊原话能否送第三方</td>
+<td>引入，贴文正文与图片描述可送；原话单独定</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="b-工作台与架构">B. 工作台与架构</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>事项</th>
+<th>建议</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>10</td>
+<td>工作台由采集服务托管、复用引擎 JWT 密钥，还是并入管理后台</td>
+<td>采集服务托管，域名 <code>collector.aworld.ltd</code></td>
+</tr>
+<tr>
+<td>11</td>
+<td>第一期先做哪几页</td>
+<td>总览、判断台账、事件详情、采集与覆盖、待核结转、运行与设置</td>
+</tr>
+<tr>
+<td>12</td>
+<td>agent 主机清理：jellyfin、es 是否迁走；/opt/docker 镜像清理；是否加盘</td>
+<td>迁走或停掉，先清镜像</td>
+</tr>
+<tr>
+<td>13</td>
+<td>codex 固定版本与安装方式；<code>gpt-6-astra</code> 对版本的要求</td>
+<td>M0 第一件事验</td>
+</tr>
+<tr>
+<td>14</td>
+<td>备用模型通道</td>
+<td>需要一条</td>
+</tr>
+<tr>
+<td>15</td>
+<td>图片保留期与 LanceDB 周备份去向</td>
+<td>120 天；OSS</td>
+</tr>
+<tr>
+<td>16</td>
+<td>切换时停哪个 Hermes 网关</td>
+<td>先确认主网关是不是收集员</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="c-授权类-逐项">C. 授权类（逐项）</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>事项</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>17</td>
+<td>部署 csw-agent 标签补丁（备份镜像与二进制 → 打包上传 → 服务器构建 → 重启 → 实测 <code>tagList</code> 非空）；csw-agent 与插件改动是否提交 / 推送</td>
+</tr>
+<tr>
+<td>18</td>
+<td>先行项 P1–P5 逐项（建议先 P1、P2、P3）</td>
+</tr>
+<tr>
+<td>19</td>
+<td>给机器人开通读取群历史消息的权限，用于补齐群聊记录</td>
+</tr>
+<tr>
+<td>20</td>
+<td>在 agent 主机安装 codex、部署新服务、停 Hermes 收集员网关</td>
+</tr>
+<tr>
+<td>21</td>
+<td>范例 <code>kb_import.jsonl</code> 写入生产引擎（先加范例标记与导入命令）</td>
+</tr>
+<tr>
+<td>22</td>
+<td>旧遗留：r47 由主编 abort；停滞检测修复 <code>84365d7</code> 部署</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="16-风险">16. 风险</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>风险</th>
+<th>应对</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>来源不全不解决，覆盖 100% 也命中不了她的选择</td>
+<td>P1 先行；用「自主发现情况」盯住，不用「只算在册」的召回自我安慰</td>
+</tr>
+<tr>
+<td>判断两次不一致，或档次分不开</td>
+<td>三档判定加范例与被否案例锚点；Jev 概率作连续量对照；M3 一致性检验</td>
+</tr>
+<tr>
+<td>把模型的归纳当成 Van 的意思</td>
+<td><code>case</code> / <code>inferred</code> / <code>confirmed</code> 分开存、分开用；每条带原话、对象、适用条件</td>
+</tr>
+<tr>
+<td>群聊完整记录与身份映射未打通</td>
+<td>先用九个会话库并交覆盖清单；飞书权限查清后补齐</td>
+</tr>
+<tr>
+<td>「群发」类推文没有正文接口</td>
+<td>公开页解析（两种结构已验证）；取不到的出缺口清单</td>
+</tr>
+<tr>
+<td>sub2api × Codex 兼容性未验证；<code>gpt-6-astra</code> 要求较新 codex；app-server 为实验性</td>
+<td>M0 先验；固定版本；升级单独排期</td>
+</tr>
+<tr>
+<td>sub2api 偶发 429、503</td>
+<td>重试加熔断；超时即向引擎 <code>fail</code>；暂存库支持断点续跑</td>
+</tr>
+<tr>
+<td>向量服务单 GPU，入库与判断抢卡</td>
+<td>入库夜间单线程分批；白天只做增量与重排；不可用时判断标「对照材料缺」</td>
+</tr>
+<tr>
+<td>agent 主机很挤、是最大单点</td>
+<td><code>MemoryMax=4G</code>、保留期、水位告警；迁走无关负载</td>
+</tr>
+<tr>
+<td>Instagram 文案或网页里的提示注入</td>
+<td>只读沙箱、不批准命令与改文件、MCP 只读白名单、写引擎仅采集服务代码</td>
+</tr>
+<tr>
+<td>仓库两种语言（Rust + Go）</td>
+<td>边界写死：引擎是真相，LanceDB 只放索引与副本；两边只经 HTTP</td>
+</tr>
+<tr>
+<td>新补录账号多久有内容</td>
+<td>取决于 csw 抓取周期，待查清</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="17-下一步-建议顺序">17. 下一步（建议顺序）</h2>
+<ol>
+<li><strong>拍板第 15 节 A、B 两组</strong>；A 组九条按建议默认即可开工，不同意的单条改。</li>
+<li><strong>部署 csw-agent 标签补丁</strong>（第 15 节第 17 条），实测 <code>tagList</code> 非空；决定是否提交 / 推送 csw-agent 与插件改动。</li>
+<li><strong>M0 验证清单</strong>（第 13.2 节）：结论决定继续或停止。</li>
+<li><strong>引擎侧改动</strong>（迁移 0036 起）：<code>intake_judgements</code> 表与接口、<code>publish_evidence</code> / <code>is_reference</code>、范例导入命令、<code>intake-check</code> 判据改读台账。</li>
+<li><strong>开工 Rust 工作区</strong>，先做 M1，验收「9/17–9/18 窗口 438 条、只图文 305」与库内一致。</li>
+<li><strong>先行项 P1–P5</strong> 与知识库同步定时器按授权推进。</li>
+</ol>
+<h2 id="附录-文档索引">附录：文档索引</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>文档</th>
+<th>网页</th>
+<th>源与生成器</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>本总方案</td>
+<td>https://claude.ai/code/artifact/3b082ab2-db62-4cbc-939b-ae5bbb35fc0d</td>
+<td><code>docs/情报收集员工作台_总方案_20260921.md</code>；<code>build_master.py</code></td>
+</tr>
+<tr>
+<td>完整流程确认稿 v16</td>
+<td>https://claude.ai/code/artifact/2e0593c7-f233-4a96-b559-570ea333198d</td>
+<td><code>docs/情报收集员工作台_设计稿/情报收集员工作台_完整流程.html</code>；<code>build_flow.py</code></td>
+</tr>
+<tr>
+<td>设计说明 v4</td>
+<td>https://claude.ai/code/artifact/fef8ed0c-7490-4ef3-a234-da0bec97404f</td>
+<td><code>docs/情报收集员工作台_设计说明_20260920.md</code>；<code>build_design.py</code></td>
+</tr>
+<tr>
+<td>界面设计稿 v2</td>
+<td>https://claude.ai/code/artifact/a5e46a82-5cd7-4787-be0a-306beed7b8b2</td>
+<td><code>docs/情报收集员工作台_设计稿/情报收集员工作台_界面设计稿.html</code>；<code>build_mockup.py</code></td>
+</tr>
+<tr>
+<td>架构与部署分析 v2</td>
+<td>https://claude.ai/code/artifact/38410d98-9318-46ba-8cc4-1ed59e4d05f3</td>
+<td><code>docs/情报收集员工作台_架构与部署分析_20260921.md</code>；<code>build_arch.py</code></td>
+</tr>
+<tr>
+<td>开发版（第三版）</td>
+<td>——</td>
+<td><code>docs/情报收集员_Codex采集引擎方案_20260918.md</code>（Codex 配置 §7、代码落点 §9）</td>
+</tr>
+<tr>
+<td>概要版（第二版）</td>
+<td>——</td>
+<td><code>docs/情报收集员改造方案_概要版_20260919.md</code>（§15 对 Van 反馈的逐项回应）</td>
+</tr>
+<tr>
+<td>Van 反馈原文</td>
+<td>——</td>
+<td><code>docs/给开发_0919收集员改造方案反馈_Van确认版.md</code></td>
+</tr>
+<tr>
+<td>接续记录</td>
+<td>——</td>
+<td><code>docs/新流程改造_接续记录_20260915.md</code> §19–§36</td>
+</tr>
+</tbody>
+</table></div>
+<p>生成器都在 <code>docs/tools/plan_pages/</code>，设计图在 <code>diagrams.py</code>；网页用 Artifact 发布，同一链接持续更新。</p></article>
+<footer>本文合并此前全部方案文档的现行口径；细节以此为准，界面细节见《界面设计稿》，协议字段与配置见开发版。</footer>
+</div>
