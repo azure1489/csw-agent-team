@@ -1,0 +1,59 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/core",
+    "crates/engineapi",
+    "crates/harvest",
+    "crates/kb",
+    "crates/judge",
+    "crates/deepcheck",
+    "crates/deliver",
+    "crates/mcpsrv",
+    "crates/collector",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+# 内部
+csw-collector-core = { path = "crates/core" }
+csw-collector-engineapi = { path = "crates/engineapi" }
+csw-collector-harvest = { path = "crates/harvest" }
+csw-collector-kb = { path = "crates/kb" }
+csw-collector-judge = { path = "crates/judge" }
+csw-collector-deepcheck = { path = "crates/deepcheck" }
+csw-collector-deliver = { path = "crates/deliver" }
+csw-collector-mcpsrv = { path = "crates/mcpsrv" }
+
+# 基础
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "time", "fs", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+clap = { version = "4", features = ["derive", "env"] }
+
+# 阶段 0.2 起接入的重依赖（版本先钉死，届时逐个打开）
+# lancedb = "=0.39.0"                              # MSRV 1.91 · arrow 58.x · 构建要 protoc
+# rusqlite = { version = "0.37", features = ["bundled"] }
+# reqwest  = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart", "stream"] }
+# axum     = "0.8"
+# blake3   = "1"
+# sha2     = "0.10"
+# zip      = { version = "5", default-features = false, features = ["deflate"] }
+# jiff     = "0.2"
+
+[profile.release]
+# 生产二进制跑在 agent 主机，体积与启动比编译时长重要
+opt-level = 2
+lto = "thin"
+codegen-units = 4
+strip = "debuginfo"
+panic = "unwind"    # 采集轮要能捕获单步 panic 而不整进程退出

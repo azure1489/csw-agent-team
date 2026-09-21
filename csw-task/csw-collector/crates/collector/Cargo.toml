@@ -1,0 +1,26 @@
+[package]
+name = "csw-collector"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "csw-collector"
+path = "src/main.rs"
+
+[dependencies]
+csw-collector-core.workspace = true
+csw-collector-engineapi.workspace = true
+csw-collector-harvest.workspace = true
+csw-collector-kb.workspace = true
+csw-collector-judge.workspace = true
+csw-collector-deepcheck.workspace = true
+csw-collector-deliver.workspace = true
+csw-collector-mcpsrv.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

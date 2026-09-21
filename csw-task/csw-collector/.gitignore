@@ -1,0 +1,14 @@
+/target/
+
+# 本地运行时数据（SQLite 本地状态库 + LanceDB 向量目录 + 下载的图片）
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# 本地实际配置（含 token 与密钥），只提交 collector.example.toml
+/collector.toml
+/collector.env
+
+# 录制回放层的夹具体积大，按需单独提交
+/fixtures/**/*.bin

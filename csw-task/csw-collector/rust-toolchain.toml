@@ -1,0 +1,6 @@
+# 钉死工具链：生产二进制经 cargo-zigbuild 交叉编译到 x86_64 glibc 2.34，
+# 换版本会换 codegen，交付前必须与验证时一致。
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-unknown-linux-gnu"]

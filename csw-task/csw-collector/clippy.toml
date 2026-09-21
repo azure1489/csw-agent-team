@@ -1,0 +1,2 @@
+# 采集轮里大量 async 函数持有 SQLite 连接，阈值放宽到可读为止
+too-many-arguments-threshold = 9

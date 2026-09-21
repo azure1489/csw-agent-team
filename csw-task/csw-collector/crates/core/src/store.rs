@@ -1,0 +1,3 @@
+//! 本地 SQLite 状态库：rounds / round_steps / candidates / judgements / engine_outbox …
+//!
+//! 单写者。所有「写引擎」的动作先落 `engine_outbox` 再发，保证崩溃后可续、可幂等重放。
