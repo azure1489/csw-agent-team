@@ -38,7 +38,7 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
   <h1>情报收集员工作台<span>架构与部署分析</span></h1>
   <p class="lede">新东西只有一个 Rust 进程和它托管的工作台，放在 agent 主机上，和已经在那台机上的向量服务同机；引擎主机与 csw-agent 主机不动，各只加一个接口。真正的风险不在架构，在 agent 主机已经很挤，以及三个外部依赖各是单点。数据为 9/21 实查。</p>
 </header>
-<nav aria-label="目录"><ol><li><a href="#1-现有主机与它们现在跑什么-9-21-实查">1. 现有主机与它们现在跑什么（9/21 实查）</a></li><li><a href="#2-架构判断">2. 架构判断</a></li><li><a href="#3-部署方式">3. 部署方式</a></li><li><a href="#4-单点与失败面">4. 单点与失败面</a></li><li><a href="#5-安全面">5. 安全面</a></li><li><a href="#6-监控">6. 监控</a></li><li><a href="#7-动工前要定">7. 动工前要定</a></li></ol></nav>
+<nav aria-label="目录"><ol><li><a href="#1-现有主机与它们现在跑什么-9-21-实查">1. 现有主机与它们现在跑什么（9/21 实查）</a></li><li><a href="#2-架构判断">2. 架构判断</a></li><li><a href="#3-技术栈清单">3. 技术栈清单</a></li><li><a href="#4-部署方式">4. 部署方式</a></li><li><a href="#5-单点与失败面">5. 单点与失败面</a></li><li><a href="#6-安全面">6. 安全面</a></li><li><a href="#7-监控">7. 监控</a></li><li><a href="#8-动工前要定">8. 动工前要定</a></li></ol></nav>
 <article><h2 id="1-现有主机与它们现在跑什么-9-21-实查">1. 现有主机与它们现在跑什么（9/21 实查）</h2>
 <div class="table-wrap"><table>
 <thead>
@@ -138,13 +138,239 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
 </tr>
 </tbody>
 </table></div>
-<h2 id="3-部署方式">3. 部署方式</h2>
+<h2 id="3-技术栈清单">3. 技术栈清单</h2>
+<p><strong>新写的两个部件</strong></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>层</th>
+<th>选型</th>
+<th>版本 / 说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>采集服务语言</td>
+<td>Rust</td>
+<td>目标 x86_64 glibc 2.34（CentOS Stream 9）；agent 主机自带 rustc / cargo 1.95，开发机 1.98</td>
+</tr>
+<tr>
+<td>异步运行时与 HTTP 服务</td>
+<td>tokio · axum · tower-http</td>
+<td>axum 提供 <code>/api/*</code>、<code>/healthz</code>、<code>/metrics</code>，tower-http 托管 <code>web/</code> 静态文件、压缩、请求日志</td>
+</tr>
+<tr>
+<td>HTTP 客户端</td>
+<td>reqwest（rustls）</td>
+<td>调 csw-agent、引擎、sub2api、OSS 图片、本机向量服务；统一重试、超时、限流</td>
+</tr>
+<tr>
+<td>序列化与校验</td>
+<td>serde · serde_json · schemars</td>
+<td>统一候选格式、判断输出 JSON Schema、引擎接口 DTO</td>
+</tr>
+<tr>
+<td>向量与全文索引</td>
+<td>lancedb · lance · arrow</td>
+<td>嵌入式，单进程写；向量 2048 维；全文用 lance 内置 jieba 分词（需语言模型文件）</td>
+</tr>
+<tr>
+<td>本地状态与审计</td>
+<td>rusqlite（bundled SQLite）</td>
+<td>轮次状态机、流程带、审计、待提交队列；事务性写，与 LanceDB 分工：LanceDB 放向量与候选表</td>
+</tr>
+<tr>
+<td>图片</td>
+<td>image · sha2 / blake3</td>
+<td>缩略、哈希去重；识别交视觉模型，不本地做视觉</td>
+</tr>
+<tr>
+<td>模型接口</td>
+<td>reqwest → sub2api Responses API</td>
+<td>识别（视觉）、逐条判断（生成）；结构化输出用 JSON Schema</td>
+</tr>
+<tr>
+<td>深核</td>
+<td>codex app-server 子进程</td>
+<td>path 依赖 codex 仓库 <code>codex-rs/app-server-protocol</code>、<code>app-server-client</code>、<code>app-server-transport</code>（锁定提交）；stdio；独立 <code>CODEX_HOME</code>；bwrap 沙箱</td>
+</tr>
+<tr>
+<td>MCP</td>
+<td>rmcp 3.2（与 codex 同版本）</td>
+<td>作服务端：本地 MCP（kb_search / kb_similar_selected / memory_lookup / fetch_page / xhs_search）；作客户端：自定义采集器挂 MCP 工具</td>
+</tr>
+<tr>
+<td>窄判断</td>
+<td>TypeSafe HTTP（Jev 1.13）</td>
+<td>初评、核对、同一事件、对照结论；OpenAI 风格 JSON，reqwest 直调</td>
+</tr>
+<tr>
+<td>向量与重排</td>
+<td>Qwen3-VL-Embedding-2B · Qwen3-VL-Reranker-2B</td>
+<td>自部署容器 :8022，OpenAI 兼容 <code>/v1/embeddings</code> 与 Cohere 兼容 <code>/v1/rerank</code>；base64 图片</td>
+</tr>
+<tr>
+<td>鉴权</td>
+<td>jsonwebtoken（HS256）</td>
+<td>校验引擎 adminsrv 签发的 access JWT，密钥同引擎 <code>CSW_JWT_SECRET</code>；角色 superadmin / operator / viewer / van</td>
+</tr>
+<tr>
+<td>调度</td>
+<td>tokio 任务 + 进程内定时（tokio-cron-scheduler 或自写）</td>
+<td>30 秒轮询 my-tasks、知识库同步每天两次、夜间向量回填、图片清理</td>
+</tr>
+<tr>
+<td>交付物</td>
+<td>zip · pulldown-cmark（可选）</td>
+<td><code>index.md</code>、<code>images/</code>、<code>trace/</code> 打包；multipart 提交引擎</td>
+</tr>
+<tr>
+<td>日志与指标</td>
+<td>tracing · tracing-subscriber · metrics-exporter-prometheus</td>
+<td>journald + 滚动文件；<code>/metrics</code></td>
+</tr>
+<tr>
+<td>命令行与配置</td>
+<td>clap · figment / config · dotenvy</td>
+<td>子命令 <code>serve</code> / <code>run --manual</code> / <code>replay</code> / <code>kb sync</code> / <code>kb import</code>；配置优先级 env &gt; 文件 &gt; 默认，与引擎一致</td>
+</tr>
+<tr>
+<td>错误处理</td>
+<td>anyhow · thiserror</td>
+<td>——</td>
+</tr>
+<tr>
+<td>测试</td>
+<td>cargo test · wiremock（模拟 csw-agent、引擎、向量服务）</td>
+<td>引擎接口契约用录制的响应回放</td>
+</tr>
+</tbody>
+</table></div>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>层</th>
+<th>选型</th>
+<th>版本 / 说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>工作台前端框架</td>
+<td>React 18 · TypeScript · Vite 5</td>
+<td>与管理后台 <code>csw-task-web</code> 同栈，复用其 <code>lib/</code>、组件与视觉规范</td>
+</tr>
+<tr>
+<td>样式与组件</td>
+<td>Tailwind v3 · Radix（弹层底座）</td>
+<td>与管理后台一致；深浅色两套 token</td>
+</tr>
+<tr>
+<td>路由与数据</td>
+<td>react-router · TanStack Query</td>
+<td>真连 <code>/api/*</code>；access JWT 存内存，refresh cookie 401 自动续期（沿用后台做法）</td>
+</tr>
+<tr>
+<td>表格</td>
+<td>TanStack Table + TanStack Virtual</td>
+<td>判断台账一天几百行，虚拟滚动；按档分组、排序在前端完成</td>
+</tr>
+<tr>
+<td>图</td>
+<td>自绘 SVG（沿用后台的 DAG 做法）· 缩略图懒加载</td>
+<td>流程带、指标折线不引第三方图表库</td>
+</tr>
+<tr>
+<td>构建</td>
+<td>pnpm · <code>tsc --noEmit</code> · <code>vite build</code></td>
+<td>产物 <code>dist/</code> 交给采集服务托管</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>不动的既有部件</strong></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>部件</th>
+<th>技术栈</th>
+<th>与本项目的接口</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>任务流转引擎 <code>csw-task-svc</code></td>
+<td>Go 1.23 · gin · modernc.org/sqlite 1.34 · goose · slog · argon2id · JWT HS256</td>
+<td>运行面 <code>/api/v1/*</code>（bearer）：my-tasks、ack、items、sweeps、<code>intake-judgements</code>（新增）、deliverables、fail；后台 <code>/admin/*</code>（JWT）；<code>/ledger/*</code>、<code>/memory/*</code> 只读</td>
+</tr>
+<tr>
+<td>管理后台 <code>csw-task-web</code></td>
+<td>React 18 · Vite 5 · TS · Tailwind v3 · Radix</td>
+<td>定义、成员、监控；登录与 JWT 由它发</td>
+</tr>
+<tr>
+<td>csw-agent 后端</td>
+<td>Go · gin · PostgreSQL 18 + pgvector（2560 维旧向量列，本项目不用）</td>
+<td><code>GET /api/v1/posts/window</code>（标签补丁待部署）、<code>posts/{id}</code>、<code>posts/generated</code>、<code>accounts</code>；API key</td>
+</tr>
+<tr>
+<td>csw-agent 前端</td>
+<td>Vue / React（<code>frontend/</code>，Jenkins 部署到 <code>agent.campsomewhere.com</code>）</td>
+<td>不动</td>
+</tr>
+<tr>
+<td>Instagram 抓取器 <code>instagram-data</code></td>
+<td>Go · robfig/cron · Bright Data · webhook</td>
+<td>每天 01:00；不改</td>
+</tr>
+<tr>
+<td>向量与重排服务</td>
+<td>Python · FastAPI / uvicorn · Qwen3-VL 2B × 2 · Tesla P40 · Docker</td>
+<td>单 GPU 串行，60 秒网关超时</td>
+</tr>
+<tr>
+<td>模型网关 sub2api</td>
+<td>第三方，OpenAI 兼容 Responses API</td>
+<td>gpt-6-astra、gpt-5.6</td>
+</tr>
+<tr>
+<td>Codex CLI</td>
+<td>Rust（codex-rs），固定版本待定</td>
+<td>app-server 协议 v2</td>
+</tr>
+<tr>
+<td>Hermes agent</td>
+<td>Python 网关（各角色 profile）</td>
+<td>收集员 profile 切换时停，其余角色照常</td>
+</tr>
+<tr>
+<td>反代与证书</td>
+<td>Docker base-nginx · certd / acme（*.aworld.ltd）</td>
+<td>三台主机各自一套</td>
+</tr>
+<tr>
+<td>部署与进程</td>
+<td>systemd · deploy 脚本（本机构建、上传、远端重启）· Docker（csw-agent 侧）</td>
+<td>采集服务照引擎 <code>deploy.sh</code> 写 <code>deploy-collector.sh</code></td>
+</tr>
+<tr>
+<td>离线批处理与实验</td>
+<td>Python 3（<code>docs/tools/</code>）：范例构建、Jev 实验、页面生成</td>
+<td>不进生产进程</td>
+</tr>
+<tr>
+<td>观测</td>
+<td>journald · Grafana + Loki（43.133.15.38 已有，可选接入）</td>
+<td>——</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="4-部署方式">4. 部署方式</h2>
 <p><strong>构建</strong>：Rust 目标是 glibc 2.34 的 CentOS Stream 9。三条路：在 agent 主机上用它自带的 cargo 1.95 构建（最省事，但占它的 CPU 与内存）；在 Mac 上用 <code>rockylinux:9</code> 容器构建，产物 glibc 兼容；或 musl 静态链接（LanceDB 依赖 Arrow、protobuf、TLS，静态链接不一定顺）。建议第二条：容器里 <code>cargo build --release</code>，产物一个二进制加一个 <code>web/</code> 目录，与引擎「本机构建、上传、远端重启」的方式一致。</p>
 <p><strong>上线脚本</strong> <code>csw-task/deploy-collector.sh</code>，照抄 <code>deploy.sh</code> 的结构：备份旧二进制与 LanceDB 目录清单 → 上传 → <code>systemctl restart csw-collector</code> → 等 <code>/healthz</code> → 失败自动换回旧二进制。首次另加：装 codex 固定版本（含 bwrap 检查）、建目录、写 <code>collector.env</code>、加 nginx 站点 <code>collector.aworld.ltd</code>（证书已有）。</p>
 <p><strong>systemd</strong>：<code>csw-collector.service</code>（<code>Restart=always</code>、<code>EnvironmentFile</code>、<code>WorkingDirectory=/opt/csw-collector</code>、资源上限）。不需要 timer：任务驱动靠引擎派单，知识库同步用进程内定时（每天两次，触发前一次、晚间一次），夜间向量回填也在进程内排队。</p>
 <p><strong>工作台入口</strong>：<code>collector.aworld.ltd</code> → base-nginx（443）→ <code>127.0.0.1:8090</code>；静态文件由采集服务托管，<code>/api/*</code> 同源。</p>
 <p><strong>切换与回退</strong>（M5 → M6）：并行期采集服务只跑手动轮、不写引擎；切换日改配置开任务驱动、<code>systemctl stop</code> Hermes 收集员网关（先确认主网关是不是收集员，它没带 <code>--profile</code>）；回退是反过来两条命令，五分钟内。</p>
-<h2 id="4-单点与失败面">4. 单点与失败面</h2>
+<h2 id="5-单点与失败面">5. 单点与失败面</h2>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -191,7 +417,7 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
 </tr>
 </tbody>
 </table></div>
-<h2 id="5-安全面">5. 安全面</h2>
+<h2 id="6-安全面">6. 安全面</h2>
 <ul>
 <li>采集服务只持只读的 csw key 与收集员角色的引擎 token；写引擎的动作只有登记与交付；不写 csw 库。</li>
 <li>codex 子进程 <code>sandbox=read-only</code>、<code>approvalPolicy=never</code>、只读 MCP 白名单、bwrap 已在。</li>
@@ -199,13 +425,13 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
 <li>向量服务只在本机端口，nginx 那一层的对外入口继续要密钥。</li>
 <li>送往第三方的数据：sub2api（贴文正文与图）、TypeSafe（若启用，正文与图片描述）；Van 的群聊原话是否送出单独拍板。</li>
 </ul>
-<h2 id="6-监控">6. 监控</h2>
+<h2 id="7-监控">7. 监控</h2>
 <ul>
 <li>采集服务 <code>/healthz</code> 与 <code>/metrics</code>；每步耗时、失败、队列、向量服务延迟、磁盘与内存水位。</li>
 <li>告警走两条：流程内的失败经引擎 <code>fail</code> 接口由引擎播报到编辑部群；运维告警（磁盘、内存、服务重启）另发开发群，不进编辑部群。</li>
 <li>43.133.15.38 上已有 Grafana 与 Loki，可以把日志与指标接过去，不必新搭。</li>
 </ul>
-<h2 id="7-动工前要定">7. 动工前要定</h2>
+<h2 id="8-动工前要定">8. 动工前要定</h2>
 <ol>
 <li>工作台域名（建议 <code>collector.aworld.ltd</code>）与登录方式（复用引擎 JWT 密钥）。</li>
 <li>agent 主机的清理：jellyfin、es 是否迁走；/opt/docker 镜像清理；是否加盘。</li>
