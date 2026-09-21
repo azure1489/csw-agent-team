@@ -120,6 +120,71 @@ type RecentItemDecision struct {
 	DecidedAt      string
 }
 
+// ItemDecision 一条条目的决定，含采用类与原话。
+//
+// 与 RecentItemDecision 的分工：那个只给否决 / 暂缓，是 02 做近发对照用的；
+// 这个给「五类对照材料」里的第四类（03 决定），采用与否决都要，且必须带**原话**——
+// 判断时拿她说过的话当依据，转述不算。
+type ItemDecision struct {
+	RunID          int64  `json:"run_id"`
+	Subject        string `json:"subject"`
+	ItemKey        string `json:"item_key"`
+	Title          string `json:"title"`
+	Brand          string `json:"brand"`
+	SourceURL      string `json:"source_url"`
+	PublishedAt    string `json:"published_at"`
+	Status         string `json:"status"`
+	DecisionSource string `json:"decision_source"`
+	DecidedAt      string `json:"decided_at"`
+	ReasonCode     string `json:"reason_code"`
+	Reason         string `json:"reason"`
+	QuoteRef       string `json:"quote_ref"`
+	ActorRole      string `json:"actor_role"`
+}
+
+// ListItemDecisions 列 since 之后所有已有决定的条目（采用、否决、暂缓、待核），新到旧。
+//
+// 原话从 item_traces 里取最近一条带 reason 或 quote_ref 的轨迹。
+// 取不到就留空——**宁可空着也不编**：对照材料里一句假的原话比没有更糟。
+func (q *Queries) ListItemDecisions(ctx context.Context, since string, limit int) ([]ItemDecision, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	rows, err := q.ex.QueryContext(ctx, `
+		SELECT i.run_id, r.subject, i.item_key, i.title, IFNULL(i.brand,''), IFNULL(i.source_url,''),
+		       IFNULL(i.published_at,''), i.status, IFNULL(i.decision_source,''), IFNULL(i.decided_at,''),
+		       IFNULL(t.reason_code,''), IFNULL(t.reason,''), IFNULL(t.quote_ref,''), IFNULL(t.actor_role,'')
+		FROM run_items i
+		JOIN runs r ON r.id = i.run_id
+		LEFT JOIN item_traces t ON t.id = (
+		    SELECT id FROM item_traces
+		    WHERE run_id = i.run_id AND item_key = i.item_key
+		      AND (IFNULL(reason,'') <> '' OR IFNULL(quote_ref,'') <> '')
+		    ORDER BY id DESC LIMIT 1)
+		WHERE i.status IN ('approved_write','approved_research','written','reviewed','published',
+		                   'rejected','deferred','pending_check','dropped')
+		  AND IFNULL(i.decided_at, i.updated_at) >= ?
+		ORDER BY IFNULL(i.decided_at, i.updated_at) DESC LIMIT ?`, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]ItemDecision, 0, limit)
+	for rows.Next() {
+		var d ItemDecision
+		if err := rows.Scan(&d.RunID, &d.Subject, &d.ItemKey, &d.Title, &d.Brand, &d.SourceURL,
+			&d.PublishedAt, &d.Status, &d.DecisionSource, &d.DecidedAt,
+			&d.ReasonCode, &d.Reason, &d.QuoteRef, &d.ActorRole); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // ListRecentItemDecisions 列出 since（UTC，YYYY-MM-DD）之后被否决 / 暂缓的条目，新到旧。
 func (q *Queries) ListRecentItemDecisions(ctx context.Context, since string, limit int) ([]RecentItemDecision, error) {
 	if limit <= 0 {

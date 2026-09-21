@@ -201,3 +201,60 @@ func TestIntakeJudgementEndpoints(t *testing.T) {
 		t.Fatalf("csw_api 应在白名单里：%d %v", code, out)
 	}
 }
+
+// TestIntakeCheckAndDecisionsEndpoints 两个只读接口：自查判据与历史决定。
+//
+// 自查开成接口的原因：此前只有 adminctl 能跑（本机直读库），
+// 采集服务在另一台主机上调不到，只能自己复刻一份判据——那就有了两套真相。
+func TestIntakeCheckAndDecisionsEndpoints(t *testing.T) {
+	ts, st, eng, mint := setupHTTP(t)
+	ctx := context.Background()
+	collectorTok := mint("collector")
+	editor, _ := st.Q().ActiveAgentByRole(ctx, "editor")
+	role, _ := st.Q().GetRole(ctx, "editor")
+	res, err := eng.Trigger(ctx, editor, role, "daily_news", "2026-09-22", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := fmt.Sprintf("%s/api/v1/runs/%d", ts.URL, res.Run.ID)
+
+	// 什么都没上报时：判据全是「不判定」，不报错也不判红
+	code, out := httpJSON(t, http.MethodGet, base+"/intake-check", collectorTok, nil, "")
+	if code != 200 {
+		t.Fatalf("intake-check: %d %v", code, out)
+	}
+	if out["ok"] != true {
+		t.Fatalf("空 run 的自查不该判红：%v", out)
+	}
+	if len(out["checks"].([]any)) == 0 {
+		t.Fatal("应当给出判据清单")
+	}
+
+	// 上报一轮 csw_api 采集 + 两条判断，其中一条漏判 → 自查判红
+	if code, out := httpJSON(t, http.MethodPut, base+"/sweeps", collectorTok,
+		bytes.NewBufferString(`{"sweeps":[{"sweep_key":"csw-window","platform":"instagram","source_key":"channel",
+			"tool":"csw_api","found":438,"fetched_unique":5,"reviewed":5,"unreviewed":0,"in_window":5,"result":"ok"}]}`),
+		"application/json"); code != 200 {
+		t.Fatalf("report sweeps: %d %v", code, out)
+	}
+	if code, out := httpJSON(t, http.MethodPut, base+"/intake-judgements", collectorTok,
+		bytes.NewBufferString(fmt.Sprintf(`{"judgements":[
+			{"candidate_key":"a-000001","tier":"recommend","image_seen":true,"dims":%s},
+			{"candidate_key":"b-000002","tier":"not_recommend","image_seen":true,"dims":%s}
+		]}`, dimsJSON("yes"), dimsJSON("no"))), "application/json"); code != 200 {
+		t.Fatalf("report judgements: %d %v", code, out)
+	}
+	code, out = httpJSON(t, http.MethodGet, base+"/intake-check", collectorTok, nil, "")
+	if code != 200 || out["ok"] == true {
+		t.Fatalf("漏判 3 条应当判红：%d %v", code, out)
+	}
+
+	// 历史决定：空库也给空列表，不报错
+	code, out = httpJSON(t, http.MethodGet, ts.URL+"/api/v1/ledger/decisions?since=365d", collectorTok, nil, "")
+	if code != 200 {
+		t.Fatalf("ledger/decisions: %d %v", code, out)
+	}
+	if _, ok := out["decisions"].([]any); !ok {
+		t.Fatalf("decisions 应当是列表：%v", out)
+	}
+}

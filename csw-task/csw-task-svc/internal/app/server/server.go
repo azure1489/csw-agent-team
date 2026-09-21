@@ -63,6 +63,7 @@ func (s *Server) Router() *gin.Engine {
 		v1.PUT("/runs/:id/items", s.handleUpsertItems)
 		v1.PUT("/runs/:id/sweeps", s.handleReportSweeps)
 		v1.GET("/runs/:id/intake-trace", s.handleIntakeTrace)
+		v1.GET("/runs/:id/intake-check", s.handleIntakeCheck)
 		v1.PUT("/runs/:id/intake-judgements", s.handleReportJudgements)
 		v1.GET("/runs/:id/intake-judgements", s.handleListJudgements)
 		v1.POST("/files", s.handleUpload)
@@ -73,6 +74,7 @@ func (s *Server) Router() *gin.Engine {
 
 		// 数据子系统（只读查重 / 反馈记忆；写入反馈仅管理类角色）
 		v1.GET("/ledger/posts", s.handleLedgerPosts)
+		v1.GET("/ledger/decisions", s.handleLedgerDecisions)
 		v1.GET("/memory/feedback", s.handleListFeedback)
 		v1.POST("/memory/feedback", s.handleCreateFeedback)
 

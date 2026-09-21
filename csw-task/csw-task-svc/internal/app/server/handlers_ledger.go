@@ -249,3 +249,22 @@ func recentRejected(ctx context.Context, s *Server, days, limit int) []gin.H {
 	}
 	return out
 }
+
+// GET /ledger/decisions —— 历史决定（采用与否决都给，带原话）。
+//
+// 这是「五类对照材料」里的第四类。判断一条候选时要能看见：同一件事、同一个角度，
+// 主编或 Van 以前怎么处置的、当时怎么说的。没有原话就不给原话，**不编**。
+func (s *Server) handleLedgerDecisions(c *gin.Context) {
+	since, err := parseSince(c.DefaultQuery("since", "90d"))
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	ds, err := s.store.Q().ListItemDecisions(c.Request.Context(), since, limit)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"decisions": ds, "since": since})
+}

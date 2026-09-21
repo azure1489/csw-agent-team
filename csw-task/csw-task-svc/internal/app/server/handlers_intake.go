@@ -277,3 +277,31 @@ func (s *Server) handleListJudgements(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"judgements": toJudgementDTOs(js)})
 }
+
+// GET /runs/:id/intake-check —— 采集自查的八条判据。
+//
+// 此前只有 adminctl 能跑（本机直读库），采集服务在另一台主机上调不到，
+// 只能自己复刻一份判据——那就等于有两套真相。开成只读接口，让它提交前先自查。
+func (s *Server) handleIntakeCheck(c *gin.Context) {
+	id, err := pathID(c, "id")
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	checks, err := engine.BuildIntakeCheck(c.Request.Context(), s.store.Q(), id)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	failed, warned := 0, 0
+	for _, ck := range checks {
+		switch {
+		case ck.Skipped:
+		case !ck.OK:
+			failed++
+		case ck.Warn:
+			warned++
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"checks": checks, "failed": failed, "warned": warned, "ok": failed == 0})
+}

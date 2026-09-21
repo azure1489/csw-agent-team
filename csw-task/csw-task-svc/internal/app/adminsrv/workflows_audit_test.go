@@ -35,7 +35,9 @@ func TestWorkflowAuditCarriesReason(t *testing.T) {
 		ID      int64 `json:"id"`
 		Version int   `json:"version"`
 	}
-	if code := adminDo(t, ts, token, http.MethodPost, path+"/clone", map[string]string{"reason": "复制做实验"}, &cl); code != 201 || cl.Version != 9 {
+	// 版本号不写死：seed 里 daily_news 的最高版随迁移增长（0040 已占了 v9 且刻意留作草稿），
+	// 克隆出来的只需比 active 的那一版新。
+	if code := adminDo(t, ts, token, http.MethodPost, path+"/clone", map[string]string{"reason": "复制做实验"}, &cl); code != 201 || cl.Version <= 8 {
 		t.Fatalf("clone: %d v%d", code, cl.Version)
 	}
 	var au struct {
@@ -49,7 +51,7 @@ func TestWorkflowAuditCarriesReason(t *testing.T) {
 		t.Fatalf("audit by prefix: %d %+v", code, au)
 	}
 	first, second := au.Audit[0], au.Audit[1]
-	if first.Action != "workflow_clone" || first.Target != "daily_news@9" || !strings.Contains(first.Detail, `"from_version":8`) || !strings.Contains(first.Detail, "复制做实验") {
+	if first.Action != "workflow_clone" || first.Target != fmt.Sprintf("daily_news@%d", cl.Version) || !strings.Contains(first.Detail, `"from_version":8`) || !strings.Contains(first.Detail, "复制做实验") {
 		t.Fatalf("clone audit: %+v", first)
 	}
 	if second.Action != "workflow_update" || second.Target != "daily_news@8" || !strings.Contains(second.Detail, "Van：选题时限放宽") || !strings.Contains(second.Detail, "topic 时限 15→20") {

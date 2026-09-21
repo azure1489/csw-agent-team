@@ -3,11 +3,13 @@ package wfctl
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -89,36 +91,51 @@ func TestWfctlEndToEnd(t *testing.T) {
 		t.Fatalf("push without --draft must be usage error, got %d", code)
 	}
 	code, out := run(t, ts, "", false, "push", edited, "--draft", "--reason", "Van：选题时限放宽到 20 分钟")
-	if code != 0 || !strings.Contains(out, "已建草稿 daily_news@v9") {
+	// 版本号从输出里读，不写死：seed 的最高版随迁移增长（0040 已占了 v9 且刻意留作草稿）。
+	m := regexp.MustCompile(`已建草稿 daily_news@v(\d+)`).FindStringSubmatch(out)
+	if code != 0 || m == nil {
 		t.Fatalf("push: %d %s", code, out)
 	}
-	if code, out := run(t, ts, "", false, "validate", "daily_news@9"); code != 0 {
+	ref := "daily_news@" + m[1]
+	if code, out := run(t, ts, "", false, "validate", ref); code != 0 {
 		t.Fatalf("validate: %d %s", code, out)
 	}
-	if code, out := run(t, ts, "", false, "activate", "daily_news@9", "--reason", "Van：激活"); code != 2 || !strings.Contains(out, "终端") {
+	if code, out := run(t, ts, "", false, "activate", ref, "--reason", "Van：激活"); code != 2 || !strings.Contains(out, "终端") {
 		t.Fatalf("activate without tty must require a human: %d %s", code, out)
 	}
-	if code, _ := run(t, ts, "daily_news@v99\n", true, "activate", "daily_news@9", "--reason", "Van：激活"); code != 2 {
+	if code, _ := run(t, ts, "daily_news@v99\n", true, "activate", ref, "--reason", "Van：激活"); code != 2 {
 		t.Fatalf("wrong confirmation must not activate, got %d", code)
 	}
-	if code, out := run(t, ts, "daily_news@v9\n", true, "activate", "daily_news@9", "--reason", "Van：激活"); code != 0 || !strings.Contains(out, "已激活") {
+	if code, out := run(t, ts, "daily_news@v"+m[1]+"\n", true, "activate", ref, "--reason", "Van：激活"); code != 0 || !strings.Contains(out, "已激活") {
 		t.Fatalf("activate with confirmation: %d %s", code, out)
 	}
 	active, _ := st.Q().ActiveWorkflowByKey(context.Background(), "daily_news")
-	if active.Version != 9 {
-		t.Fatalf("active want v9, got v%d", active.Version)
+	if fmt.Sprint(active.Version) != m[1] {
+		t.Fatalf("active want v%s, got v%d", m[1], active.Version)
 	}
 	if code, out := run(t, ts, "", false, "history", "daily_news"); code != 0 || !strings.Contains(out, "workflow_activate") || !strings.Contains(out, "Van：选题时限放宽到 20 分钟") {
 		t.Fatalf("history: %d %s", code, out)
 	}
-	if code, out := run(t, ts, "", false, "rollback", "daily_news@8", "--reason", "回到原时限"); code != 0 || !strings.Contains(out, "草稿 v10") {
+	// 回滚会再开一版草稿，版本号同样不写死
+	if code, out := run(t, ts, "", false, "rollback", "daily_news@8", "--reason", "回到原时限"); code != 0 || !regexp.MustCompile(`草稿 v\d+`).MatchString(out) {
 		t.Fatalf("rollback: %d %s", code, out)
 	}
-	v4, _ := st.Q().ListWorkflowsAll(context.Background(), "daily_news", "draft")
-	if len(v4) != 1 || v4[0].Version != 10 {
-		t.Fatalf("rollback draft: %+v", v4)
+	// seed 里本来就躺着一版草稿（0040 插的工作台版 v9，刻意不激活等人工切换），
+	// 所以这里只认「回滚新开的那一版」——版本号最大的那个草稿，不断言草稿总数。
+	drafts, _ := st.Q().ListWorkflowsAll(context.Background(), "daily_news", "draft")
+	if len(drafts) == 0 {
+		t.Fatalf("rollback draft: 一个草稿都没有")
 	}
-	stages, _ := st.Q().ListStages(context.Background(), v4[0].ID)
+	newest := drafts[0]
+	for _, d := range drafts {
+		if d.Version > newest.Version {
+			newest = d
+		}
+	}
+	if fmt.Sprint(newest.Version) == m[1] {
+		t.Fatalf("回滚应当新开一版草稿，实得 v%d（与刚激活的同版）", newest.Version)
+	}
+	stages, _ := st.Q().ListStages(context.Background(), newest.ID)
 	for _, s := range stages {
 		if s.Code == "topic" && s.SLAMinutes != 15 {
 			t.Fatalf("rollback should carry v8 content, topic sla=%d", s.SLAMinutes)
