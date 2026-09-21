@@ -72,3 +72,68 @@ func TestSyncerImportSplitFeedback(t *testing.T) {
 		t.Fatalf("unknown command must be usage error")
 	}
 }
+
+// TestSyncerKBImport 范例导入：进发布记录表但标 is_reference=1，拆条按人标的写。
+//
+// 为什么要标出来：「正式已发布」与「范例」是判断时的两类对照材料，
+// 混成一类就分不清「这事我们发过」和「这种写法我们认可」。
+func TestSyncerKBImport(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Config{DBPath: filepath.Join(dir, "kb.db")}
+	run := func(args ...string) (int, string) {
+		var out bytes.Buffer
+		code := RunWith(args, cfg, &out, nil)
+		return code, out.String()
+	}
+	jsonl := strings.Join([]string{
+		`{"platform":"wechat","account":"营事编集室","post_id":"abc123","url":"https://mp.weixin.qq.com/s/abc123",` +
+			`"published_at":"2026-09-03","title":"范例一","body_text":"正文内容够长可以入库",` +
+			`"items":[{"seq":1,"brand":"Snow Peak","product":"Capture L","angle":"联名"},` +
+			`{"seq":2,"brand":"KEEN","product":"凉鞋","angle":"改款"}]}`,
+		`{"platform":"wechat","account":"营事编集室","post_id":"def456","title":"范例二","body_text":"另一篇正文"}`,
+		`   `,
+		`{"platform":"wechat","post_id":"","body_text":"缺 post_id"}`,
+	}, "\n")
+	path := write(t, dir, "kb_import.jsonl", jsonl)
+
+	code, out := run("kb-import", path)
+	if code != 0 || !strings.Contains(out, "2 篇、2 条拆条") {
+		t.Fatalf("kb-import: %d %s", code, out)
+	}
+	if !strings.Contains(out, "跳过 1 行") {
+		t.Fatalf("缺 post_id 的那行应当被跳过并计数：%s", out)
+	}
+
+	db, err := sqlite.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	st := sqlite.New(db)
+	ctx := context.Background()
+	p, err := st.Q().GetLedgerPost(ctx, "wechat", "营事编集室", "abc123")
+	if err != nil {
+		t.Fatalf("get post: %v", err)
+	}
+	if !p.IsReference {
+		t.Fatal("范例应当标 is_reference")
+	}
+	if p.Source != "import" || p.PublishEvidence == "" {
+		t.Fatalf("来源与发布凭据不对：%+v", p)
+	}
+	items, _ := st.Q().ListPostItems(ctx, p.ID)
+	if len(items) != 2 || items[0].SplitBy != "manual" {
+		t.Fatalf("拆条应是人标的两条：%+v", items)
+	}
+
+	// 幂等：再跑一次不重复建、不重复拆
+	if code, _ := run("kb-import", path); code != 0 {
+		t.Fatal("重跑应当成功")
+	}
+	var posts, its int
+	_ = db.QueryRow(`SELECT count(*) FROM ledger_published_posts`).Scan(&posts)
+	_ = db.QueryRow(`SELECT count(*) FROM ledger_post_items`).Scan(&its)
+	if posts != 2 || its != 2 {
+		t.Fatalf("重跑后应仍是 2 篇 2 条，实为 %d 篇 %d 条", posts, its)
+	}
+}

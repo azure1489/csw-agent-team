@@ -33,7 +33,8 @@ const usage = `用法：
   syncer split --platform wechat --post <post_id> --manual items.json [--by 校对人]
                                                   人工校对后的合集拆条（覆盖自动拆条）
   syncer feedback import F.jsonl                  导入历史编辑反馈（每行一条 JSON）
-  syncer feedback expire                          把过期的临时反馈置为 expired`
+  syncer feedback expire                          把过期的临时反馈置为 expired
+  syncer kb-import F.jsonl                        导入知识库范例（每行一篇，写入发布记录并标 is_reference=1）`
 
 // Run 执行 syncer，返回退出码。
 func Run(args []string) int { return RunWith(args, config.Load(), os.Stdout, nil) }
@@ -198,6 +199,13 @@ func RunWith(args []string, cfg config.Config, out io.Writer, adapter func(platf
 
 	case "split":
 		return split(ctx, st, out, platform, account(platform), flags)
+
+	case "kb-import":
+		if len(pos) == 0 {
+			fmt.Fprintln(out, "缺 jsonl 文件")
+			return 2
+		}
+		return importKB(ctx, st, out, pos[0])
 
 	case "feedback":
 		if len(pos) == 0 {
@@ -435,5 +443,108 @@ func importFeedback(ctx context.Context, st *sqlite.Store, out io.Writer, path s
 		n++
 	}
 	fmt.Fprintf(out, "导入编辑反馈 %d 条\n", n)
+	return 0
+}
+
+// importKB 导入知识库范例（`docs/知识库/范例/kb_import.jsonl`，每行一篇）。
+//
+// 范例进的是同一张发布记录表，但打 is_reference=1：
+// 「正式已发布」与「范例」是判断时的两类对照材料，混成一类就分不清
+// 「这事我们发过」和「这种写法我们认可」。
+//
+// items 一并写进 ledger_post_items（split_by=manual）：范例的价值恰恰在于
+// 它把一篇里的几条资讯怎么拆、每条什么角度，都标好了。
+func importKB(ctx context.Context, st *sqlite.Store, out io.Writer, path string) int {
+	f, err := os.Open(path)
+	if err != nil {
+		fmt.Fprintln(out, err)
+		return 1
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	// 范例正文是整篇文章，一行能到几十 KB
+	sc.Buffer(make([]byte, 1<<20), 8<<20)
+	posts, items, line, bad := 0, 0, 0, 0
+	for sc.Scan() {
+		line++
+		txt := strings.TrimSpace(sc.Text())
+		if txt == "" {
+			continue
+		}
+		var r struct {
+			Platform    string `json:"platform"`
+			Account     string `json:"account"`
+			PostID      string `json:"post_id"`
+			URL         string `json:"url"`
+			PublishedAt string `json:"published_at"`
+			Title       string `json:"title"`
+			BodyText    string `json:"body_text"`
+			Source      string `json:"source"`
+			State       string `json:"state"`
+			Items       []struct {
+				Seq     int    `json:"seq"`
+				Brand   string `json:"brand"`
+				Product string `json:"product"`
+				Angle   string `json:"angle"`
+				Title   string `json:"title"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal([]byte(txt), &r); err != nil ||
+			strings.TrimSpace(r.PostID) == "" || strings.TrimSpace(r.BodyText) == "" {
+			fmt.Fprintf(out, "第 %d 行无效（须为 JSON 且 post_id、body_text 非空），已跳过\n", line)
+			bad++
+			continue
+		}
+		if r.Platform == "" {
+			r.Platform = "wechat"
+		}
+		if r.State == "" {
+			r.State = "published"
+		}
+		id, created, err := st.Q().UpsertLedgerPost(ctx, domain.LedgerPost{
+			Platform: r.Platform, Account: r.Account, PostID: r.PostID, URL: r.URL,
+			PublishedAt: ledger.NormTime(r.PublishedAt), Title: r.Title, BodyText: r.BodyText,
+			Source: "import", State: r.State, IsReference: true,
+			// 范例的「凭什么说它发布了」就是它自己的公开页地址
+			PublishEvidence: r.URL,
+		})
+		if err != nil {
+			fmt.Fprintf(out, "第 %d 行写入失败：%v\n", line, err)
+			bad++
+			continue
+		}
+		posts++
+		if !created {
+			fmt.Fprintf(out, "  %s 已存在，已更新并标为范例\n", r.PostID)
+		}
+		if len(r.Items) == 0 {
+			continue
+		}
+		list := make([]domain.LedgerPostItem, 0, len(r.Items))
+		for i, it := range r.Items {
+			seq := it.Seq
+			if seq == 0 {
+				seq = i + 1
+			}
+			list = append(list, domain.LedgerPostItem{
+				Seq: seq, Brand: it.Brand, Product: it.Product, Angle: it.Angle, Title: it.Title,
+			})
+		}
+		// 范例的拆条是人标的，不是自动拆的
+		if err := st.Q().ReplacePostItems(ctx, id, list, "manual", "kb-import"); err != nil {
+			fmt.Fprintf(out, "第 %d 行拆条写入失败：%v\n", line, err)
+			bad++
+			continue
+		}
+		items += len(list)
+	}
+	if err := sc.Err(); err != nil {
+		fmt.Fprintln(out, "读文件失败：", err)
+		return 1
+	}
+	fmt.Fprintf(out, "范例导入完成：%d 篇、%d 条拆条，跳过 %d 行\n", posts, items, bad)
+	if posts == 0 {
+		return 1
+	}
 	return 0
 }

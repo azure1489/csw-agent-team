@@ -15,8 +15,14 @@ type LedgerPost struct {
 	RawJSON     string
 	FirstSeenAt string
 	UpdatedAt   string
-	RunID       *int64
-	ID          int64
+	// PublishEvidence 凭什么说它发布了：公开页地址、抓取时间、抓到的标题。
+	// state='published' 只是同步器的一个判断，没有这个就回头核不了。
+	PublishEvidence string
+	RunID           *int64
+	ID              int64
+	// IsReference 这条是不是「范例」。范例是编辑部认可的写法样板，
+	// 与「正式已发布」是两类对照材料，判断时不能混成一类。
+	IsReference bool
 }
 
 // LedgerPostItem 合集里的一条资讯。

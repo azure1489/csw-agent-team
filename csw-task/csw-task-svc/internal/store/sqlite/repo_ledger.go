@@ -11,16 +11,19 @@ import (
 
 // ── 发布记录 ──
 
+// 新列追加在末尾：postCols 与 scanPost 的顺序必须严格一致。
 const postCols = `id, platform, account, post_id, url, published_at, title, body_text, template_ver, source, state, run_id,
-	raw_json, first_seen_at, updated_at`
+	raw_json, first_seen_at, updated_at, publish_evidence, is_reference`
 
 func scanPost(s interface{ Scan(...any) error }) (domain.LedgerPost, error) {
 	var p domain.LedgerPost
-	var url, pub, body, tpl, raw sql.NullString
+	var url, pub, body, tpl, raw, evidence sql.NullString
 	var run sql.NullInt64
+	var isRef int
 	err := s.Scan(&p.ID, &p.Platform, &p.Account, &p.PostID, &url, &pub, &p.Title, &body, &tpl, &p.Source, &p.State, &run,
-		&raw, &p.FirstSeenAt, &p.UpdatedAt)
+		&raw, &p.FirstSeenAt, &p.UpdatedAt, &evidence, &isRef)
 	p.URL, p.PublishedAt, p.BodyText, p.TemplateVer, p.RawJSON, p.RunID = url.String, pub.String, body.String, tpl.String, raw.String, ptrI64(run)
+	p.PublishEvidence, p.IsReference = evidence.String, isRef == 1
 	return p, err
 }
 
@@ -37,10 +40,11 @@ func (q *Queries) UpsertLedgerPost(ctx context.Context, p domain.LedgerPost) (in
 		p.Platform, p.Account, p.PostID).Scan(&id)
 	if err == sql.ErrNoRows {
 		res, err := q.ex.ExecContext(ctx, `
-			INSERT INTO ledger_published_posts (platform, account, post_id, url, published_at, title, body_text, template_ver, source, state, run_id, raw_json)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+			INSERT INTO ledger_published_posts (platform, account, post_id, url, published_at, title, body_text, template_ver, source, state, run_id, raw_json, publish_evidence, is_reference)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			p.Platform, p.Account, p.PostID, nullIfEmpty(p.URL), nullIfEmpty(p.PublishedAt), p.Title, nullIfEmpty(p.BodyText),
-			nullIfEmpty(p.TemplateVer), p.Source, p.State, nullI64(p.RunID), nullIfEmpty(p.RawJSON))
+			nullIfEmpty(p.TemplateVer), p.Source, p.State, nullI64(p.RunID), nullIfEmpty(p.RawJSON),
+			nullIfEmpty(p.PublishEvidence), boolToInt(p.IsReference))
 		if err != nil {
 			return 0, false, err
 		}
@@ -55,10 +59,14 @@ func (q *Queries) UpsertLedgerPost(ctx context.Context, p domain.LedgerPost) (in
 			url=COALESCE(?, url), published_at=COALESCE(?, published_at),
 			title=CASE WHEN ?<>'' THEN ? ELSE title END, body_text=COALESCE(?, body_text),
 			template_ver=COALESCE(?, template_ver), state=?, raw_json=COALESCE(?, raw_json),
+			publish_evidence=COALESCE(?, publish_evidence),
+			-- 是不是范例只升不降：同步器再跑一遍不该把人标过的范例标记抹掉
+			is_reference=CASE WHEN ?=1 THEN 1 ELSE is_reference END,
 			updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
 		WHERE id=?`,
 		nullIfEmpty(p.URL), nullIfEmpty(p.PublishedAt), p.Title, p.Title, nullIfEmpty(p.BodyText),
-		nullIfEmpty(p.TemplateVer), p.State, nullIfEmpty(p.RawJSON), id)
+		nullIfEmpty(p.TemplateVer), p.State, nullIfEmpty(p.RawJSON),
+		nullIfEmpty(p.PublishEvidence), boolToInt(p.IsReference), id)
 	return id, false, err
 }
 
