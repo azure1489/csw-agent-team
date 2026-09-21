@@ -15,5 +15,6 @@ pub mod record;
 pub mod store;
 pub mod types;
 
-/// 本地状态库的 schema 版本。每次迁移 +1，`store` 启动时比对并升级。
-pub const LOCAL_SCHEMA_VERSION: u32 = 0;
+pub use config::{Config, Secrets};
+pub use record::{Mode as RecordMode, Recorder};
+pub use store::SCHEMA_VERSION as LOCAL_SCHEMA_VERSION;

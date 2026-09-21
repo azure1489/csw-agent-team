@@ -1,0 +1,696 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "csw-collector",
+    "description": "",
+    "license": {
+      "name": "UNLICENSED",
+      "identifier": "UNLICENSED"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {},
+  "components": {
+    "schemas": {
+      "Candidate": {
+        "type": "object",
+        "description": "统一候选格式。不管从哪个采集器来，到这一层就长一个样，\n后面的合并、对照、判断都不必关心它从哪来。",
+        "required": [
+          "candidate_key",
+          "platform",
+          "source_id",
+          "collector",
+          "account",
+          "url",
+          "text",
+          "translated",
+          "content_type",
+          "media",
+          "tags",
+          "hashtags"
+        ],
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "candidate_key": {
+            "type": "string",
+            "description": "条目键：品牌小写 + `-` + 链接 sha256 前 6 位。与交付物里的条目键同一个。"
+          },
+          "collector": {
+            "type": "string",
+            "description": "哪个采集器取到的"
+          },
+          "comments": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "content_type": {
+            "type": "string",
+            "description": "来源平台的内容类型原值（Image / Carousel / Reel …），留原文便于追。"
+          },
+          "followers": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "hashtags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "heat_ratio": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "相对该账号近 90 天中位点赞的倍数。热度是输入，不是维度。"
+          },
+          "ingested_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "首次进入来源库的时间。**窗口按这个算**——`posts/window` 只按发布时间过滤，\n所以采集器取更宽的发布时间窗口，再在本地按这个字段收口。"
+          },
+          "likes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "media": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MediaRef"
+            }
+          },
+          "platform": {
+            "$ref": "#/components/schemas/Platform"
+          },
+          "posted_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "原始披露时间"
+          },
+          "source_id": {
+            "type": "string",
+            "description": "平台侧的原始 id（Instagram 是短码 / postId）"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "csw 后台的标签与话题。线上接口目前不返回，采集器要容忍缺失。"
+          },
+          "text": {
+            "type": "string",
+            "description": "原文"
+          },
+          "translated": {
+            "type": "string",
+            "description": "平台给的译文，没有就空"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "Comparison": {
+        "type": "object",
+        "required": [
+          "verdict",
+          "against",
+          "note"
+        ],
+        "properties": {
+          "against": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "verdict": {
+            "$ref": "#/components/schemas/ComparisonVerdict"
+          }
+        }
+      },
+      "ComparisonVerdict": {
+        "type": "string",
+        "enum": [
+          "same_fact_no_gain",
+          "same_brand_with_gain",
+          "unrelated"
+        ]
+      },
+      "Dim": {
+        "type": "string",
+        "description": "Van 的六个维度。键固定，不增不减——改维度要她本人点头。",
+        "enum": [
+          "change",
+          "use",
+          "gain",
+          "compare",
+          "explain",
+          "csw"
+        ]
+      },
+      "DimJudgement": {
+        "type": "object",
+        "required": [
+          "verdict",
+          "basis"
+        ],
+        "properties": {
+          "basis": {
+            "type": "string",
+            "description": "依据：引正文原话，或指明第几张图。**编不出来就判 Unclear，不许造。**\nJev 的核对步骤专门抓这里的编造（实测张冠李戴 100% 抓出）。"
+          },
+          "verdict": {
+            "$ref": "#/components/schemas/Verdict"
+          }
+        }
+      },
+      "EventGroup": {
+        "type": "object",
+        "description": "合并后的一件事。同一件事可能被多个账号发成多条候选。",
+        "required": [
+          "event_key",
+          "primary",
+          "members",
+          "merge_note"
+        ],
+        "properties": {
+          "event_key": {
+            "type": "string"
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "merge_note": {
+            "type": "string",
+            "description": "合并依据：向量相似度 + Jev 的同一事件概率（阈值 0.5）"
+          },
+          "primary": {
+            "type": "string",
+            "description": "代表条目：正文最全、图最多的那条"
+          }
+        }
+      },
+      "ImageKind": {
+        "type": "string",
+        "enum": [
+          "product",
+          "detail",
+          "scene",
+          "poster",
+          "outfit",
+          "screenshot",
+          "unrelated"
+        ]
+      },
+      "Judgement": {
+        "type": "object",
+        "description": "一条候选的判断结论。",
+        "required": [
+          "candidate_key",
+          "tier",
+          "dims",
+          "three_sentences",
+          "unanswered",
+          "comparison",
+          "heat_note",
+          "look",
+          "image_seen",
+          "gaps",
+          "priority_hits",
+          "lower_hits",
+          "jev_disagreement",
+          "kb_refs",
+          "memory_refs",
+          "inputs_hash"
+        ],
+        "properties": {
+          "candidate_key": {
+            "type": "string"
+          },
+          "comparison": {
+            "$ref": "#/components/schemas/Comparison"
+          },
+          "dims": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": false,
+              "prefixItems": [
+                {
+                  "type": "string",
+                  "description": "Van 的六个维度。键固定，不增不减——改维度要她本人点头。",
+                  "enum": [
+                    "change",
+                    "use",
+                    "gain",
+                    "compare",
+                    "explain",
+                    "csw"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "verdict",
+                    "basis"
+                  ],
+                  "properties": {
+                    "basis": {
+                      "type": "string",
+                      "description": "依据：引正文原话，或指明第几张图。**编不出来就判 Unclear，不许造。**\nJev 的核对步骤专门抓这里的编造（实测张冠李戴 100% 抓出）。"
+                    },
+                    "verdict": {
+                      "$ref": "#/components/schemas/Verdict"
+                    }
+                  }
+                }
+              ]
+            },
+            "description": "六维，键齐全"
+          },
+          "gaps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "heat_note": {
+            "type": "string",
+            "description": "热度说明。是输入的呈现，不是维度。"
+          },
+          "image_seen": {
+            "type": "boolean",
+            "description": "**没真正读到实图就是 false，且 tier 必须是 PendingCheck。**"
+          },
+          "inputs_hash": {
+            "type": "string",
+            "description": "决定这条结论能不能复用的输入指纹：正文、描述版本、对照材料、准则版本、\n作业标准、模型与提示词版本。预取轮与正式轮靠它对账。"
+          },
+          "jev_disagreement": {
+            "type": "string",
+            "description": "与 Jev 初评不一致时写明分歧，否则空"
+          },
+          "kb_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "引用到的参考库条目与选题记忆"
+          },
+          "look": {
+            "type": "string",
+            "description": "实图里看到的外观与设计要点"
+          },
+          "lower_hits": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "memory_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "priority_hits": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "命中的七类优先关注 / 七类降低优先级。是倾向，不是黑名单。"
+          },
+          "three_sentences": {
+            "$ref": "#/components/schemas/ThreeSentences"
+          },
+          "tier": {
+            "$ref": "#/components/schemas/Tier"
+          },
+          "unanswered": {
+            "$ref": "#/components/schemas/Unanswered"
+          }
+        }
+      },
+      "Material": {
+        "type": "object",
+        "required": [
+          "kind",
+          "ref_id",
+          "title",
+          "source",
+          "quote",
+          "publish_state"
+        ],
+        "properties": {
+          "date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MaterialKind"
+          },
+          "publish_state": {
+            "type": "string",
+            "description": "发布状态，供「30 天查重」区分正式已发与未发"
+          },
+          "quote": {
+            "type": "string",
+            "description": "原话。Van 的决定类必须带。"
+          },
+          "ref_id": {
+            "type": "string",
+            "description": "来源标识（已发条目 id、范例编号、贴文短码、决定 id、上一轮的 candidate_key）"
+          },
+          "source": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "MaterialKind": {
+        "type": "string",
+        "description": "五类对照材料，**缺一不判**。",
+        "enum": [
+          "published",
+          "example",
+          "generated_post",
+          "decision",
+          "prior_ledger"
+        ]
+      },
+      "MediaDescription": {
+        "type": "object",
+        "description": "一张图的识别结果（总方案 §5.5 的结构化输出）。",
+        "required": [
+          "blake3",
+          "ordinal",
+          "matches_text",
+          "content",
+          "missing_from_text",
+          "kind",
+          "usable_as_figure",
+          "model",
+          "prompt_version"
+        ],
+        "properties": {
+          "blake3": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string",
+            "description": "画面里实际有什么。只写看得见的。"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ImageKind"
+          },
+          "matches_text": {
+            "type": "string",
+            "description": "对应正文哪一点；正文里没有就写「正文未提及」"
+          },
+          "missing_from_text": {
+            "type": "string",
+            "description": "正文提到但画面没有的"
+          },
+          "model": {
+            "type": "string",
+            "description": "模型与提示词版本，便于判「这条描述该不该重算」"
+          },
+          "ordinal": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "prompt_version": {
+            "type": "string"
+          },
+          "usable_as_figure": {
+            "type": "boolean"
+          }
+        }
+      },
+      "MediaKind": {
+        "type": "string",
+        "enum": [
+          "photo",
+          "video"
+        ]
+      },
+      "MediaRef": {
+        "type": "object",
+        "required": [
+          "source_hash",
+          "kind",
+          "url",
+          "ordinal"
+        ],
+        "properties": {
+          "blake3": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "下载并按内容哈希存盘后的 blake3，未下载时为空"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MediaKind"
+          },
+          "ordinal": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "source_hash": {
+            "type": "string",
+            "description": "来源侧的媒体哈希。**跨账号转载时对不上**（实测窗口内共享哈希的组为 0），\n所以它只能去同一条内的重复，合并同一事件得靠向量 + Jev。"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "OutboxKind": {
+        "type": "string",
+        "description": "写引擎的动作。先落 outbox 再发，崩溃后可续、可幂等重放。",
+        "enum": [
+          "ack",
+          "items",
+          "sweeps",
+          "judgements",
+          "deliverable",
+          "supplement",
+          "fail"
+        ]
+      },
+      "OutboxStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "sending",
+          "confirmed",
+          "conflict",
+          "dead"
+        ]
+      },
+      "Platform": {
+        "type": "string",
+        "description": "候选来自哪个平台。采集器可以有很多个，平台就这几类。",
+        "enum": [
+          "instagram",
+          "xiaohongshu",
+          "web"
+        ]
+      },
+      "RoundKind": {
+        "type": "string",
+        "description": "一轮是怎么起来的。\n\n`Prefetch` 是 0.4 / 0.5 实测之后加的：网关侧一轮要约 95 分钟，\n05:30 接单再从零跑必然超时。预取只写本地缓存，不写引擎、不群播报。",
+        "enum": [
+          "task",
+          "manual",
+          "prefetch",
+          "replay"
+        ]
+      },
+      "RoundTrigger": {
+        "type": "string",
+        "description": "这一轮由什么事件触发。与 `RoundKind::Task` 配合区分正常派单、退回返工与补件。",
+        "enum": [
+          "dispatch",
+          "returned",
+          "supplement",
+          "manual"
+        ]
+      },
+      "StepCode": {
+        "type": "string",
+        "description": "十步流程。步与步之间靠 `input_hash` 判是否可复用。",
+        "enum": [
+          "intake",
+          "harvest",
+          "merge",
+          "materials",
+          "judge",
+          "deepcheck",
+          "build",
+          "register",
+          "self_check",
+          "submit"
+        ]
+      },
+      "StepStatus": {
+        "type": "string",
+        "description": "一步的状态。\n\n`Interrupted` 专给进程崩溃后重启用：启动时把还挂着 `Running` 的改成 `Interrupted`，\n再去续跑没做完的单元，而不是从头再来。",
+        "enum": [
+          "pending",
+          "running",
+          "succeeded",
+          "partial",
+          "failed",
+          "skipped",
+          "stale",
+          "interrupted"
+        ]
+      },
+      "ThreeSentences": {
+        "type": "object",
+        "required": [
+          "what_changed",
+          "why_it_matters",
+          "how_different"
+        ],
+        "properties": {
+          "how_different": {
+            "type": "string"
+          },
+          "what_changed": {
+            "type": "string"
+          },
+          "why_it_matters": {
+            "type": "string"
+          }
+        }
+      },
+      "Tier": {
+        "type": "string",
+        "description": "结论档。**只有这四个，没有分数。**",
+        "enum": [
+          "recommend",
+          "alternate",
+          "not_recommend",
+          "pending_check"
+        ]
+      },
+      "Triage": {
+        "type": "object",
+        "description": "Jev 初评。**只在内部决定「先判哪条」**，不进台账、不显示成分数。\n\n0.7 实测：六维方向全对，`explain` / `csw` / `use` 分得最开；\n但总判 `worth` 当淘汰闸不行——阈值 0.30 会丢掉 29% 本该写的。所以它只排序。",
+        "required": [
+          "candidate_key",
+          "dims",
+          "worth",
+          "lower_hits",
+          "model"
+        ],
+        "properties": {
+          "candidate_key": {
+            "type": "string"
+          },
+          "dims": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": false,
+              "prefixItems": [
+                {
+                  "type": "string",
+                  "description": "Van 的六个维度。键固定，不增不减——改维度要她本人点头。",
+                  "enum": [
+                    "change",
+                    "use",
+                    "gain",
+                    "compare",
+                    "explain",
+                    "csw"
+                  ]
+                },
+                {
+                  "type": "number",
+                  "format": "double"
+                }
+              ]
+            },
+            "description": "每维「成立」的概率"
+          },
+          "lower_hits": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": false,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number",
+                  "format": "double"
+                }
+              ]
+            },
+            "description": "七类降低优先级，一类一个概率（合成一个问法实测不分）"
+          },
+          "model": {
+            "type": "string"
+          },
+          "worth": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "Unanswered": {
+        "type": "string",
+        "description": "三句话答不清时，说明是哪一种答不清。",
+        "enum": [
+          "none",
+          "missing_material",
+          "angle_not_formed",
+          "low_value"
+        ]
+      },
+      "Verdict": {
+        "type": "string",
+        "enum": [
+          "yes",
+          "no",
+          "unclear"
+        ]
+      }
+    }
+  }
+}
