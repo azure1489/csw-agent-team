@@ -174,3 +174,48 @@ def fig_state():
     return fig(svg(1130, 356, b, "候选状态：已采集、已合并、有对照材料，然后判成推荐、备选、不推荐或待核；硬性排除只用硬事实且可捞回；推荐进深核、登记、Van 决定；待核可补齐重判或结转关闭；决定回流记忆"),
                "图 3 · 一条候选的状态。没有「因口味淘汰」这一档：不推荐照样保留、随时捞回；排除只用硬事实（窗口外、与 03 否决的同一事实同角度）；待核不永久出局。")
 
+# ---------- 图 4：部署拓扑 ----------
+def fig_deploy():
+    b = ""
+    def host(x, y, w, h, title, sub):
+        return (f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="8" fill="none" stroke="currentColor" stroke-opacity=".5" stroke-width="1.2"/>'
+                f'<text x="{x + 12}" y="{y + 19}" font-size="12.5" font-weight="700" fill="currentColor">{esc(title)}</text>'
+                f'<text x="{x + 12}" y="{y + 36}" font-size="10.5" fill="currentColor" opacity=".65">{esc(sub)}</text>')
+    def note(x, y, t): return f'<text x="{x}" y="{y}" font-size="11" fill="currentColor" opacity=".8">{esc(t)}</text>'
+    # agent 主机
+    b += host(20, 20, 580, 340, "agent 主机 centos9 · 8.138.23.218（ssh 9318）", "8 vCPU · 30 GB（可用 9）· 866 GB（用 85%）· P40 24 GB · CentOS 9 · Rust 1.95 · bwrap · Docker")
+    b += box(40, 72, 240, 44, "csw-collector（新，Rust）", "systemd · :8090 · LanceDB · 图片", accent=True)
+    b += box(40, 128, 240, 40, "codex app-server（新装）", "子进程 · stdio · 独立 CODEX_HOME")
+    b += box(40, 180, 240, 40, "opencli + Chrome（已在）", "小红书 · 网页")
+    b += box(40, 232, 240, 40, "Hermes 网关 · 收集员（已在）", "切换时停；其余角色照常", dashed=True)
+    b += box(340, 72, 240, 44, "qwen3-vl-embedding（已在）", "Docker · :8022 · 单 GPU 串行", accent=True)
+    b += box(340, 128, 240, 40, "base-nginx（已在）", "80 / 443 · *.aworld.ltd 证书")
+    b += box(340, 180, 240, 40, "csw-collector-web（新）", "静态文件 · 由 collector 托管")
+    b += box(340, 232, 240, 40, "无关负载（已在）", "jellyfin · es · llm-wiki · open-webui")
+    b += arrow(280, 94, 340, 94, "本机 :8022", lx=310, ly=86)
+    b += arrow(160, 116, 160, 128); b += arrow(160, 168, 160, 180)
+    b += arrow(460, 180, 460, 168)
+    b += note(40, 296, "入口：collector.aworld.ltd → base-nginx :443 → 127.0.0.1:8090（JWT 复用引擎密钥）")
+    b += note(40, 316, "目录：/opt/csw-collector/{bin, collector.env, data/lancedb, data/images, data/threads, logs}")
+    b += note(40, 336, "出站：csw-agent API · 引擎 API · sub2api · OSS 图片直链 · 本机向量服务")
+    # 引擎主机 / csw-agent 主机
+    b += host(640, 20, 300, 160, "引擎主机 · 8.138.43.109 · tasks.aworld.ltd", "2 vCPU · 3 GB · 30 GB 可用 · Go + SQLite")
+    b += box(660, 72, 260, 40, "server :8080 · adminsrv :8081", "nginx: /api/v1 · /admin · SPA")
+    b += box(660, 122, 260, 40, "csw-daily-trigger.timer 05:30", "run · 派单 · 群播报")
+    b += host(640, 200, 300, 160, "csw-agent 主机 · 47.245.60.56", "agent.campsomewhere.com · Docker")
+    b += box(660, 252, 260, 40, "csw-agent-prod :8000 · pgvector", "posts/window · posts/{id} · generated")
+    b += box(660, 302, 260, 40, "instagram-data 抓取器（screen）", "01:00 触发 Bright Data → webhook 入库")
+    # 外部
+    b += box(980, 72, 170, 40, "sub2api · 38.49.38.56", "gpt-6-astra · Responses")
+    b += box(980, 132, 170, 40, "阿里云 OSS", "cws-file · 贴文图片")
+    b += box(980, 212, 170, 40, "飞书", "群播报 · Hermes 网关")
+    b += box(980, 272, 170, 40, "Bright Data", "Instagram 采集")
+    # 连线
+    b += arrow(600, 92, 660, 92, "bearer · HTTPS", lx=630, ly=84)
+    b += arrow(600, 272, 660, 272, "API key · HTTPS", lx=630, ly=264)
+    b += arrow(600, 190, 980, 92, "HTTPS：模型调用 · 图片直链", via=[(955, 190), (955, 92)], lx=780, ly=184)
+    b += arrow(955, 152, 980, 152)
+    b += arrow(940, 142, 980, 232, "播报", via=[(966, 142), (966, 232)], lx=972, ly=200, anchor="start")
+    b += arrow(940, 322, 980, 292, "触发 · 回写", via=[(966, 322), (966, 292)], lx=972, ly=340, anchor="start")
+    return fig(svg(1170, 372, b, "部署拓扑：新采集服务与工作台放在 agent 主机，与向量服务同机；引擎与 csw-agent 各在自己的主机；模型网关、OSS、飞书、Bright Data 在外部"),
+               "图 4 · 部署拓扑。新增的只有 agent 主机上的 csw-collector（含工作台静态文件）和 codex 子进程；向量服务本来就在这台机上，走本机端口不经 nginx。引擎主机与 csw-agent 主机不动，只各加一个接口。")

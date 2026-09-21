@@ -1,0 +1,218 @@
+<title>收集员工作台架构与部署</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&display=swap">
+<style>
+:root { --ground:#F4F5F7; --surface:#FFFFFF; --ink:#1B1F2A; --muted:#5F6673; --rule:#DCDFE6; --accent:#4F46E5; --accent-soft:#EEF0FD; --warn:#B23B2A; --code-bg:#ECEEF3;
+  --sans:"Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif; --serif:"Noto Serif SC","Songti SC",serif; --mono:"IBM Plex Mono",Menlo,monospace; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --ground:#12141A; --surface:#1A1D26; --ink:#E6E8EE; --muted:#9AA1AE; --rule:#2C3140; --accent:#8B85F6; --accent-soft:#232647; --warn:#F08A76; --code-bg:#22263A; } }
+:root[data-theme="dark"] { --ground:#12141A; --surface:#1A1D26; --ink:#E6E8EE; --muted:#9AA1AE; --rule:#2C3140; --accent:#8B85F6; --accent-soft:#232647; --warn:#F08A76; --code-bg:#22263A; }
+body { background:var(--ground); color:var(--ink); font-family:var(--sans); font-size:16px; line-height:1.85; padding-inline:20px; padding-block:44px 96px; }
+.page { max-width:1000px; margin-inline:auto; display:flex; flex-direction:column; gap:28px; }
+.eyebrow { font-size:13px; color:var(--muted); letter-spacing:.08em; display:flex; flex-wrap:wrap; gap:4px 14px; }
+.chip { border:1px solid var(--accent); color:var(--accent); padding:0 8px; border-radius:3px; }
+h1 { font-family:var(--serif); font-weight:700; font-size:clamp(28px,5vw,38px); line-height:1.3; margin:12px 0 14px; text-wrap:balance; }
+h1 span { display:block; font-family:var(--sans); font-size:.5em; font-weight:500; color:var(--accent); margin-top:6px; }
+.lede { font-size:17px; line-height:1.9; margin:0; max-width:46em; }
+nav ol { list-style:none; margin:0; padding:0; display:flex; flex-wrap:wrap; gap:6px 8px; }
+nav a { display:block; font-size:13.5px; padding:3px 11px; border:1px solid var(--rule); border-radius:3px; background:var(--surface); color:var(--ink); text-decoration:none; }
+nav a:hover { border-color:var(--accent); color:var(--accent); }
+article { min-width:0; }
+article h2 { font-family:var(--serif); font-weight:700; font-size:24px; margin:56px 0 14px; padding-top:18px; border-top:2px solid var(--ink); text-wrap:balance; }
+article h3 { font-size:17px; font-weight:700; margin:34px 0 8px; color:var(--accent); }
+article p { margin:12px 0; max-width:46em; }
+article ul, article ol { padding-left:1.4em; margin:12px 0; display:flex; flex-direction:column; gap:6px; max-width:46em; }
+code { font-family:var(--mono); font-size:.86em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+.table-wrap { overflow-x:auto; margin:18px 0; border:1px solid var(--rule); border-radius:6px; background:var(--surface); }
+table { border-collapse:collapse; width:100%; font-size:14.5px; line-height:1.7; }
+th, td { text-align:left; vertical-align:top; padding:10px 13px; border-bottom:1px solid var(--rule); min-width:6em; }
+th { font-size:13px; color:var(--muted); background:var(--ground); font-weight:700; white-space:nowrap; }
+tr:last-child td { border-bottom:0; }
+.diagram { margin:22px 0; background:var(--surface); border:1px solid var(--rule); border-radius:8px; padding:18px 18px 12px; overflow-x:auto; }
+.diagram svg { display:block; min-width:640px; }
+.diagram figcaption { font-size:13.5px; color:var(--muted); line-height:1.6; margin-top:10px; max-width:60em; }
+footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule); padding-top:16px; }
+@media (max-width:560px) { body { font-size:15.5px; padding-inline:16px; } }
+</style>
+<div class="page">
+<header>
+  <div class="eyebrow"><span>营事编集室 · 情报收集员改造</span><span>分析稿 · 2026-09-21</span><span class="chip">动工前底数</span></div>
+  <h1>情报收集员工作台<span>架构与部署分析</span></h1>
+  <p class="lede">新东西只有一个 Rust 进程和它托管的工作台，放在 agent 主机上，和已经在那台机上的向量服务同机；引擎主机与 csw-agent 主机不动，各只加一个接口。真正的风险不在架构，在 agent 主机已经很挤，以及三个外部依赖各是单点。数据为 9/21 实查。</p>
+</header>
+<nav aria-label="目录"><ol><li><a href="#1-现有主机与它们现在跑什么-9-21-实查">1. 现有主机与它们现在跑什么（9/21 实查）</a></li><li><a href="#2-架构判断">2. 架构判断</a></li><li><a href="#3-部署方式">3. 部署方式</a></li><li><a href="#4-单点与失败面">4. 单点与失败面</a></li><li><a href="#5-安全面">5. 安全面</a></li><li><a href="#6-监控">6. 监控</a></li><li><a href="#7-动工前要定">7. 动工前要定</a></li></ol></nav>
+<article><h2 id="1-现有主机与它们现在跑什么-9-21-实查">1. 现有主机与它们现在跑什么（9/21 实查）</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>主机</th>
+<th>规格</th>
+<th>已经在跑</th>
+<th>与本项目的关系</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>agent 主机</strong> centos9 · 8.138.23.218（ssh 9318）</td>
+<td>8 vCPU · 30 GB 内存，<strong>可用仅 9 GB</strong> · 866 GB 磁盘，<strong>已用 85%</strong>（/opt/docker 133 GB）· <strong>Tesla P40 24 GB</strong>（已用 17.8 GB）· CentOS Stream 9，glibc 2.34 · Rust 1.95、cargo、bwrap、Docker 27、Node 24 都在</td>
+<td>Hermes 主网关（挂 csw MCP 与 sub2api，很可能就是收集员）与 chief / researcher / deepwriter / xhswriter 四个 profile 网关；opencli + Chrome；<strong>qwen3-vl-embedding 容器（:8022，4.7 GB 内存，就是 <code>embedding.aworld.ltd</code>）</strong>；base-nginx（80 / 443，*.aworld.ltd 证书）；与本项目无关的 jellyfin（2 GB）、es（1.7 GB）、java 服务（1.7 GB）、llm-wiki × 3、open-webui、pgvector、mysql、clash、frpc × 2</td>
+<td>新采集服务与工作台放这里：向量服务同机、Chrome 同机、Hermes 过渡同机</td>
+</tr>
+<tr>
+<td><strong>引擎主机</strong> 8.138.43.109 · tasks.aworld.ltd</td>
+<td>2 vCPU · 3 GB · 30 GB 可用</td>
+<td>csw-task server :8080、adminsrv :8081、<code>csw-daily-trigger.timer</code> 05:30；SQLite 9.3 MB；base-nginx（/api/v1 → 8080、/healthz → 8080、/admin → 8081、/ → 后台 SPA）；另有几个无关容器</td>
+<td>只加 <code>intake_judgements</code> 表与两个接口、<code>ledger_published_posts</code> 两列；不放向量、不放图片</td>
+</tr>
+<tr>
+<td><strong>csw-agent 主机</strong> 47.245.60.56 · agent.campsomewhere.com</td>
+<td>Docker</td>
+<td>csw-agent-prod :8000（nginx 反代）、csw-prod、pgvector pg18（<code>csw_pgv</code>）、mysql、redis、csw-upload（转存 OSS）、csw-generate、rsshub、n8n、new-api；<code>instagram-data</code> 抓取器以裸二进制跑在 screen 会话 <code>in-data</code>，01:00 触发 Bright Data，webhook 回写</td>
+<td>只读：<code>posts/window</code>（标签补丁待部署）、<code>posts/{id}</code>、<code>posts/generated</code>、<code>selections</code>（不进评选）、<code>accounts</code></td>
+</tr>
+<tr>
+<td><strong>外部</strong></td>
+<td>——</td>
+<td>sub2api <code>csw-subapi.833233.xyz</code>（38.49.38.56，gpt-6-astra / gpt-5.6）；阿里云 OSS <code>cws-file</code>（贴文图片直链）；飞书；Bright Data</td>
+<td>模型、图片、群播报、抓取</td>
+</tr>
+<tr>
+<td><strong>开发机</strong>（Mac）</td>
+<td>——</td>
+<td>codex 0.149、Rust 1.98、TypeSafe 密钥、知识库范例构建脚本</td>
+<td>构建、交叉编译、离线批处理</td>
+</tr>
+</tbody>
+</table></div>
+<p>从 agent 主机实测出站：csw-agent API 200（0.9 秒）、引擎 <code>/healthz</code> 200、sub2api 可达（401 是没带密钥）、向量服务本机可达（nginx 上 403 是没带密钥）。</p>
+<figure class="diagram"><svg viewBox="0 0 1170 372" role="img" aria-label="部署拓扑：新采集服务与工作台放在 agent 主机，与向量服务同机；引擎与 csw-agent 各在自己的主机；模型网关、OSS、飞书、Bright Data 在外部" style="max-width:100%;height:auto;font-family:inherit"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker><marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4F46E5"/></marker></defs><rect x="20" y="20" width="580" height="340" rx="8" fill="none" stroke="currentColor" stroke-opacity=".5" stroke-width="1.2"/><text x="32" y="39" font-size="12.5" font-weight="700" fill="currentColor">agent 主机 centos9 · 8.138.23.218（ssh 9318）</text><text x="32" y="56" font-size="10.5" fill="currentColor" opacity=".65">8 vCPU · 30 GB（可用 9）· 866 GB（用 85%）· P40 24 GB · CentOS 9 · Rust 1.95 · bwrap · Docker</text><rect x="40" y="72" width="240" height="44" rx="6" fill="var(--surface,#fff)" stroke="#4F46E5" stroke-width="2"/><text x="160.0" y="91.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">csw-collector（新，Rust）</text><text x="160.0" y="107.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">systemd · :8090 · LanceDB · 图片</text><rect x="40" y="128" width="240" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="160.0" y="145.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">codex app-server（新装）</text><text x="160.0" y="161.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">子进程 · stdio · 独立 CODEX_HOME</text><rect x="40" y="180" width="240" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="160.0" y="197.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">opencli + Chrome（已在）</text><text x="160.0" y="213.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">小红书 · 网页</text><rect x="40" y="232" width="240" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2" stroke-dasharray="6 4"/><text x="160.0" y="249.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">Hermes 网关 · 收集员（已在）</text><text x="160.0" y="265.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">切换时停；其余角色照常</text><rect x="340" y="72" width="240" height="44" rx="6" fill="var(--surface,#fff)" stroke="#4F46E5" stroke-width="2"/><text x="460.0" y="91.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">qwen3-vl-embedding（已在）</text><text x="460.0" y="107.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">Docker · :8022 · 单 GPU 串行</text><rect x="340" y="128" width="240" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="460.0" y="145.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">base-nginx（已在）</text><text x="460.0" y="161.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">80 / 443 · *.aworld.ltd 证书</text><rect x="340" y="180" width="240" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="460.0" y="197.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">csw-collector-web（新）</text><text x="460.0" y="213.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">静态文件 · 由 collector 托管</text><rect x="340" y="232" width="240" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="460.0" y="249.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">无关负载（已在）</text><text x="460.0" y="265.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">jellyfin · es · llm-wiki · open-webui</text><polyline points="280,94 340,94" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="310" y="86" text-anchor="middle" font-size="11" fill="currentColor">本机 :8022</text><polyline points="160,116 160,128" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="160,168 160,180" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="460,180 460,168" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="40" y="296" font-size="11" fill="currentColor" opacity=".8">入口：collector.aworld.ltd → base-nginx :443 → 127.0.0.1:8090（JWT 复用引擎密钥）</text><text x="40" y="316" font-size="11" fill="currentColor" opacity=".8">目录：/opt/csw-collector/{bin, collector.env, data/lancedb, data/images, data/threads, logs}</text><text x="40" y="336" font-size="11" fill="currentColor" opacity=".8">出站：csw-agent API · 引擎 API · sub2api · OSS 图片直链 · 本机向量服务</text><rect x="640" y="20" width="300" height="160" rx="8" fill="none" stroke="currentColor" stroke-opacity=".5" stroke-width="1.2"/><text x="652" y="39" font-size="12.5" font-weight="700" fill="currentColor">引擎主机 · 8.138.43.109 · tasks.aworld.ltd</text><text x="652" y="56" font-size="10.5" fill="currentColor" opacity=".65">2 vCPU · 3 GB · 30 GB 可用 · Go + SQLite</text><rect x="660" y="72" width="260" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="790.0" y="89.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">server :8080 · adminsrv :8081</text><text x="790.0" y="105.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">nginx: /api/v1 · /admin · SPA</text><rect x="660" y="122" width="260" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="790.0" y="139.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">csw-daily-trigger.timer 05:30</text><text x="790.0" y="155.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">run · 派单 · 群播报</text><rect x="640" y="200" width="300" height="160" rx="8" fill="none" stroke="currentColor" stroke-opacity=".5" stroke-width="1.2"/><text x="652" y="219" font-size="12.5" font-weight="700" fill="currentColor">csw-agent 主机 · 47.245.60.56</text><text x="652" y="236" font-size="10.5" fill="currentColor" opacity=".65">agent.campsomewhere.com · Docker</text><rect x="660" y="252" width="260" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="790.0" y="269.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">csw-agent-prod :8000 · pgvector</text><text x="790.0" y="285.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">posts/window · posts/{id} · generated</text><rect x="660" y="302" width="260" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="790.0" y="319.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">instagram-data 抓取器（screen）</text><text x="790.0" y="335.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">01:00 触发 Bright Data → webhook 入库</text><rect x="980" y="72" width="170" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1065.0" y="89.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">sub2api · 38.49.38.56</text><text x="1065.0" y="105.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">gpt-6-astra · Responses</text><rect x="980" y="132" width="170" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1065.0" y="149.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">阿里云 OSS</text><text x="1065.0" y="165.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">cws-file · 贴文图片</text><rect x="980" y="212" width="170" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1065.0" y="229.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">飞书</text><text x="1065.0" y="245.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">群播报 · Hermes 网关</text><rect x="980" y="272" width="170" height="40" rx="6" fill="var(--surface,#fff)" stroke="currentColor" stroke-width="1.2"/><text x="1065.0" y="289.0" text-anchor="middle" font-size="13" font-weight="600" fill="currentColor">Bright Data</text><text x="1065.0" y="305.0" text-anchor="middle" font-size="11" fill="currentColor" opacity=".75">Instagram 采集</text><polyline points="600,92 660,92" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="630" y="84" text-anchor="middle" font-size="11" fill="currentColor">bearer · HTTPS</text><polyline points="600,272 660,272" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="630" y="264" text-anchor="middle" font-size="11" fill="currentColor">API key · HTTPS</text><polyline points="600,190 955,190 955,92 980,92" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="780" y="184" text-anchor="middle" font-size="11" fill="currentColor">HTTPS：模型调用 · 图片直链</text><polyline points="955,152 980,152" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><polyline points="940,142 966,142 966,232 980,232" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="972" y="200" text-anchor="start" font-size="11" fill="currentColor">播报</text><polyline points="940,322 966,322 966,292 980,292" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#arr)"/><text x="972" y="340" text-anchor="start" font-size="11" fill="currentColor">触发 · 回写</text></svg><figcaption>图 4 · 部署拓扑。新增的只有 agent 主机上的 csw-collector（含工作台静态文件）和 codex 子进程；向量服务本来就在这台机上，走本机端口不经 nginx。引擎主机与 csw-agent 主机不动，只各加一个接口。</figcaption></figure>
+
+<h2 id="2-架构判断">2. 架构判断</h2>
+<p><strong>放在 agent 主机是对的，但要给它划地盘。</strong> 理由：向量服务就在这台机上，走 <code>127.0.0.1:8022</code> 不经 nginx、不经公网；小红书要用这台机上已登录的 Chrome；切换期要和 Hermes 收集员并存、切回也快。代价是这台机已经很挤：可用内存 9 GB，磁盘 85%，GPU 已用 17.8 GB，而且跑着 jellyfin、es、llm-wiki 这些与本项目无关的服务。所以：</p>
+<ul>
+<li>采集服务以 systemd 单元跑，<code>MemoryMax=4G</code>、<code>CPUWeight</code> 调低、<code>LimitNOFILE</code> 放宽；LanceDB 与图片放独立目录并设保留期，不让它们吃满盘。</li>
+<li>磁盘先清：/opt/docker 133 GB 里多少是镜像残留，<code>docker system df</code> 看一眼；jellyfin 与 es 若不再用，建议迁走或停掉，这是最便宜的扩容。</li>
+<li>GPU 只有一块 P40，向量与重排服务串行；采集服务里对它的调用单线程、按批，夜间做回填，白天只做增量与重排。若以后 llm-wiki 之类也上 GPU，要定分时。</li>
+</ul>
+<p><strong>进程边界</strong>：一个 <code>csw-collector</code> 进程管全部（任务驱动、手动开启、采集器、下载与识别、LanceDB、判断编排、深核线程、工作台接口与静态文件、本地 MCP）。codex app-server 是它的子进程，按需起、深核完就停。不拆微服务：数据都在本机 LanceDB，拆了反而要传大对象。</p>
+<p><strong>与引擎的边界</strong>：引擎仍是流程与记录的真相；采集服务只经运行面 HTTP（bearer token）写 items、sweeps、intake-judgements、deliverables、fail，读 my-tasks、tasks/:id、ledger、memory。工作台登录复用引擎的 JWT：采集服务用同一个 HS256 密钥校验，不自己发号；或者把登录请求转发到引擎 <code>/admin/auth</code>，两者选一（建议前者，少一跳）。</p>
+<p><strong>与 csw-agent 的边界</strong>：只读，一把收集员 API key；不写 csw 库；补录账号仍由人在 csw 后台做。</p>
+<p><strong>数据放哪</strong>：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>数据</th>
+<th>位置</th>
+<th>大小与增长</th>
+<th>备份</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>判断台账、条目、采集轮、决定、刊发记录</td>
+<td>引擎 SQLite</td>
+<td>每天几百行</td>
+<td><code>deploy.sh</code> 迁移前自动备份，照旧</td>
+</tr>
+<tr>
+<td>知识库索引、候选、判断台账副本、向量</td>
+<td>agent 主机 <code>/opt/csw-collector/data/lancedb</code></td>
+<td>起步约 0.2 GB，每天 +8 MB</td>
+<td>可重建（约 2 小时），每周 tar 一份到 OSS 即可</td>
+</tr>
+<tr>
+<td>图片</td>
+<td><code>/opt/csw-collector/data/images</code></td>
+<td>每天 80–100 MB，一年 30–36 GB</td>
+<td>候选图保留 120 天，参考图永久（约 2 GB）；不备份，OSS 有原图</td>
+</tr>
+<tr>
+<td>线程记录、日志</td>
+<td><code>/opt/csw-collector/data/threads</code>、journald + 滚动文件</td>
+<td>小</td>
+<td>保留 90 天</td>
+</tr>
+<tr>
+<td>密钥</td>
+<td><code>/opt/csw-collector/collector.env</code>（0600）</td>
+<td>csw API key、引擎 token、sub2api、向量服务、JWT 密钥</td>
+<td>不入库；换密钥只改这一处</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="3-部署方式">3. 部署方式</h2>
+<p><strong>构建</strong>：Rust 目标是 glibc 2.34 的 CentOS Stream 9。三条路：在 agent 主机上用它自带的 cargo 1.95 构建（最省事，但占它的 CPU 与内存）；在 Mac 上用 <code>rockylinux:9</code> 容器构建，产物 glibc 兼容；或 musl 静态链接（LanceDB 依赖 Arrow、protobuf、TLS，静态链接不一定顺）。建议第二条：容器里 <code>cargo build --release</code>，产物一个二进制加一个 <code>web/</code> 目录，与引擎「本机构建、上传、远端重启」的方式一致。</p>
+<p><strong>上线脚本</strong> <code>csw-task/deploy-collector.sh</code>，照抄 <code>deploy.sh</code> 的结构：备份旧二进制与 LanceDB 目录清单 → 上传 → <code>systemctl restart csw-collector</code> → 等 <code>/healthz</code> → 失败自动换回旧二进制。首次另加：装 codex 固定版本（含 bwrap 检查）、建目录、写 <code>collector.env</code>、加 nginx 站点 <code>collector.aworld.ltd</code>（证书已有）。</p>
+<p><strong>systemd</strong>：<code>csw-collector.service</code>（<code>Restart=always</code>、<code>EnvironmentFile</code>、<code>WorkingDirectory=/opt/csw-collector</code>、资源上限）。不需要 timer：任务驱动靠引擎派单，知识库同步用进程内定时（每天两次，触发前一次、晚间一次），夜间向量回填也在进程内排队。</p>
+<p><strong>工作台入口</strong>：<code>collector.aworld.ltd</code> → base-nginx（443）→ <code>127.0.0.1:8090</code>；静态文件由采集服务托管，<code>/api/*</code> 同源。</p>
+<p><strong>切换与回退</strong>（M5 → M6）：并行期采集服务只跑手动轮、不写引擎；切换日改配置开任务驱动、<code>systemctl stop</code> Hermes 收集员网关（先确认主网关是不是收集员，它没带 <code>--profile</code>）；回退是反过来两条命令，五分钟内。</p>
+<h2 id="4-单点与失败面">4. 单点与失败面</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>依赖</th>
+<th>断了会怎样</th>
+<th>怎么办</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>csw-agent API</td>
+<td>第 2 步取不到贴文，整轮停</td>
+<td>重试三次后标失败告警，不用旧接口兜底；接口在对方主机，无法自控</td>
+</tr>
+<tr>
+<td>向量与重排服务（本机单 GPU）</td>
+<td>第 2c 向量化与第 4 步召回失败，判断标「对照材料缺」</td>
+<td>进程内健康检查；失败只影响当轮，不阻塞已判候选；GPU 被别的任务占满时同样表现，要定分时</td>
+</tr>
+<tr>
+<td>sub2api</td>
+<td>识别、判断、深核全停</td>
+<td>重试加熔断；备用模型通道（拍板）；总览告警</td>
+</tr>
+<tr>
+<td>引擎</td>
+<td>接不到单、写不进结果</td>
+<td>引擎自己的告警；采集服务缓存未提交结果，恢复后重放（幂等键）</td>
+</tr>
+<tr>
+<td>codex 子进程</td>
+<td>深核失败</td>
+<td>时间盒；条目仍可登记并写明缺口</td>
+</tr>
+<tr>
+<td>agent 主机本身</td>
+<td>全停</td>
+<td>这是最大的单点：向量服务、Chrome、Hermes 全在上面。短期靠 systemd 自启与监控；中期把无关负载迁走</td>
+</tr>
+<tr>
+<td>内存与磁盘</td>
+<td>OOM 或写满</td>
+<td><code>MemoryMax</code>、保留期、磁盘水位告警（85% 已经到了）</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="5-安全面">5. 安全面</h2>
+<ul>
+<li>采集服务只持只读的 csw key 与收集员角色的引擎 token；写引擎的动作只有登记与交付；不写 csw 库。</li>
+<li>codex 子进程 <code>sandbox=read-only</code>、<code>approvalPolicy=never</code>、只读 MCP 白名单、bwrap 已在。</li>
+<li>工作台在 TLS 后面，JWT 校验，角色沿用 superadmin / operator / viewer / van；写操作全部审计。</li>
+<li>向量服务只在本机端口，nginx 那一层的对外入口继续要密钥。</li>
+<li>送往第三方的数据：sub2api（贴文正文与图）、TypeSafe（若启用，正文与图片描述）；Van 的群聊原话是否送出单独拍板。</li>
+</ul>
+<h2 id="6-监控">6. 监控</h2>
+<ul>
+<li>采集服务 <code>/healthz</code> 与 <code>/metrics</code>；每步耗时、失败、队列、向量服务延迟、磁盘与内存水位。</li>
+<li>告警走两条：流程内的失败经引擎 <code>fail</code> 接口由引擎播报到编辑部群；运维告警（磁盘、内存、服务重启）另发开发群，不进编辑部群。</li>
+<li>43.133.15.38 上已有 Grafana 与 Loki，可以把日志与指标接过去，不必新搭。</li>
+</ul>
+<h2 id="7-动工前要定">7. 动工前要定</h2>
+<ol>
+<li>工作台域名（建议 <code>collector.aworld.ltd</code>）与登录方式（复用引擎 JWT 密钥）。</li>
+<li>agent 主机的清理：jellyfin、es 是否迁走；/opt/docker 镜像清理；是否加盘。</li>
+<li>codex 固定版本与安装方式；<code>gpt-6-astra</code> 对 codex 版本的要求。</li>
+<li>备用模型通道。</li>
+<li>图片保留期（建议 120 天）与 LanceDB 周备份去向（OSS）。</li>
+<li>主网关是不是收集员，切换时停哪一个。</li>
+</ol></article>
+<footer>配套：《情报收集员工作台 · 完整流程》确认稿、《设计说明》、《情报收集员改造方案》开发版。</footer>
+</div>
