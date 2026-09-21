@@ -14,11 +14,15 @@
 
 mod authprobe;
 mod bff;
+mod kb;
 mod m1;
 mod schema;
 mod xcheck;
 
 use clap::{Parser, Subcommand};
+
+/// 向量维度。与 Qwen3-VL 对齐；**改它要重建向量库**（见 `kb::vectors`）。
+pub const EMBED_DIM: i32 = 2048;
 
 #[derive(Parser)]
 #[command(name = "csw-collector", version, about = "情报收集员工作台 · 采集服务")]
@@ -109,8 +113,18 @@ enum Command {
 #[derive(Subcommand)]
 enum KbCommand {
     /// 从引擎与 csw 增量同步
-    Sync,
-    /// 从本地文件导入（范例、决定）
+    Sync {
+        /// 全量重拉，不用重叠窗口。第一次建库不必加——没有游标时本来就是全量。
+        #[arg(long)]
+        full: bool,
+        /// 这一轮最多算多少条向量。0 = 不限。白天补跑时限一下，免得和正式轮抢 GPU。
+        #[arg(long, default_value_t = 0)]
+        embed_limit: usize,
+        /// 重建别名表。默认只在表空时建——它包含人工加的别名，重建会冲掉。
+        #[arg(long)]
+        refresh_brands: bool,
+    },
+    /// 从本地文件导入范例（JSONL，格式同引擎侧 `syncer kb-import`）
     Import {
         #[arg(long)]
         path: String,
@@ -140,7 +154,32 @@ async fn main() -> anyhow::Result<()> {
         Command::Serve => todo!("阶段 6：任务驱动 + 工作台 HTTP + 进程内定时"),
         Command::Run { .. } => todo!("阶段 6：手动开启一轮"),
         Command::Replay { .. } => todo!("阶段 1.3：录制回放层"),
-        Command::Kb(_) => todo!("阶段 3：知识库同步与导入"),
+        Command::Kb(sub) => {
+            let cfg =
+                csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
+            match sub {
+                KbCommand::Sync {
+                    full,
+                    embed_limit,
+                    refresh_brands,
+                } => {
+                    let secrets = csw_collector_core::Secrets::from_env();
+                    let missing = secrets.missing(false);
+                    anyhow::ensure!(missing.is_empty(), "缺环境变量：{}", missing.join("、"));
+                    kb::sync(
+                        &cfg,
+                        &secrets,
+                        kb::SyncOpts {
+                            full,
+                            embed_limit,
+                            refresh_brands,
+                        },
+                    )
+                    .await
+                }
+                KbCommand::Import { path } => kb::import(&cfg, &path),
+            }
+        }
         Command::Mcp => todo!("阶段 5：本地 MCP 服务"),
         Command::P5 => todo!("阶段 8：历史反馈回收"),
         Command::M1 {

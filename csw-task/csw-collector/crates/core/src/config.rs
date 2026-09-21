@@ -65,6 +65,10 @@ pub struct Csw {
 #[serde(default, deny_unknown_fields)]
 pub struct Vector {
     pub base_url: String,
+    /// 产出这些向量的模型**标签**。不是发给服务的参数，只用来防一件事：
+    /// 换了模型却没重建向量库。不同模型的向量不可比，混在一起检索会悄悄失准
+    /// 且不报错。换模型时改这个值，向量库会拒绝打开并提示重建。
+    pub embed_model: String,
     /// 22 GB 卡上的安全批量（实测 1500 字正文批 16 就 OOM，且 OOM 会赖着不走）
     pub text_batch: usize,
     pub fused_batch: usize,
@@ -268,6 +272,7 @@ impl Default for Config {
             },
             vector: Vector {
                 base_url: "http://127.0.0.1:8022".into(),
+                embed_model: "qwen3-vl@8022".into(),
                 text_batch: 8,
                 fused_batch: 4,
                 image_batch: 2,
