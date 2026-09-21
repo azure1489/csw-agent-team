@@ -39,7 +39,11 @@ func parseSince(s string) (string, error) {
 	return "", domain.BadRequest("bad_since", "since 须为 30d / 72h 或日期")
 }
 
-// GET /ledger/posts?since=30d&platform=&brand=&state=&q= —— 发布记录查重；查不到时说明覆盖范围，不下「从未发布」的结论
+// GET /ledger/posts?since=30d&platform=&brand=&state=&q=&include_body= —— 发布记录查重；
+// 查不到时说明覆盖范围，不下「从未发布」的结论。
+//
+// is_reference 分辨「正式已发布」与「范例」——这是两类对照材料，判断时不能混成一类。
+// include_body=1 才回正文与发布凭据，给知识库同步用（查重那条路不需要，省流量）。
 func (s *Server) handleLedgerPosts(c *gin.Context) {
 	ctx := c.Request.Context()
 	since, err := parseSince(c.DefaultQuery("since", "30d"))
@@ -47,6 +51,7 @@ func (s *Server) handleLedgerPosts(c *gin.Context) {
 		s.renderErr(c, err)
 		return
 	}
+	withBody := c.Query("include_body") == "1"
 	q := s.store.Q()
 	posts, err := q.ListLedgerPosts(ctx, sqlite.LedgerFilter{Since: since, Platform: c.Query("platform"), Brand: c.Query("brand"),
 		State: c.Query("state"), Q: c.Query("q")})
@@ -62,8 +67,16 @@ func (s *Server) handleLedgerPosts(c *gin.Context) {
 			is = append(is, gin.H{"seq": it.Seq, "brand": it.Brand, "product": it.Product, "title": it.Title, "angle": it.Angle,
 				"item_key": it.ItemKey, "source_url": it.SourceURL, "split_by": it.SplitBy})
 		}
-		out = append(out, gin.H{"platform": p.Platform, "account": p.Account, "post_id": p.PostID, "url": p.URL,
-			"published_at": p.PublishedAt, "title": p.Title, "state": p.State, "source": p.Source, "items": is})
+		row := gin.H{"platform": p.Platform, "account": p.Account, "post_id": p.PostID, "url": p.URL,
+			"published_at": p.PublishedAt, "title": p.Title, "state": p.State, "source": p.Source,
+			"is_reference": p.IsReference, "items": is}
+		// 正文只在明确要的时候给。查重那条路只看标题与拆条，
+		// 把上千篇正文一起塞回去纯属浪费；知识库同步才需要它来做嵌入与全文索引。
+		if withBody {
+			row["body_text"] = p.BodyText
+			row["publish_evidence"] = p.PublishEvidence
+		}
+		out = append(out, row)
 	}
 	cov, err := q.LedgerCoverage(ctx)
 	if err != nil {

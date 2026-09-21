@@ -90,7 +90,7 @@ pub struct RawAccount {
 }
 
 /// 贴文原始字段。**驼峰**，且一律给默认值——线上版本落后时缺字段是常态。
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Default, Debug, Clone, Deserialize)]
 pub struct RawPost {
     #[serde(default, rename = "postId")]
     pub post_id: String,

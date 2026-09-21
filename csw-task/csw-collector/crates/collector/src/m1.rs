@@ -200,11 +200,6 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
         prep_s / n.max(1) as f64,
         prep_s / want_imgs.max(1) as f64
     );
-    println!(
-        "  外推一期 {} 条    {:.1} 分钟",
-        358,
-        prep_s / n.max(1) as f64 * 358.0 / 60.0
-    );
 
     // 把墙钟拆开：网关与 GPU 是两个资源，混成一个总数就看不出该往哪儿加通道
     println!("\n耗时都花在哪");
@@ -214,9 +209,9 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
     );
     println!("  识别+向量墙钟 {:.1}s", stats.wall_ms as f64 / 1000.0);
     println!(
-        "  网关占用合计  {:.1}s → 有效并发 {:.1}（上限 {}）",
+        "  网关占用合计  {:.1}s → 识别段平均在飞 {:.1} 条（槽位 {}）",
         stats.recognize_ms as f64 / 1000.0,
-        stats.gateway_concurrency(),
+        stats.recognize_in_flight(),
         cfg.model.concurrency
     );
     println!(
@@ -245,6 +240,15 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
         imgs.get(imgs.len() / 2).copied().unwrap_or(0),
         imgs.last().copied().unwrap_or(0)
     );
+
+    // 外推分两个口径摆出来：抽样的尾巴会把「每条墙钟」那一路算高，见 project_secs
+    const PERIOD: usize = 358;
+    let naive = prep_s / n.max(1) as f64 * PERIOD as f64 / 60.0;
+    let by_res = stats.project_secs(n, PERIOD, cfg.model.concurrency) / 60.0;
+    println!("\n外推一期 {PERIOD} 条");
+    println!("  按每条墙钟    {naive:.1} 分钟（抽样时偏高：最慢那条的尾巴没被摊薄）");
+    println!("  按资源占用    {by_res:.1} 分钟（网关总占用 ÷ 槽位、GPU 总占用 ÷ 1，取大者）");
+    println!("  —— 真数要跑 --full，别拿抽样当验收");
 
     let bad: Vec<_> = prepared
         .iter()

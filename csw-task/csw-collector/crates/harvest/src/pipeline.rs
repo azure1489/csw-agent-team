@@ -97,13 +97,35 @@ pub struct PrepareStats {
 }
 
 impl PrepareStats {
-    /// 网关的有效并发度 = 占用之和 ÷ 墙钟。逼近并发上限才算把闸门用满了。
-    pub fn gateway_concurrency(&self) -> f64 {
+    /// 识别段平均有几条候选在飞 = 占用之和 ÷ 墙钟。
+    ///
+    /// **注意它不等于网关的并发请求数**：一条候选的识别段里包含它在信号量上
+    /// 排队的时间，而且批级并发之后一条候选可能同时压着好几个请求。
+    /// 这个数只回答「流水线有没有把槽位填满」，不回答「网关跑了几路」。
+    pub fn recognize_in_flight(&self) -> f64 {
         ratio(self.recognize_ms, self.wall_ms)
     }
     /// GPU 的占用率。逼近 1 就说明瓶颈在显卡，再加模型通道也没用。
     pub fn gpu_busy(&self) -> f64 {
         ratio(self.embed_ms, self.wall_ms)
+    }
+
+    /// 外推到 `total` 条要多久（秒）。**按资源占用算，不按每条墙钟算。**
+    ///
+    /// 抽几条试跑时，最慢那一条的尾巴占墙钟的比重极大（实测 16 条里最慢一条
+    /// 116 秒、墙钟 176 秒）；用「每条墙钟 × 总条数」外推会把这段尾巴按条数
+    /// 复制 N 遍，得出的数远大于真实值。大批量里尾巴只有一条，会被摊薄。
+    ///
+    /// 按资源算就没这个问题：网关的总占用除以并发上限、GPU 的总占用除以 1
+    /// （它是串行的），两者可以重叠，所以取较大的那个。
+    pub fn project_secs(&self, sampled: usize, total: usize, gateway_concurrency: usize) -> f64 {
+        if sampled == 0 {
+            return 0.0;
+        }
+        let scale = total as f64 / sampled as f64;
+        let gw = self.recognize_ms as f64 * scale / gateway_concurrency.max(1) as f64 / 1000.0;
+        let gpu = self.embed_ms as f64 * scale / 1000.0;
+        gw.max(gpu) + self.download_ms as f64 * scale / 1000.0
     }
 }
 

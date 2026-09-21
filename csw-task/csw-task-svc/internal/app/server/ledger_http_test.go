@@ -38,6 +38,33 @@ func TestLedgerAndFeedbackEndpoints(t *testing.T) {
 	if out["verdict"] != "found" || len(posts) != 1 || len(posts[0].(map[string]any)["items"].([]any)) != 1 {
 		t.Fatalf("found: %v", out)
 	}
+	// 知识库同步要靠 is_reference 分辨「正式已发布」与「范例」——这是两类对照材料。
+	// 正文只在 include_body=1 时才给：查重那条路不需要，上千篇正文纯属浪费流量。
+	p0 := posts[0].(map[string]any)
+	if p0["is_reference"] != false {
+		t.Fatalf("普通已发条目的 is_reference 应为 false：%v", p0)
+	}
+	if _, ok := p0["body_text"]; ok {
+		t.Fatalf("没要正文就不该回正文：%v", p0)
+	}
+	refID, _, _ := q.UpsertLedgerPost(ctx, domain.LedgerPost{Platform: "wechat", Account: "营事编集室", PostID: "ref1",
+		Title: "范例一则", BodyText: "范例正文", PublishedAt: "2026-09-09T00:00:00Z", State: "published",
+		Source: "import", IsReference: true, PublishEvidence: "https://example.com/ref1"})
+	_ = q.ReplacePostItems(ctx, refID, []domain.LedgerPostItem{{Brand: "NANGA", Title: "范例条目"}}, "manual", "")
+	out = get(researcherTok, "/api/v1/ledger/posts?brand=nanga&since=30d&include_body=1")
+	var ref map[string]any
+	for _, x := range out["posts"].([]any) {
+		if m := x.(map[string]any); m["post_id"] == "ref1" {
+			ref = m
+		}
+	}
+	if ref == nil || ref["is_reference"] != true {
+		t.Fatalf("范例应当标 is_reference：%v", out["posts"])
+	}
+	if ref["body_text"] != "范例正文" || ref["publish_evidence"] != "https://example.com/ref1" {
+		t.Fatalf("include_body=1 该回正文与发布凭据：%v", ref)
+	}
+
 	out = get(researcherTok, "/api/v1/ledger/posts?brand=coleman")
 	if out["verdict"] != "not_found_in_synced_records" || !strings.Contains(out["note"].(string), "不代表从未发布") || len(out["coverage"].([]any)) != 1 {
 		t.Fatalf("not found with coverage: %v", out)

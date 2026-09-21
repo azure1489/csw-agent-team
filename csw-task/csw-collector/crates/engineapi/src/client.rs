@@ -192,14 +192,21 @@ impl EngineClient {
     }
 
     /// 第一类：正式已发布的条目（也带回标了 `is_reference` 的范例，即第二类）。
+    ///
+    /// `with_body` 才回正文与发布凭据。查重那条路用不上正文，上千篇正文纯属浪费；
+    /// 知识库同步要靠它做嵌入与全文索引，必须要。
     pub async fn ledger_posts(
         &self,
         since: &str,
         brand: &str,
-    ) -> Result<serde_json::Value, EngineError> {
+        with_body: bool,
+    ) -> Result<LedgerPosts, EngineError> {
         let mut path = format!("/ledger/posts?since={since}");
         if !brand.is_empty() {
             path.push_str(&format!("&brand={}", urlencode(brand)));
+        }
+        if with_body {
+            path.push_str("&include_body=1");
         }
         self.get(&path).await
     }

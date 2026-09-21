@@ -252,6 +252,72 @@ pub struct Decision {
     pub actor_role: String,
 }
 
+/// 台账里的一篇发布记录。第一类（正式已发布）与第二类（范例）**同表不同标记**，
+/// 靠 `is_reference` 分——判断时不能混成一类。
+#[derive(Debug, Clone, Deserialize)]
+pub struct LedgerPost {
+    #[serde(default)]
+    pub platform: String,
+    #[serde(default)]
+    pub account: String,
+    #[serde(default)]
+    pub post_id: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub published_at: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub is_reference: bool,
+    /// 只有 `include_body=1` 才有
+    #[serde(default)]
+    pub body_text: String,
+    #[serde(default)]
+    pub publish_evidence: String,
+    /// 合集拆条
+    #[serde(default)]
+    pub items: Vec<LedgerPostItem>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LedgerPostItem {
+    #[serde(default)]
+    pub seq: i64,
+    #[serde(default)]
+    pub brand: String,
+    #[serde(default)]
+    pub product: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub angle: String,
+    #[serde(default)]
+    pub item_key: String,
+    #[serde(default)]
+    pub source_url: String,
+    #[serde(default)]
+    pub split_by: String,
+}
+
+/// `/ledger/posts` 的整份回答。`verdict` 为 `not_found_in_synced_records` 时
+/// **不等于「从未发布」**，只等于「在已同步的记录里没找到」，覆盖范围见 `coverage`。
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct LedgerPosts {
+    #[serde(default)]
+    pub posts: Vec<LedgerPost>,
+    #[serde(default)]
+    pub coverage: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub verdict: String,
+    #[serde(default)]
+    pub note: String,
+}
+
 /// 交付物提交的入参。zip **只构建一次**，字节先落盘，重试只发已落盘的那一份。
 #[derive(Debug, Clone)]
 pub struct SubmitInput {
