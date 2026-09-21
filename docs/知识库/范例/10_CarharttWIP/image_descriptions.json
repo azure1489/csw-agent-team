@@ -1,0 +1,218 @@
+{
+ "n": 10,
+ "items": {
+  "1": {
+   "1": {
+    "k": 1,
+    "what": "蓝黄配色穹顶帐篷，外帐掀开露出网纱内帐",
+    "relates_to": "“STARS系列”“深蓝”“偏芥末黄”",
+    "missing": "具体型号、售价与正式规格",
+    "kind": "产品图",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "蓝色穹顶帐篷外观，黄色帐杆与品牌字样",
+    "relates_to": "“穹顶睡帐结构”“轮廓被进一步强调”",
+    "missing": "具体型号、售价与发售时间",
+    "kind": "产品图",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "蓝色隧道式帐篷，配黄色拱形帐杆及联名字样",
+    "relates_to": "“隧道式帐篷”“更长的帐体”",
+    "missing": "是否为TC面料版YOTO PLUS",
+    "kind": "产品图",
+    "usable": true
+   }
+  },
+  "2": {
+   "1": {
+    "k": 1,
+    "what": "不锈钢车架、前置货架的联名货运自行车整车",
+    "relates_to": "Mini-Max 货运自行车",
+    "missing": "限量、发售日期及售价不可见",
+    "kind": "产品图",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "不锈钢车管、酸性黄 OMNIUM 标识与轮胎",
+    "relates_to": "酸性黄与黑色联名图形",
+    "missing": "透明涂层下的焊道与受热变色",
+    "kind": "细节图",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "自行车后轮、传动系统、车架和黑色脚踏",
+    "relates_to": "DT Swiss 货运轮组",
+    "missing": "前置货架及脚踏镂空细节",
+    "kind": "细节图",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "裸色金属车管上的酸性黄 Carhartt WIP 标识",
+    "relates_to": "酸性黄与黑色联名图形",
+    "missing": "焊道和金属受热后的变色",
+    "kind": "细节图",
+    "usable": true
+   },
+   "5": {
+    "k": 5,
+    "what": "哑黑色锯齿外框自行车脚踏特写",
+    "relates_to": "XC-III「Bear Trap」特别版",
+    "missing": "C-Logo 镂空与手绘凸字不清晰",
+    "kind": "细节图",
+    "usable": true
+   },
+   "6": {
+    "k": 6,
+    "what": "男子夜间骑货运自行车，货架装载黑色箱包",
+    "relates_to": "运送器材、穿行城市",
+    "missing": "裸露焊道与脚踏联名细节",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "7": {
+    "k": 7,
+    "what": "红光夜景中，人物在前置货架旁操作货运自行车",
+    "relates_to": "货架承担运输，穿行城市",
+    "missing": "不锈钢焊道、酸性黄联名图形",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "8": {
+    "k": 8,
+    "what": "两名骑手骑着装载包袋的前置货架货运自行车",
+    "relates_to": "运送器材、穿行城市",
+    "missing": "脚踏细节及联名图形",
+    "kind": "使用场景",
+    "usable": true
+   }
+  },
+  "3": {
+   "1": {
+    "k": 1,
+    "what": "THE EDEN预售海报，含帐篷照片、草图及参数",
+    "relates_to": "限量提前预约安排",
+    "missing": "车旁搭设状态",
+    "kind": "海报或文字图",
+    "usable": false
+   },
+   "2": {
+    "k": 2,
+    "what": "黄色弧顶天幕搭在厢式车旁，棚下有桌椅",
+    "relates_to": "车旁搭设、棚下的桌椅",
+    "missing": "围护后的休息空间",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "越野车旁搭设带围护的黄色弧顶车边帐",
+    "relates_to": "搭配围护及车旁搭设",
+    "missing": "档案草图和预售信息",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "两辆厢式车之间搭着黄色弧形天幕",
+    "relates_to": "车旁布置",
+    "missing": "围护及完整休息空间",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "5": {
+    "k": 5,
+    "what": "黄色弧顶帐篷加装内帐，前方有一只黑狗",
+    "relates_to": "加入围护后形成更完整的休息空间",
+    "missing": "汽车露营场景",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "6": {
+    "k": 6,
+    "what": "草地上展开的黄色弧顶天幕，配有桌椅",
+    "relates_to": "开放遮蔽、棚下的桌椅",
+    "missing": "车旁搭设及围护状态",
+    "kind": "使用场景",
+    "usable": true
+   }
+  },
+  "4": {
+   "1": {
+    "k": 1,
+    "what": "两款联名攀岩鞋并排陈列，展示撞色与毛绒鞋面",
+    "relates_to": "Guide Tennie Approach 与 NIAD",
+    "missing": "确切发售日期与售价",
+    "kind": "产品图",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "Guide Tennie 鞋后跟特写，带拉环和橡胶包覆",
+    "relates_to": "向上包覆的橡胶",
+    "missing": "六边形侧面开孔与鞋带结构",
+    "kind": "细节图",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "一双深蓝毛绒套穿岩鞋的俯视图",
+    "relates_to": "NIAD 更窄的套穿轮廓",
+    "missing": "棕色后跟与橡胶包覆细节",
+    "kind": "产品图",
+    "usable": true
+   }
+  },
+  "5": {
+   "1": {
+    "k": 1,
+    "what": "人物在山野穿着米白色蓬松连帽夹克",
+    "relates_to": "抵达营地后的静态保暖",
+    "missing": "看不到压缩回弹与材料结构",
+    "kind": "人物穿搭",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "白色卷曲片状保温材料的微距画面",
+    "relates_to": "保温层呈起伏状，如同细小弹簧",
+    "missing": "看不到夹克成衣与实验数据",
+    "kind": "细节图",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "人物在花野穿蓬松夹克，叠加性能数据",
+    "relates_to": "蓬松恢复率为97.7%",
+    "missing": "看不到材料结构和收纳状态",
+    "kind": "海报或文字图",
+    "usable": false
+   },
+   "4": {
+    "k": 4,
+    "what": "米白色连帽蓬松夹克平铺展示",
+    "relates_to": "Heatwave Puffer Jacket",
+    "missing": "看不到实穿、重量及材料细节",
+    "kind": "产品图",
+    "usable": true
+   },
+   "5": {
+    "k": 5,
+    "what": "模糊的黑色地图定位图标",
+    "relates_to": "与正文无直接对应",
+    "missing": "夹克、材料、性能数据均不可见",
+    "kind": "其他",
+    "usable": false
+   }
+  }
+ },
+ "failed": [],
+ "model": "gpt-5.6-sol via codex app-server",
+ "built_at": "2026-09-21 16:42"
+}

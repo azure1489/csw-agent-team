@@ -1,0 +1,282 @@
+{
+ "n": 8,
+ "items": {
+  "1": {
+   "1": {
+    "k": 1,
+    "what": "粉、灰、黑三双越野跑鞋叠放展示",
+    "relates_to": "全新 000 高山越野跑鞋",
+    "missing": "Vibram Stream Flow技术信息",
+    "kind": "产品图",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "灰黑越野跑鞋鞋面、鞋底与橙色鞋带特写",
+    "relates_to": "Dyneema® 鞋面、Vibram 鞋底",
+    "missing": "不同速度和复杂地形下的稳定回馈",
+    "kind": "细节图",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "灰黑色轻量越野背包悬空展示",
+    "relates_to": "Distance 15L 越野背包",
+    "missing": "补给携行方式及实际容量",
+    "kind": "产品图",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "黑色杖身上的双方品牌标识特写",
+    "relates_to": "Distance Carbon Z FKT 越野杖",
+    "missing": "越野杖完整形态与爬升使用场景",
+    "kind": "细节图",
+    "usable": true
+   },
+   "5": {
+    "k": 5,
+    "what": "两根交叉摆放的黑色越野杖",
+    "relates_to": "爬升时需要杖",
+    "missing": "高海拔山地越野实战场景",
+    "kind": "产品图",
+    "usable": true
+   },
+   "6": {
+    "k": 6,
+    "what": "越野杖粉色锁定结构与黑色握把特写",
+    "relates_to": "Distance Carbon Z FKT 越野杖",
+    "missing": "锁定结构功能及碳纤维材质说明",
+    "kind": "细节图",
+    "usable": true
+   },
+   "7": {
+    "k": 7,
+    "what": "黑白两款联名圆筒装备包悬置陈列",
+    "relates_to": "Mini Mission Duffle 30L 装备包",
+    "missing": "容量与湿衣装备收纳方式不可见",
+    "kind": "产品图",
+    "usable": true
+   },
+   "8": {
+    "k": 8,
+    "what": "一对黑色越野杖握把及可调节腕带",
+    "relates_to": "Distance Carbon Z FKT 越野杖",
+    "missing": "杖身全貌及碳纤维结构不可见",
+    "kind": "细节图",
+    "usable": true
+   },
+   "9": {
+    "k": 9,
+    "what": "黑色织物上的双方品牌刺绣标识",
+    "relates_to": "norda® 和 Black Diamond 长期战略合作",
+    "missing": "具体产品形态与使用功能不可见",
+    "kind": "细节图",
+    "usable": true
+   }
+  },
+  "2": {
+   "1": {
+    "k": 1,
+    "what": "人物在林地手提展开的联名地面椅",
+    "relates_to": "轻量化的户外行李",
+    "missing": "约600g重量及收纳尺寸",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "人物以两种靠背角度坐在地面椅上",
+    "relates_to": "根据不同体型和坐姿微调支撑角度",
+    "missing": "腰部强化结构细节",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "人物坐在椅上，双手调节后部支撑结构",
+    "relates_to": "加入可调设计",
+    "missing": "具体支撑角度",
+    "kind": "细节图",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "白底展示联名地面椅的椅面与支架",
+    "relates_to": "GROUND Z联名特别版",
+    "missing": "尺寸、重量与材料信息",
+    "kind": "产品图",
+    "usable": true
+   },
+   "5": {
+    "k": 5,
+    "what": "人物坐在林地椅上看景，旁有露营器具",
+    "relates_to": "围炉、看景、聊天和在帐前停留",
+    "missing": "可调靠背与隔寒防潮结构",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "6": {
+    "k": 6,
+    "what": "人物坐在置于露营床上的地面椅中阅读",
+    "relates_to": "露营床边这些更松弛的使用场景",
+    "missing": "户外地面使用效果",
+    "kind": "使用场景",
+    "usable": true
+   }
+  },
+  "3": {
+   "1": {
+    "k": 1,
+    "what": "双手托举蓝白恶魔展翼造型陶瓷首饰盘",
+    "relates_to": "「LUCIFER」陶瓷首饰盘",
+    "missing": "尺寸、重量及限量发售信息",
+    "kind": "产品图",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "恶魔造型陶瓷盘内放置腕表与金属首饰",
+    "relates_to": "桌面与居家使用场景",
+    "missing": "高精度手工雕刻与贴花Logo",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "首饰盘背面可见品牌字样与金色犄角",
+    "relates_to": "贴花 Logo 与手工描金工艺",
+    "missing": "Heraeus 24K金水信息",
+    "kind": "细节图",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "蓝白釉面恶魔身体、翅膀及金色犄角特写",
+    "relates_to": "青花瓷式纹样与金色犄角",
+    "missing": "人工釉面色泽存在轻微差异",
+    "kind": "细节图",
+    "usable": true
+   },
+   "5": {
+    "k": 5,
+    "what": "恶魔陶瓷首饰盘与骷髅图案包装盒陈列",
+    "relates_to": "暗黑、神话、宗教符号",
+    "missing": "内部邀请购买及限量50件",
+    "kind": "产品图",
+    "usable": true
+   }
+  },
+  "4": {
+   "1": {
+    "k": 1,
+    "what": "黑底金属天幕杆顶端结构新品预告海报",
+    "relates_to": "新品「如意天幕杆」",
+    "missing": "碳纤维杆身与两种顶端状态",
+    "kind": "海报或文字图",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "碳纤维杆段、顶针与圆头配件对比",
+    "relates_to": "减少无效顶针、增加有效高度",
+    "missing": "实际支撑天幕或帐篷的效果",
+    "kind": "细节图",
+    "usable": false
+   },
+   "3": {
+    "k": 3,
+    "what": "多根碳纤维杆件及银色连接端头",
+    "relates_to": "3K全碳纤维、四折收纳",
+    "missing": "收纳长度43cm与重量242g",
+    "kind": "产品图",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "多版顶端结构模型与打样零件陈列",
+    "relates_to": "新专利顶端结构",
+    "missing": "尖头圆头快速切换的演示",
+    "kind": "海报或文字图",
+    "usable": false
+   },
+   "5": {
+    "k": 5,
+    "what": "多根杆件的银色圆头端部特写",
+    "relates_to": "圆头状态则可顶帐篷",
+    "missing": "云岗、云顶帐型实搭效果",
+    "kind": "细节图",
+    "usable": true
+   },
+   "6": {
+    "k": 6,
+    "what": "印有YUUUN标识的多根碳纤维杆身",
+    "relates_to": "采用3K全碳纤维",
+    "missing": "调节范围及顶端功能",
+    "kind": "细节图",
+    "usable": true
+   }
+  },
+  "5": {
+   "1": {
+    "k": 1,
+    "what": "钓鱼背心、帽子、鱼竿与抄网悬挂展示",
+    "relates_to": "核心是一件模块化钓鱼背心",
+    "missing": "与包袋组合的连接方式",
+    "kind": "产品图",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "黑色技术背包及外挂钓鱼工具",
+    "relates_to": "延伸出技术背包等不同携行单品",
+    "missing": "背包与背心的组合关系",
+    "kind": "产品图",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "Sling Bag、钓鱼背心、帽子与背包",
+    "relates_to": "一组可以拆分、连接的携行系统",
+    "missing": "各件装备实际连接状态",
+    "kind": "产品图",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "男子穿钓鱼背心站在水中手持鱼竿",
+    "relates_to": "根据河边移动切换配置",
+    "missing": "Sling Bag与Backpack",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "5": {
+    "k": 5,
+    "what": "钓手身穿多口袋背心并手持鱼竿",
+    "relates_to": "钓具分类与快速取用",
+    "missing": "完整背心及模块连接方式",
+    "kind": "细节图",
+    "usable": true
+   },
+   "6": {
+    "k": 6,
+    "what": "钓手侧身穿背心，背后携带抄网",
+    "relates_to": "传统飞钓背心与携行方式",
+    "missing": "包袋组合与不同容量配置",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "7": {
+    "k": 7,
+    "what": "黑色地图定位图标，背景为灰白色",
+    "relates_to": "与正文无直接对应",
+    "missing": "模块化钓鱼背心、包袋及连接方式",
+    "kind": "其他",
+    "usable": false
+   }
+  }
+ },
+ "failed": [],
+ "model": "gpt-5.6-sol via codex app-server",
+ "built_at": "2026-09-21 16:42"
+}

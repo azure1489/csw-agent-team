@@ -1,0 +1,226 @@
+{
+ "n": 7,
+ "items": {
+  "1": {
+   "1": {
+    "k": 1,
+    "what": "黑色连帽外套胸前拉链、口袋与扣带特写",
+    "relates_to": "口袋、分区、外挂感都跑到最外面",
+    "missing": "外套全貌及救援背心叠穿结构",
+    "kind": "细节图",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "黑色连帽Mountain Jacket正面平铺",
+    "relates_to": "Search and Rescue vest Mountain Jacket",
+    "missing": "背面绑带与外挂结构",
+    "kind": "产品图",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "黑色短身MA-1飞行夹克正面平铺",
+    "relates_to": "改造版 MA-1 Bomber",
+    "missing": "技术面料和防天气性能无法直观看出",
+    "kind": "产品图",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "黑色连帽外套背面，带多组口袋与绑带",
+    "relates_to": "口袋、背心、绑带和多余的一层",
+    "missing": "正面口袋分区与品牌标识",
+    "kind": "产品图",
+    "usable": true
+   }
+  },
+  "2": {
+   "1": {
+    "k": 1,
+    "what": "三双黑色皮革鞋，包括乐福、牛津与德比式鞋型",
+    "relates_to": "Uneek Loafer、Newport Oxford和Hyperport Derby",
+    "missing": "实际穿着场合与搭配效果",
+    "kind": "产品图",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "五双不同鞋履沿砖地排列，含三款黑色皮鞋",
+    "relates_to": "系列包括三款鞋型",
+    "missing": "各款鞋名及结构差异",
+    "kind": "产品图",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "模特身穿灰黑正装，搭红袜和黑色编织乐福鞋",
+    "relates_to": "更容易搭衣服、更不挑场合",
+    "missing": "其余两款新鞋型",
+    "kind": "人物穿搭",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "模特穿衬衫、针织背心与黑色长裙站在街边",
+    "relates_to": "从户外鞋进入日常衣柜",
+    "missing": "鞋款开放结构与皮革细节",
+    "kind": "人物穿搭",
+    "usable": true
+   },
+   "5": {
+    "k": 5,
+    "what": "模特一身黑色长大衣与阔腿裤，穿黑色编织鞋",
+    "relates_to": "通勤、晚餐、展览",
+    "missing": "鞋款名称及透气开口",
+    "kind": "人物穿搭",
+    "usable": true
+   },
+   "6": {
+    "k": 6,
+    "what": "模特穿紫色大衣与长裤，坐在室内窗边展示黑鞋",
+    "relates_to": "更黑、更克制的外观",
+    "missing": "鞋型名称与包覆结构细节",
+    "kind": "人物穿搭",
+    "usable": false
+   },
+   "7": {
+    "k": 7,
+    "what": "人物坐在店铺门前，穿宽松层搭配黑色凉鞋",
+    "relates_to": "更容易搭衣服、更不挑场合",
+    "missing": "具体鞋型与黑色皮革鞋面细节",
+    "kind": "人物穿搭",
+    "usable": true
+   }
+  },
+  "3": {
+   "1": {
+    "k": 1,
+    "what": "荒野黑色联名帐篷及STAR3宣传文字",
+    "relates_to": "联名版繁星3帐篷",
+    "missing": "面料、防水、扣件及地钉参数",
+    "kind": "海报或文字图",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "白底黑色帐篷侧面，带品牌印花",
+    "relates_to": "全黑状态、黑色印花",
+    "missing": "户外实搭效果及具体材质参数",
+    "kind": "产品图",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "白底黑色帐篷斜侧面及灰色帐杆",
+    "relates_to": "黑灰配色、灰色帐杆",
+    "missing": "合金扣件、风绳与地钉细节",
+    "kind": "产品图",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "白底黑色帐篷另一侧及深色品牌印花",
+    "relates_to": "更黑、更图形化",
+    "missing": "内帐及双向拉带调节方式",
+    "kind": "产品图",
+    "usable": true
+   },
+   "5": {
+    "k": 5,
+    "what": "白底黑色帐篷正面与帐杆结构",
+    "relates_to": "成熟的帐篷结构",
+    "missing": "品牌联名印花及材料参数",
+    "kind": "产品图",
+    "usable": true
+   },
+   "6": {
+    "k": 6,
+    "what": "白底黑色帐篷正侧面与帐门轮廓",
+    "relates_to": "全黑状态",
+    "missing": "防水性能、风绳和地钉配置",
+    "kind": "产品图",
+    "usable": true
+   }
+  },
+  "4": {
+   "1": {
+    "k": 1,
+    "what": "荧光黄色跑山鞋后跟与ACG标识特写",
+    "relates_to": "ACG新鞋Picklejus",
+    "missing": "ZoomX核心与Flyknit鞋面信息",
+    "kind": "细节图",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "一双荧光黄色ACG跑山鞋陈列在桌面",
+    "relates_to": "更严肃的长距离山地跑",
+    "missing": "山径实跑场景与2027年底上市",
+    "kind": "产品图",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "跑山鞋外底纹路及GOATEK标识特写",
+    "relates_to": "GOATEK橡胶",
+    "missing": "湿地、碎石中的抓地表现",
+    "kind": "细节图",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "跑山鞋与中底、支撑部件的拆解陈列",
+    "relates_to": "20个原型",
+    "missing": "三年访谈及百名运动员测试",
+    "kind": "细节图",
+    "usable": true
+   },
+   "5": {
+    "k": 5,
+    "what": "外底、中底、鞋垫等鞋体组件分层陈列",
+    "relates_to": "柔软的ZoomX核心负责缓震",
+    "missing": "Flyknit线缆与疏水纱线",
+    "kind": "细节图",
+    "usable": true
+   },
+   "6": {
+    "k": 6,
+    "what": "多双荧光黄色ACG跑山鞋存放在编号鞋柜",
+    "relates_to": "超过100名运动员测试",
+    "missing": "运动员测试过程与反馈",
+    "kind": "环境或空间",
+    "usable": true
+   }
+  },
+  "5": {
+   "1": {
+    "k": 1,
+    "what": "东京及周边地区的蓝色运动轨迹热力地图",
+    "relates_to": "用全球热力图判断哪里更适合居住",
+    "missing": "无法证明安全、宜居或社区质量",
+    "kind": "截图",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "巴黎城区密集运动轨迹与公园分布地图",
+    "relates_to": "跑步路线、骑行轨迹和公园边界叠加",
+    "missing": "轨迹对应的具体运动类型",
+    "kind": "截图",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "广州地图上的公园、绿道及跑步路线推荐",
+    "relates_to": "拼出本地版“运动生活地图”",
+    "missing": "真实用户轨迹密度",
+    "kind": "截图",
+    "usable": true
+   }
+  }
+ },
+ "failed": [],
+ "model": "gpt-5.6-sol via codex app-server",
+ "built_at": "2026-09-21 16:42"
+}

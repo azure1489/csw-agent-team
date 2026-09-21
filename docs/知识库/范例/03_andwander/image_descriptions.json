@@ -1,0 +1,202 @@
+{
+ "n": 3,
+ "items": {
+  "1": {
+   "1": {
+    "k": 1,
+    "what": "灰黑格纹联名外套的拉链口袋、三角标与袖标",
+    "relates_to": "反光三角标、Brompton 袖标",
+    "missing": "连帽、长裤及完整穿着效果",
+    "kind": "细节图",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "人台穿灰黑格纹外套、长裤和帽子，旁有挂装",
+    "relates_to": "灰黑色轻量外套与长裤",
+    "missing": "骑行、通勤和轻户外场景",
+    "kind": "人物穿搭",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "手持灰色联名T恤，后方有人台及多色T恤",
+    "relates_to": "系列还有 T-shirt",
+    "missing": "短裤及实际穿着效果",
+    "kind": "产品图",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "蓝底银色三角Logo，内含折叠自行车轮廓",
+    "relates_to": "自行车轮廓放进三角 Logo",
+    "missing": "服装实物与使用场景",
+    "kind": "海报或文字图",
+    "usable": true
+   }
+  },
+  "2": {
+   "1": {
+    "k": 1,
+    "what": "深色连帽硬壳侧影，画面标有“SEPTEMBER 4”",
+    "relates_to": "2026 年 9 月 4 日全球发售",
+    "missing": "产品外观、维修与循环设计信息",
+    "kind": "海报或文字图",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "双手托举装有透明颗粒的圆环，颗粒向上散开",
+    "relates_to": "回收和材料再利用",
+    "missing": "硬壳产品及具体回收材料",
+    "kind": "其他",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "格纹面料上的透明颗粒与圆环状物体",
+    "relates_to": "把尼龙送回制成新的 ECONYL® 纱线",
+    "missing": "尼龙与膜材的分离回收过程",
+    "kind": "细节图",
+    "usable": true
+   }
+  },
+  "3": {
+   "1": {
+    "k": 1,
+    "what": "两名模特身穿骑行长袖，与两辆自行车合影",
+    "relates_to": "轻松一点走进自然",
+    "missing": "面料参数、鸽子满印及功能细节",
+    "kind": "人物穿搭",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "黄色鸽子图案长袖靠在黄色自行车旁",
+    "relates_to": "鸽子满印图案",
+    "missing": "正面设计、面料和袖口功能",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "黄黑两色骑行长袖正反面产品展示",
+    "relates_to": "骑行长袖、全衣撞色明线",
+    "missing": "手表位、弹力指套及面料结构",
+    "kind": "产品图",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "模特穿深色骑行长袖跃起，身下有自行车",
+    "relates_to": "另一类骑行状态",
+    "missing": "鸽子图案、反光条及面料参数",
+    "kind": "人物穿搭",
+    "usable": true
+   },
+   "5": {
+    "k": 5,
+    "what": "深色鸽子图案长袖披在城市自行车上",
+    "relates_to": "鸽子满印图案、后腰有3M反光条",
+    "missing": "正面设计、手表位和弹力指套",
+    "kind": "使用场景",
+    "usable": true
+   }
+  },
+  "4": {
+   "1": {
+    "k": 1,
+    "what": "模特侧背展示红色连帽夹克，背部隆起容纳背包",
+    "relates_to": "箱褶随背包体积向外展开",
+    "missing": "轻量三层尼龙与四种配色",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "模特正面穿红色连帽夹克，展示多组立体口袋",
+    "relates_to": "Field Jacket 轮廓",
+    "missing": "背后箱褶与背包适配效果",
+    "kind": "人物穿搭",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "模特侧身穿红色夹克，背部因背包形成扩容轮廓",
+    "relates_to": "给后背增加额外容量",
+    "missing": "箱褶展开结构细节",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "红色夹克侧后部特写，含袖袋及背部拉链结构",
+    "relates_to": "核心结构藏在背后",
+    "missing": "背包及箱褶完整展开效果",
+    "kind": "细节图",
+    "usable": true
+   },
+   "5": {
+    "k": 5,
+    "what": "模特正面穿红色连帽夹克，展示宽松版型与口袋",
+    "relates_to": "宽松版型为中间层留出空间",
+    "missing": "背后箱褶与可拆前腰口袋",
+    "kind": "人物穿搭",
+    "usable": true
+   },
+   "6": {
+    "k": 6,
+    "what": "红色夹克前腰大口袋与侧部拉链结构特写",
+    "relates_to": "前腰大口袋可以完整拆下",
+    "missing": "拆作 sacoche 及收纳袋的形态",
+    "kind": "细节图",
+    "usable": true
+   }
+  },
+  "5": {
+   "1": {
+    "k": 1,
+    "what": "军绿色拼接夹克、工装裤与口袋T恤平铺",
+    "relates_to": "系列包括夹克、长裤和T-shirt",
+    "missing": "BEAMS联名信息及发售价格",
+    "kind": "产品图",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "军绿色多面料拼接工装夹克正面平铺",
+    "relates_to": "档案面料与成衣染色",
+    "missing": "不同面料名称及试作款背景",
+    "kind": "产品图",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "军绿色异材质拼接工装长裤平铺",
+    "relates_to": "长裤用Cordura面料",
+    "missing": "Cordura材质说明及价格",
+    "kind": "产品图",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "军绿色短袖T恤配异材质下摆口袋",
+    "relates_to": "T-shirt用异材质口袋",
+    "missing": "联名信息及价格",
+    "kind": "产品图",
+    "usable": true
+   },
+   "5": {
+    "k": 5,
+    "what": "低清黑色地图定位图标",
+    "relates_to": "与正文无直接对应",
+    "missing": "联名服装及染色实验信息",
+    "kind": "其他",
+    "usable": false
+   }
+  }
+ },
+ "failed": [],
+ "model": "gpt-5.6-sol via codex app-server",
+ "built_at": "2026-09-21 16:42"
+}

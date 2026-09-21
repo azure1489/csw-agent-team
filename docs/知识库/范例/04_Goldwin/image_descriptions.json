@@ -1,0 +1,122 @@
+{
+ "n": 4,
+ "items": {
+  "1": {
+   "1": {
+    "k": 1,
+    "what": "黑色连帽外套及“重新押注空气保暖”标题",
+    "relates_to": "Goldwin｜重新押注空气保暖",
+    "missing": "空气层结构与调节方式",
+    "kind": "海报或文字图",
+    "usable": false
+   },
+   "2": {
+    "k": 2,
+    "what": "黑色连帽外套及“重新押注空气保暖”标题",
+    "relates_to": "Goldwin｜重新押注空气保暖",
+    "missing": "空气层结构与调节方式",
+    "kind": "海报或文字图",
+    "usable": false
+   },
+   "3": {
+    "k": 3,
+    "what": "黑色连帽外套、文章标题及公众号水印",
+    "relates_to": "Goldwin｜重新押注空气保暖",
+    "missing": "空气层结构与调节方式",
+    "kind": "海报或文字图",
+    "usable": false
+   },
+   "4": {
+    "k": 4,
+    "what": "黑色连帽外套及“重新押注空气保暖”标题",
+    "relates_to": "Goldwin｜重新押注空气保暖",
+    "missing": "空气层结构与调节方式",
+    "kind": "海报或文字图",
+    "usable": false
+   },
+   "5": {
+    "k": 5,
+    "what": "黑色连帽外套及“重新押注空气保暖”标题",
+    "relates_to": "Goldwin｜重新押注空气保暖",
+    "missing": "空气层结构与调节方式",
+    "kind": "海报或文字图",
+    "usable": false
+   },
+   "6": {
+    "k": 6,
+    "what": "白底展示黑色连帽Voxeloft外套正面",
+    "relates_to": "Voxeloft Trail Jacket",
+    "missing": "内部多层空气结构及分区",
+    "kind": "产品图",
+    "usable": true
+   },
+   "7": {
+    "k": 7,
+    "what": "黑色连帽Voxeloft外套正面产品图",
+    "relates_to": "Voxeloft Trail Jacket",
+    "missing": "空气层分区与表层材质不可见",
+    "kind": "产品图",
+    "usable": true
+   },
+   "8": {
+    "k": 8,
+    "what": "黑色连帽Voxeloft外套正面产品图",
+    "relates_to": "Voxeloft Trail Jacket",
+    "missing": "空气层分区与表层材质不可见",
+    "kind": "产品图",
+    "usable": true
+   },
+   "9": {
+    "k": 9,
+    "what": "黑色织物形成连续多层中空结构",
+    "relates_to": "多层结构抑制空气流动",
+    "missing": "单个空气层10mm以下不可确认",
+    "kind": "细节图",
+    "usable": true
+   },
+   "10": {
+    "k": 10,
+    "what": "黑色织物形成连续多层中空结构",
+    "relates_to": "多层结构抑制空气流动",
+    "missing": "单个空气层10mm以下不可确认",
+    "kind": "细节图",
+    "usable": true
+   },
+   "11": {
+    "k": 11,
+    "what": "黑色织物形成连续多层中空结构",
+    "relates_to": "多层结构抑制空气流动",
+    "missing": "单个空气层10mm以下不可确认",
+    "kind": "细节图",
+    "usable": true
+   },
+   "12": {
+    "k": 12,
+    "what": "黑色织物表面的阵列式鼓包与固定点",
+    "relates_to": "内部的空气层",
+    "missing": "空气可增减的调节方式不可见",
+    "kind": "细节图",
+    "usable": true
+   },
+   "13": {
+    "k": 13,
+    "what": "黑色织物表面呈规则凸起气囊结构",
+    "relates_to": "多层结构抑制空气流动",
+    "missing": "单层厚度及外套分区位置",
+    "kind": "细节图",
+    "usable": true
+   },
+   "14": {
+    "k": 14,
+    "what": "黑色织物表面呈规则凸起气囊结构",
+    "relates_to": "多层结构抑制空气流动",
+    "missing": "单层厚度及外套分区位置",
+    "kind": "细节图",
+    "usable": true
+   }
+  }
+ },
+ "failed": [],
+ "model": "gpt-5.6-sol via codex app-server",
+ "built_at": "2026-09-21 16:42"
+}

@@ -1,0 +1,144 @@
+{
+ "n": 5,
+ "items": {
+  "1": {
+   "1": {
+    "k": 1,
+    "what": "白衣男子站在摆有工具与器具的室内",
+    "relates_to": "BUSH DE BRUNT 主理人桥本万吉",
+    "missing": "餐饮经历与改装装备理念",
+    "kind": "人物穿搭",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "混凝土店内陈列桌椅、收纳箱和户外器具",
+    "relates_to": "炉具、桌板、收纳箱和零件",
+    "missing": "桥本自有产品与其他车库品牌之分",
+    "kind": "环境或空间",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "黑暗中发蓝光的圆形军事造型小物",
+    "relates_to": "Lumi Blue 版本的蓝色夜光效果",
+    "missing": "蚊香架、金属板及三脚架适配器",
+    "kind": "产品图",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "山地草坪上成排搭设多顶沙色迷彩黑色天幕",
+    "relates_to": "Rickey Boys 北京现场",
+    "missing": "天幕下桌子、收纳箱和器具的细节",
+    "kind": "使用场景",
+    "usable": true
+   }
+  },
+  "2": {
+   "1": {
+    "k": 1,
+    "what": "男子坐在沙色帐篷前，周围是同色系露营装备",
+    "relates_to": "沙色与迷彩贯穿整套营地",
+    "missing": "不同品牌的具体名称",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "沙色BRAVO ONE石油炉及炉身印字",
+    "relates_to": "BRAVO ONE的沙色外观与炉身印字",
+    "missing": "原款绿色外观",
+    "kind": "产品图",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "沙色、橄榄色、黑色和白色的四只小桶",
+    "relates_to": "4U小桶的不同配色",
+    "missing": "颜色加入塑料原料的制作方式",
+    "kind": "产品图",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "CHECKMATE沙色板件的铭牌与固定孔特写",
+    "relates_to": "CHECKMATE的铭牌与固定孔细节",
+    "missing": "安装在挂架顶部后的用途",
+    "kind": "细节图",
+    "usable": true
+   },
+   "5": {
+    "k": 5,
+    "what": "草地上的沙色双层桌板与黑色挂架组合",
+    "relates_to": "CHECKMATE M完整套装",
+    "missing": "挂钩、转接件等配件细节",
+    "kind": "产品图",
+    "usable": true
+   },
+   "6": {
+    "k": 6,
+    "what": "帐篷内多张桌板、座椅和收纳装备组合陈列",
+    "relates_to": "不同品牌的装备组合起来",
+    "missing": "各件装备的品牌归属",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "7": {
+    "k": 7,
+    "what": "灰色金属小桌，桌面印有飞碟与帐篷图案",
+    "relates_to": "BRUNT × Helinox 的 38paleo 桌板",
+    "missing": "收纳箱盖及三脚架搭配方式",
+    "kind": "产品图",
+    "usable": true
+   }
+  },
+  "3": {
+   "1": {
+    "k": 1,
+    "what": "黑色3sides圆盘，表面印有多行英文",
+    "relates_to": "“三方”、吃饭与举杯的英文",
+    "missing": "日本传统器物的具体使用场景",
+    "kind": "产品图",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "手持黑色rip shot小灯，外壳印英文",
+    "relates_to": "关于爱情的玩笑",
+    "missing": "小灯点亮后的照明效果",
+    "kind": "细节图",
+    "usable": false
+   }
+  },
+  "4": {
+   "1": {
+    "k": 1,
+    "what": "山地草坪上多人围观投掷游戏",
+    "relates_to": "“游戏环节，场边的朋友也看得投入”",
+    "missing": "BRUNT价格与实用配件信息",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "露营地多人穿统一白T举杯合影",
+    "relates_to": "“Rickey Boys 北京聚会合影”",
+    "missing": "BRUNT价格与装备搭配细节",
+    "kind": "人物穿搭",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "黑色地图定位图标",
+    "relates_to": "与正文无直接对应",
+    "missing": "BRUNT产品、聚会与人物信息",
+    "kind": "其他",
+    "usable": false
+   }
+  }
+ },
+ "failed": [],
+ "model": "gpt-5.6-sol via codex app-server",
+ "built_at": "2026-09-21 16:42"
+}

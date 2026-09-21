@@ -1,0 +1,210 @@
+{
+ "n": 2,
+ "items": {
+  "1": {
+   "1": {
+    "k": 1,
+    "what": "黑红配色PUMA鞋，配双鞋带与厚重包覆鞋底",
+    "relates_to": "做旧处理、双鞋带系统",
+    "missing": "Vibram橡胶外底细节",
+    "kind": "产品图",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "鞋款俯视与鞋底视图，展示深纹橡胶外底",
+    "relates_to": "Vibram橡胶外底、抓地需求",
+    "missing": "鞋面做旧处理",
+    "kind": "细节图",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "一双黑红PUMA鞋，展示厚重轮廓与复杂鞋带",
+    "relates_to": "厚重轮廓、复杂技术结构",
+    "missing": "实际户外地面抓地表现",
+    "kind": "产品图",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "鞋后跟特写，展示厚底纹路与Vibram标识",
+    "relates_to": "越野外底、Vibram橡胶外底",
+    "missing": "双鞋带系统全貌",
+    "kind": "细节图",
+    "usable": true
+   }
+  },
+  "2": {
+   "1": {
+    "k": 1,
+    "what": "灰色桌面烤炉置于厨房台面，机身带联名标识",
+    "relates_to": "限定灰色版本、室内使用的桌面烤炉",
+    "missing": "侧面加热与远红外线原理",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "烤炉剖面加热示意，顶部烤制牛排",
+    "relates_to": "侧面加热、利用远红外线完成烧烤",
+    "missing": "限定灰色外观与联名标识",
+    "kind": "其他",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "白底灰色桌面烤炉，机身带联名标识",
+    "relates_to": "水泥与工业材料质感的灰色",
+    "missing": "室内使用场景及烧烤效果",
+    "kind": "产品图",
+    "usable": true
+   }
+  },
+  "3": {
+   "1": {
+    "k": 1,
+    "what": "THE LOOP活动海报，含修补、线轴和服装图案",
+    "relates_to": "9月26–27日举办「THE LOOP」",
+    "missing": "举办地点、参与品牌及具体维修项目",
+    "kind": "海报或文字图",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "商场中设置缝纫机和装备的现场维修摊位",
+    "relates_to": "维修变成消费者能够观看、参与的户外活动",
+    "missing": "拉链维修、鞋清洁换底等项目",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "两名女性在缝纫机旁修补红色衣物",
+    "relates_to": "教参与者补衣服",
+    "missing": "户外装备及活动品牌信息",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "工作人员与参与者在商场摊位修补黑色衣物",
+    "relates_to": "热压补丁及缝纫修补",
+    "missing": "具体修补方式和装备品牌",
+    "kind": "使用场景",
+    "usable": true
+   },
+   "5": {
+    "k": 5,
+    "what": "多人围坐工作台缝补物品，旁边有人观看",
+    "relates_to": "设置基础缝补教学",
+    "missing": "THE LOOP活动标识及户外装备特征",
+    "kind": "使用场景",
+    "usable": true
+   }
+  },
+  "4": {
+   "1": {
+    "k": 1,
+    "what": "带吊环的不锈钢深锅悬挂在篝火上，配发售文字",
+    "relates_to": "「9月12日」「直接挂在三脚架下」",
+    "missing": "容量、重量及炉具兼容信息",
+    "kind": "海报或文字图",
+    "usable": false
+   },
+   "2": {
+    "k": 2,
+    "what": "带盖深锅放在户外燃气炉上，配兼容炉具文字",
+    "relates_to": "「同时支持燃气灶和IH」",
+    "missing": "未实际展示IH加热",
+    "kind": "使用场景",
+    "usable": false
+   },
+   "3": {
+    "k": 3,
+    "what": "带木制旋钮锅盖的深锅吊挂在篝火上",
+    "relates_to": "「适合户外直火使用」「可吊挂」",
+    "missing": "锅内料理与容量信息",
+    "kind": "使用场景",
+    "usable": false
+   },
+   "4": {
+    "k": 4,
+    "what": "绿色背景上的壶型锅及容量、高度、直径标注",
+    "relates_to": "「Φ15×16.5cm」「容量约2L」",
+    "missing": "重量、材质与售价",
+    "kind": "海报或文字图",
+    "usable": true
+   },
+   "5": {
+    "k": 5,
+    "what": "燃气炉上的深锅盛有汤食，手正揭开锅盖",
+    "relates_to": "「适合炖煮、煮汤」「锅体更深」",
+    "missing": "吊挂篝火及IH使用方式",
+    "kind": "使用场景",
+    "usable": false
+   }
+  },
+  "5": {
+   "1": {
+    "k": 1,
+    "what": "棕黑配色低帮户外鞋悬空展示",
+    "relates_to": "Cardboard 棕色等配色",
+    "missing": "GORE-TEX内衬及200美元定价",
+    "kind": "产品图",
+    "usable": true
+   },
+   "2": {
+    "k": 2,
+    "what": "两名男女在山地车与护林站旁休息",
+    "relates_to": "从徒步、攀岩一路写到咖啡店和画廊",
+    "missing": "攀岩与岩壁场景",
+    "kind": "人物穿搭",
+    "usable": true
+   },
+   "3": {
+    "k": 3,
+    "what": "男女穿户外鞋在山地车旁交谈",
+    "relates_to": "也很容易进入日常穿着",
+    "missing": "鞋款技术配置",
+    "kind": "人物穿搭",
+    "usable": true
+   },
+   "4": {
+    "k": 4,
+    "what": "鞋头俯拍特写，展示橡胶包覆与鞋带",
+    "relates_to": "鞋头大面积包覆橡胶",
+    "missing": "鞋底抓地与GORE-TEX内衬",
+    "kind": "细节图",
+    "usable": true
+   },
+   "5": {
+    "k": 5,
+    "what": "鞋后跟特写，可见GORE-TEX与5.10标识",
+    "relates_to": "用 GORE-TEX 内衬解决潮湿山径",
+    "missing": "EVA中底与鞋头橡胶包覆",
+    "kind": "细节图",
+    "usable": true
+   },
+   "6": {
+    "k": 6,
+    "what": "沾有泥土的鞋底与鞋身悬空展示",
+    "relates_to": "鞋底强调岩面抓地",
+    "missing": "实际山径或岩壁使用场景",
+    "kind": "细节图",
+    "usable": true
+   },
+   "7": {
+    "k": 7,
+    "what": "黑色地图定位图标，背景为灰白横线",
+    "relates_to": "与正文无直接对应",
+    "missing": "鞋款外观、功能细节及使用场景",
+    "kind": "其他",
+    "usable": false
+   }
+  }
+ },
+ "failed": [],
+ "model": "gpt-5.6-sol via codex app-server",
+ "built_at": "2026-09-21 16:42"
+}
