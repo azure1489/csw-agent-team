@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -94,5 +95,109 @@ func TestIntakeTraceOnRunWithoutRecords(t *testing.T) {
 	}
 	if out["sweeps"] == nil || len(out["sweeps"].([]any)) != 0 {
 		t.Fatalf("空数据应是空列表而不是 null：%v", out["sweeps"])
+	}
+}
+
+// dimsJSON 造一份六维齐全、每维有依据的 dims。
+func dimsJSON(verdict string) string {
+	parts := make([]string, 0, 6)
+	for _, k := range []string{"change", "use", "gain", "compare", "explain", "csw"} {
+		parts = append(parts, fmt.Sprintf(`%q:{"verdict":%q,"basis":"正文「改了结构」"}`, k, verdict))
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
+// TestIntakeJudgementEndpoints 逐条判断的 HTTP 面。
+//
+// 三条口径硬规则各有一条断言：六维必须齐全且有依据、没读到实图只能落 pending_check、
+// 结论只有四档。它们在引擎侧校验（引擎是唯一真相），库里再用 CHECK 兜一道。
+func TestIntakeJudgementEndpoints(t *testing.T) {
+	ts, st, eng, mint := setupHTTP(t)
+	ctx := context.Background()
+	collectorTok, analystTok := mint("collector"), mint("analyst")
+	editor, _ := st.Q().ActiveAgentByRole(ctx, "editor")
+	role, _ := st.Q().GetRole(ctx, "editor")
+	res, err := eng.Trigger(ctx, editor, role, "daily_news", "2026-09-22", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := fmt.Sprintf("%s/api/v1/runs/%d", ts.URL, res.Run.ID)
+	put := func(body string) (int, map[string]any) {
+		return httpJSON(t, http.MethodPut, base+"/intake-judgements", collectorTok,
+			bytes.NewBufferString(body), "application/json")
+	}
+
+	// 三条：推荐、不推荐、没读到图的待核。
+	body := fmt.Sprintf(`{"judgements":[
+		{"candidate_key":"snowpeak-abc123","platform":"instagram","post_ref":"DbKe9gIkoMb","tier":"recommend",
+		 "image_seen":true,"dims":%s,"heat_note":"369 赞 · 常态 71 的 5.2×","rubric_version":"v9"},
+		{"candidate_key":"keen-778899","platform":"instagram","tier":"not_recommend","image_seen":true,
+		 "dims":%s,"gaps":["只有新配色"]},
+		{"candidate_key":"noimg-000001","platform":"web","tier":"pending_check","image_seen":false,
+		 "dims":%s,"gaps":["未读到实图"]}
+	]}`, dimsJSON("yes"), dimsJSON("no"), dimsJSON("unclear"))
+	code, out := put(body)
+	if code != 200 || len(out["judgements"].([]any)) != 3 {
+		t.Fatalf("report judgements: %d %v", code, out)
+	}
+	// 推荐排在最前，02 直接看台账就够
+	if first := out["judgements"].([]any)[0].(map[string]any); first["tier"] != "recommend" {
+		t.Fatalf("推荐应排最前，实为 %v", first["tier"])
+	}
+
+	// 同键重报即覆盖，不追加
+	if code, out := put(fmt.Sprintf(`{"judgements":[{"candidate_key":"keen-778899","tier":"alternate",
+		"image_seen":true,"dims":%s}]}`, dimsJSON("unclear"))); code != 200 ||
+		len(out["judgements"].([]any)) != 3 {
+		t.Fatalf("重报应覆盖而不是追加：%d %v", code, out)
+	}
+
+	// 没读到实图却落非待核档 —— 拒
+	if code, out := put(fmt.Sprintf(`{"judgements":[{"candidate_key":"x-1","tier":"not_recommend",
+		"image_seen":false,"dims":%s}]}`, dimsJSON("no"))); code != 400 ||
+		out["code"] != "image_unseen_must_pend" {
+		t.Fatalf("没读到实图应只能落待核：%d %v", code, out)
+	}
+
+	// 缺一个维度 —— 拒
+	if code, out := put(`{"judgements":[{"candidate_key":"x-2","tier":"recommend","image_seen":true,
+		"dims":{"change":{"verdict":"yes","basis":"a"}}}]}`); code != 400 || out["code"] != "dim_missing" {
+		t.Fatalf("六维不齐应被拒：%d %v", code, out)
+	}
+
+	// 维度有结论但没依据 —— 拒（编不出来就判 unclear，不许空着）
+	noBasis := `{"change":{"verdict":"yes","basis":""},"use":{"verdict":"yes","basis":"b"},
+		"gain":{"verdict":"yes","basis":"b"},"compare":{"verdict":"yes","basis":"b"},
+		"explain":{"verdict":"yes","basis":"b"},"csw":{"verdict":"yes","basis":"b"}}`
+	if code, out := put(`{"judgements":[{"candidate_key":"x-3","tier":"recommend","image_seen":true,
+		"dims":` + noBasis + `}]}`); code != 400 || out["code"] != "dim_basis_required" {
+		t.Fatalf("没依据应被拒：%d %v", code, out)
+	}
+
+	// 四档之外 —— 拒（没有分数，也没有第五档）
+	if code, out := put(fmt.Sprintf(`{"judgements":[{"candidate_key":"x-4","tier":"maybe",
+		"image_seen":true,"dims":%s}]}`, dimsJSON("yes"))); code != 400 || out["code"] != "bad_tier" {
+		t.Fatalf("非法档应被拒：%d %v", code, out)
+	}
+
+	// 非本 run 参与角色不能上报
+	if code, out := httpJSON(t, http.MethodPut, base+"/intake-judgements", analystTok,
+		bytes.NewBufferString(fmt.Sprintf(`{"judgements":[{"candidate_key":"y-1","tier":"recommend",
+			"image_seen":true,"dims":%s}]}`, dimsJSON("yes"))), "application/json"); code != 403 {
+		t.Fatalf("非参与角色应被拒：%d %v", code, out)
+	}
+
+	// 只读台账
+	code, out = httpJSON(t, http.MethodGet, base+"/intake-judgements", analystTok, nil, "")
+	if code != 200 || len(out["judgements"].([]any)) != 3 {
+		t.Fatalf("list judgements: %d %v", code, out)
+	}
+
+	// 采集轮的 tool 可以填 csw_api 了
+	if code, out := httpJSON(t, http.MethodPut, base+"/sweeps", collectorTok,
+		bytes.NewBufferString(`{"sweeps":[{"sweep_key":"csw-window","platform":"instagram",
+			"source_key":"channel","tool":"csw_api","found":438,"in_window":358,"result":"ok"}]}`),
+		"application/json"); code != 200 {
+		t.Fatalf("csw_api 应在白名单里：%d %v", code, out)
 	}
 }

@@ -322,6 +322,39 @@ type IntakeSweep struct {
 	PagedToEnd    bool
 }
 
+// IntakeJudgement 一条候选的判断结论：四档 + Van 的六个维度各自成立与否 + 每维依据。
+//
+// 与 ItemTrace 的分工：ItemTrace 记「状态怎么变的」，这里记「为什么这么判」。
+// 被判不推荐的候选不进 run_items，所以 ItemKey 可以为空——台账要能看见它，
+// 否则「每条都判」就无从验证。
+//
+// 刻意没有分数字段，也不会有：留了字段就一定会有人去填、去排序，
+// 「不打数字分、无权重」的口径就名存实亡了。
+type IntakeJudgement struct {
+	CandidateKey  string // 品牌小写 + '-' + 链接 sha256 前 6 位；与交付物里的条目键同一个
+	ItemKey       string // 进了 run_items 的才有
+	Platform      string
+	PostRef       string // 平台侧 id（Instagram 短码）
+	SourceURL     string
+	Tier          string // recommend | alternate | not_recommend | pending_check
+	DimsJSON      string // {"change":{"verdict":"yes|no|unclear","basis":"..."}, ...}
+	ThreeJSON     string // {"what_changed","why_it_matters","how_different"}
+	ComparisonJSON string
+	HeatNote      string // 热度是输入的呈现，不是维度
+	GapsJSON      string
+	HitsJSON      string // 命中的七类优先关注 / 七类降低优先级；是倾向不是黑名单
+	JevJSON       string // 初评与核对留痕；初评概率只用于排序，不参与结论
+	RubricVersion string
+	RoleCode      string
+	CreatedAt     string
+	UpdatedAt     string
+	ActorID       *int64
+	ID            int64
+	RunID         int64
+	ImageSeen     bool // false 时 Tier 必须是 pending_check，库里有 CHECK 兜着
+	Carried       bool // 昨天已判、今天仍在窗口内：台账出现这一行但不重判
+}
+
 // ItemTrace 条目的一次判断：回答「为什么留、为什么弃」，淘汰理由由此落库而不是只写在交付物里。
 type ItemTrace struct {
 	ItemKey    string

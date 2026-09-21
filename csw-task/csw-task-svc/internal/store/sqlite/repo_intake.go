@@ -209,3 +209,109 @@ func boolToInt(b bool) int {
 	}
 	return 0
 }
+
+// ── 逐条判断 ──────────────────────────────────────────────────────────
+
+const judgementCols = `id, run_id, candidate_key, item_key, platform, post_ref, source_url, tier,
+	dims_json, three_sentences_json, comparison_json, heat_note, gaps_json, image_seen,
+	hits_json, jev_json, rubric_version, carried, actor_id, role_code, created_at, updated_at`
+
+func scanJudgement(s interface{ Scan(...any) error }) (domain.IntakeJudgement, error) {
+	var j domain.IntakeJudgement
+	var itemKey, sourceURL sql.NullString
+	var actorID sql.NullInt64
+	var imageSeen, carried int
+	err := s.Scan(&j.ID, &j.RunID, &j.CandidateKey, &itemKey, &j.Platform, &j.PostRef, &sourceURL, &j.Tier,
+		&j.DimsJSON, &j.ThreeJSON, &j.ComparisonJSON, &j.HeatNote, &j.GapsJSON, &imageSeen,
+		&j.HitsJSON, &j.JevJSON, &j.RubricVersion, &carried, &actorID, &j.RoleCode, &j.CreatedAt, &j.UpdatedAt)
+	j.ItemKey, j.SourceURL = itemKey.String, sourceURL.String
+	j.ActorID = ptrI64(actorID)
+	j.ImageSeen, j.Carried = imageSeen == 1, carried == 1
+	return j, err
+}
+
+// UpsertJudgement 上报一条判断；(run_id, candidate_key) 幂等，同键重报即覆盖。
+//
+// 重报要覆盖而不是追加：同一轮里一条候选只有一个当下结论。
+// 人工改档另存在别处（工作台的 judgement_overrides），台账上两者都看得见，
+// 所以这里放心覆盖不会把人的判断冲掉。
+func (q *Queries) UpsertJudgement(ctx context.Context, j domain.IntakeJudgement) error {
+	_, err := q.ex.ExecContext(ctx, `
+		INSERT INTO intake_judgements (run_id, candidate_key, item_key, platform, post_ref, source_url, tier,
+			dims_json, three_sentences_json, comparison_json, heat_note, gaps_json, image_seen,
+			hits_json, jev_json, rubric_version, carried, actor_id, role_code)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(run_id, candidate_key) DO UPDATE SET
+			item_key = COALESCE(excluded.item_key, intake_judgements.item_key),
+			platform = excluded.platform,
+			post_ref = excluded.post_ref,
+			source_url = COALESCE(excluded.source_url, intake_judgements.source_url),
+			tier = excluded.tier,
+			dims_json = excluded.dims_json,
+			three_sentences_json = excluded.three_sentences_json,
+			comparison_json = excluded.comparison_json,
+			heat_note = excluded.heat_note,
+			gaps_json = excluded.gaps_json,
+			image_seen = excluded.image_seen,
+			hits_json = excluded.hits_json,
+			jev_json = excluded.jev_json,
+			rubric_version = excluded.rubric_version,
+			carried = excluded.carried,
+			actor_id = excluded.actor_id,
+			role_code = excluded.role_code,
+			updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')`,
+		j.RunID, j.CandidateKey, nullIfEmpty(j.ItemKey), j.Platform, j.PostRef, nullIfEmpty(j.SourceURL), j.Tier,
+		j.DimsJSON, j.ThreeJSON, j.ComparisonJSON, j.HeatNote, j.GapsJSON, boolToInt(j.ImageSeen),
+		j.HitsJSON, j.JevJSON, j.RubricVersion, boolToInt(j.Carried), nullI64(j.ActorID), j.RoleCode)
+	return err
+}
+
+// ListJudgementsByRun 列某 run 的全部判断（推荐在前，便于 02 直接看）。
+func (q *Queries) ListJudgementsByRun(ctx context.Context, runID int64) ([]domain.IntakeJudgement, error) {
+	rows, err := q.ex.QueryContext(ctx, `SELECT `+judgementCols+` FROM intake_judgements WHERE run_id=?
+		ORDER BY CASE tier WHEN 'recommend' THEN 0 WHEN 'alternate' THEN 1
+			WHEN 'pending_check' THEN 2 ELSE 3 END, id`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.IntakeJudgement{}
+	for rows.Next() {
+		j, err := scanJudgement(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// CountJudgementsByRun 各档计数 + 未读到实图的条数，供 intake-check 对账。
+func (q *Queries) CountJudgementsByRun(ctx context.Context, runID int64) (map[string]int, error) {
+	rows, err := q.ex.QueryContext(ctx,
+		`SELECT tier, count(*) FROM intake_judgements WHERE run_id=? GROUP BY tier`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var tier string
+		var n int
+		if err := rows.Scan(&tier, &n); err != nil {
+			return nil, err
+		}
+		out[tier] = n
+		out["total"] += n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var unseen int
+	if err := q.ex.QueryRowContext(ctx,
+		`SELECT count(*) FROM intake_judgements WHERE run_id=? AND image_seen=0`, runID).Scan(&unseen); err != nil {
+		return nil, err
+	}
+	out["image_unseen"] = unseen
+	return out, nil
+}

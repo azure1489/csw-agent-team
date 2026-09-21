@@ -63,6 +63,8 @@ func (s *Server) Router() *gin.Engine {
 		v1.PUT("/runs/:id/items", s.handleUpsertItems)
 		v1.PUT("/runs/:id/sweeps", s.handleReportSweeps)
 		v1.GET("/runs/:id/intake-trace", s.handleIntakeTrace)
+		v1.PUT("/runs/:id/intake-judgements", s.handleReportJudgements)
+		v1.GET("/runs/:id/intake-judgements", s.handleListJudgements)
 		v1.POST("/files", s.handleUpload)
 		v1.GET("/files/:id", s.handleDownload)
 		v1.POST("/tasks/:id/deliverables", s.handleSubmit)

@@ -361,13 +361,38 @@ func ValidSourcePlatform(p string) bool {
 }
 
 // ValidSweepTool 采集所用工具。
+// csw_api 是情报收集员工作台：它直接调 csw 的 HTTP 接口，不再经 MCP，
+// 登记时若只能填 other 就分不清「这一轮是谁扫的」。
 func ValidSweepTool(t string) bool {
 	switch t {
-	case "csw_mcp", "opencli", "webfetch", "other":
+	case "csw_mcp", "csw_api", "opencli", "webfetch", "other":
 		return true
 	}
 	return false
 }
+
+// ValidJudgementTier 逐条判断的结论档。
+// 只有这四个，**没有分数**——口径是「不打数字分、无权重」。
+// pending_check 是「证据或图片不足」，不算判过，也不因此淘汰。
+func ValidJudgementTier(t string) bool {
+	switch t {
+	case "recommend", "alternate", "not_recommend", "pending_check":
+		return true
+	}
+	return false
+}
+
+// ValidDimVerdict 六维各自的结论。
+func ValidDimVerdict(v string) bool {
+	switch v {
+	case "yes", "no", "unclear":
+		return true
+	}
+	return false
+}
+
+// JudgementDims Van 的六个维度，键固定，不增不减。
+var JudgementDims = [6]string{"change", "use", "gain", "compare", "explain", "csw"}
 
 // ValidSweepResult 一轮采集的结果。
 func ValidSweepResult(r string) bool {

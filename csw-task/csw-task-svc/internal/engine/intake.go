@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"sort"
@@ -56,7 +57,7 @@ func (e *Engine) ReportSweeps(ctx context.Context, actor domain.Agent, role doma
 			return nil, domain.BadRequest("bad_sweep_platform", "platform 须为 instagram / xhs / web / other，收到："+sw.Platform)
 		}
 		if sw.Tool != "" && !domain.ValidSweepTool(sw.Tool) {
-			return nil, domain.BadRequest("bad_sweep_tool", "tool 须为 csw_mcp / opencli / webfetch / other，收到："+sw.Tool)
+			return nil, domain.BadRequest("bad_sweep_tool", "tool 须为 csw_mcp / csw_api / opencli / webfetch / other，收到："+sw.Tool)
 		}
 		if sw.Result != "" && !domain.ValidSweepResult(sw.Result) {
 			return nil, domain.BadRequest("bad_sweep_result", "result 须为 ok / failed / partial，收到："+sw.Result)
@@ -123,6 +124,8 @@ type IntakeTrace struct {
 	Traces   []domain.ItemTrace    `json:"traces"`
 	Sources  []domain.IntakeSource `json:"sources"`
 	Coverage []CoverageRow         `json:"coverage"`
+	// 判断台账。工作台接管 01 之后才有；旧 run 一律为空，判据据此走旧逻辑。
+	Judgements []domain.IntakeJudgement `json:"judgements"`
 }
 
 // CoverageRow 一个来源本期被扫的情况。
@@ -143,7 +146,8 @@ type CoverageRow struct {
 func BuildIntakeTrace(ctx context.Context, q *sqlite.Queries, runID int64) (IntakeTrace, error) {
 	out := IntakeTrace{RunID: runID,
 		Sweeps: make([]domain.IntakeSweep, 0), Items: make([]domain.RunItem, 0),
-		Traces: make([]domain.ItemTrace, 0), Sources: make([]domain.IntakeSource, 0), Coverage: make([]CoverageRow, 0)}
+		Traces: make([]domain.ItemTrace, 0), Sources: make([]domain.IntakeSource, 0), Coverage: make([]CoverageRow, 0),
+		Judgements: make([]domain.IntakeJudgement, 0)}
 	run, err := q.GetRun(ctx, runID)
 	if isNoRows(err) {
 		return out, domain.NotFound("run_not_found", "无此实例")
@@ -167,6 +171,13 @@ func BuildIntakeTrace(ctx context.Context, q *sqlite.Queries, runID int64) (Inta
 	}
 	if out.Sources, err = q.ListIntakeSources(ctx, true); err != nil {
 		return out, err
+	}
+	js, err := q.ListJudgementsByRun(ctx, runID)
+	if err != nil {
+		return out, err
+	}
+	if js != nil {
+		out.Judgements = js
 	}
 	out.Coverage = coverage(out.Sources, out.Sweeps)
 	return out, nil
@@ -238,7 +249,18 @@ func BuildIntakeCheck(ctx context.Context, q *sqlite.Queries, runID int64) ([]In
 	out := make([]IntakeCheck, 0, 8)
 
 	out = append(out, checkCoverage(tr, hasSweeps))
-	out = append(out, checkYield(tr, hasSweeps, hasTraces))
+	// 有判断台账就换一套对账口径。
+	//
+	// 为什么必须分支：旧的 checkYield 拿「已审 − 登记」对账，假设的是「审过的就该登记」。
+	// 工作台是**每条都判**——一期审 358 条、只登记二十来条，剩下的都判了「不推荐」并留在台账里。
+	// 拿旧判据去套，这个落差会永远是三百多，每期必判红。
+	// 新口径对的是「判过的条数 = 窗口内去重候选数」：一条都不许漏判。
+	if len(tr.Judgements) > 0 {
+		out = append(out, checkJudgedAll(tr))
+		out = append(out, checkPendingCheckConsistency(tr))
+	} else {
+		out = append(out, checkYield(tr, hasSweeps, hasTraces))
+	}
 	out = append(out, checkWindow(tr, winFrom, winTo))
 	out = append(out, checkDropExplained(tr, hasTraces))
 	out = append(out, checkDedup(tr))
@@ -246,6 +268,82 @@ func BuildIntakeCheck(ctx context.Context, q *sqlite.Queries, runID int64) ([]In
 	out = append(out, checkFallback(tr, hasSweeps))
 	out = append(out, checkSourceSpread(tr))
 	return out, nil
+}
+
+// checkJudgedAll 每条都判：台账行数要盖住窗口内的去重候选数。
+//
+// 只在有判断台账时才跑。分母取 csw_api 采集轮的去重获取数——那是工作台自己算出来的
+// 「这一轮到底有多少条不同的候选」，比 found（含重复）诚实。
+// 没有 csw_api 采集轮就不判定：别的采集方式没有这个计数，硬套会得出假结论。
+func checkJudgedAll(tr IntakeTrace) IntakeCheck {
+	c := IntakeCheck{Name: "每条都判：窗口内的候选一条都没漏"}
+	unique, unreviewed, hasAPI := 0, 0, false
+	for _, sw := range tr.Sweeps {
+		if sw.Tool != "csw_api" {
+			continue
+		}
+		hasAPI = true
+		unique += sw.FetchedUnique
+		unreviewed += sw.Unreviewed
+	}
+	judged, carried, pending := 0, 0, 0
+	for _, j := range tr.Judgements {
+		judged++
+		if j.Carried {
+			carried++
+		}
+		if j.Tier == "pending_check" {
+			pending++
+		}
+	}
+	c.Detail = fmt.Sprintf("台账 %d 条（其中已判结转 %d、待核 %d）", judged, carried, pending)
+	if !hasAPI {
+		c.Skipped = true
+		c.Detail += "；本期没有 csw_api 采集轮，没有去重候选数可比，不判定"
+		return c
+	}
+	c.Detail += fmt.Sprintf("；csw_api 去重候选 %d、未审 %d", unique, unreviewed)
+	if unreviewed > 0 {
+		c.Detail += "——工作台每条都判，未审应当为 0；有未审说明这一步没跑完"
+		return c
+	}
+	if unique > 0 && judged < unique {
+		c.Detail += fmt.Sprintf("；漏判 %d 条", unique-judged)
+		return c
+	}
+	c.OK = true
+	return c
+}
+
+// checkPendingCheckConsistency 没读到实图的必须落待核。
+//
+// 这是口径里的硬规则：待核不是淘汰，补齐图之后要能重评。
+// 引擎在上报时已经拒了违规的，库里也有 CHECK；这一条是给人看的第三道——
+// 它同时报出「有多少条因为没图而悬着」，那是明天要补的活。
+func checkPendingCheckConsistency(tr IntakeTrace) IntakeCheck {
+	c := IntakeCheck{Name: "待核一致：没读到实图的都落了待核"}
+	unseen, bad := 0, []string{}
+	for _, j := range tr.Judgements {
+		if j.ImageSeen {
+			continue
+		}
+		unseen++
+		if j.Tier != "pending_check" {
+			bad = append(bad, j.CandidateKey)
+		}
+	}
+	if unseen == 0 {
+		c.OK, c.Detail = true, "每条都读到了实图"
+		return c
+	}
+	if len(bad) > 0 {
+		c.Detail = fmt.Sprintf("%d 条没读到实图，其中 %d 条却不是待核：%s",
+			unseen, len(bad), strings.Join(bad, "、"))
+		return c
+	}
+	c.OK, c.Warn = true, true
+	c.Detail = fmt.Sprintf("%d 条没读到实图，都已落待核——补齐图后要重评，不得就此淘汰", unseen)
+	return c
 }
 
 func checkCoverage(tr IntakeTrace, hasSweeps bool) IntakeCheck {
@@ -646,4 +744,159 @@ func parseLoose(s string) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+// maxJudgementsPerReport 单次上报的判断上限。
+// 一轮约 360 条候选，分两三批发完；写连接只有一个，长事务会挤住 notifier 与定时触发。
+const maxJudgementsPerReport = 200
+
+// JudgementInput 一条判断的上报入参。
+type JudgementInput struct {
+	CandidateKey   string
+	ItemKey        string
+	Platform       string
+	PostRef        string
+	SourceURL      string
+	Tier           string
+	DimsJSON       string
+	ThreeJSON      string
+	ComparisonJSON string
+	HeatNote       string
+	GapsJSON       string
+	HitsJSON       string
+	JevJSON        string
+	RubricVersion  string
+	ImageSeen      bool
+	Carried        bool
+}
+
+// ReportJudgements 批量上报逐条判断（本 run 的参与角色或中枢）：(run_id, candidate_key) 幂等。
+//
+// 这里校验的三条都是口径里的硬规则，不是防手滑：
+//   - 六个维度必须齐全，且每维都要有依据。编不出依据就判 unclear，不许空着。
+//   - 没读到实图就必须落 pending_check：待核不是淘汰，补齐图后要能重评。
+//   - 结论只有四档，没有分数。
+func (e *Engine) ReportJudgements(ctx context.Context, actor domain.Agent, role domain.Role, runID int64, in []JudgementInput) ([]domain.IntakeJudgement, error) {
+	if len(in) == 0 {
+		return nil, domain.BadRequest("judgements_required", "judgements 不能为空")
+	}
+	if len(in) > maxJudgementsPerReport {
+		return nil, domain.BadRequest("too_many_judgements",
+			fmt.Sprintf("单次最多上报 %d 条判断，收到 %d", maxJudgementsPerReport, len(in)))
+	}
+	for _, j := range in {
+		if strings.TrimSpace(j.CandidateKey) == "" {
+			return nil, domain.BadRequest("bad_candidate_key", "candidate_key 不能为空：同键重报即覆盖，用它标识一条候选")
+		}
+		if !domain.ValidJudgementTier(j.Tier) {
+			return nil, domain.BadRequest("bad_tier",
+				"tier 须为 recommend / alternate / not_recommend / pending_check，收到："+j.Tier)
+		}
+		if j.Platform != "" && !domain.ValidSourcePlatform(j.Platform) {
+			return nil, domain.BadRequest("bad_platform", "platform 须为 instagram / xhs / web / other，收到："+j.Platform)
+		}
+		if !j.ImageSeen && j.Tier != "pending_check" {
+			return nil, domain.BadRequest("image_unseen_must_pend",
+				"没读到实图的候选只能落 pending_check（待核不是淘汰，补齐后要重评）："+j.CandidateKey)
+		}
+		if err := validateDims(j.DimsJSON, j.CandidateKey); err != nil {
+			return nil, err
+		}
+	}
+	var out []domain.IntakeJudgement
+	err := e.store.Tx(ctx, func(q *sqlite.Queries) error {
+		run, err := q.GetRun(ctx, runID)
+		if isNoRows(err) {
+			return domain.NotFound("run_not_found", "无此实例")
+		}
+		if err != nil {
+			return err
+		}
+		if run.Status != domain.RunActive {
+			return domain.Conflict("run_not_active", "仅进行中的 run 可上报判断")
+		}
+		wf, err := q.GetWorkflow(ctx, run.WorkflowID)
+		if err != nil {
+			return err
+		}
+		if err := requireRunParticipant(ctx, q, wf, role, runID, "上报逐条判断"); err != nil {
+			return err
+		}
+		for _, j := range in {
+			platform := j.Platform
+			if platform == "" {
+				platform = "instagram"
+			}
+			if err := q.UpsertJudgement(ctx, domain.IntakeJudgement{
+				RunID: runID, CandidateKey: j.CandidateKey, ItemKey: j.ItemKey, Platform: platform,
+				PostRef: j.PostRef, SourceURL: j.SourceURL, Tier: j.Tier,
+				DimsJSON: defaultJSON(j.DimsJSON, "{}"), ThreeJSON: defaultJSON(j.ThreeJSON, "{}"),
+				ComparisonJSON: defaultJSON(j.ComparisonJSON, "{}"), HeatNote: j.HeatNote,
+				GapsJSON: defaultJSON(j.GapsJSON, "[]"), HitsJSON: defaultJSON(j.HitsJSON, "{}"),
+				JevJSON: defaultJSON(j.JevJSON, "{}"), RubricVersion: j.RubricVersion,
+				ImageSeen: j.ImageSeen, Carried: j.Carried,
+				ActorID: &actor.ID, RoleCode: role.Code,
+			}); err != nil {
+				return err
+			}
+		}
+		out, err = q.ListJudgementsByRun(ctx, runID)
+		return err
+	})
+	return out, err
+}
+
+// ListJudgements 只读：某 run 的全部判断。02 / 03 据此看台账，不必解压交付物。
+func (e *Engine) ListJudgements(ctx context.Context, runID int64) ([]domain.IntakeJudgement, error) {
+	var out []domain.IntakeJudgement
+	err := e.store.Tx(ctx, func(q *sqlite.Queries) error {
+		if _, err := q.GetRun(ctx, runID); isNoRows(err) {
+			return domain.NotFound("run_not_found", "无此实例")
+		} else if err != nil {
+			return err
+		}
+		var err error
+		out, err = q.ListJudgementsByRun(ctx, runID)
+		return err
+	})
+	return out, err
+}
+
+func defaultJSON(s, fallback string) string {
+	if strings.TrimSpace(s) == "" {
+		return fallback
+	}
+	return s
+}
+
+// validateDims 六维齐全、每维有依据。
+// 这条校验放在引擎而不是只放在采集服务里：引擎是唯一真相，
+// 别的 agent 以后也可能上报判断，规则得长在这一侧。
+func validateDims(dimsJSON, candidateKey string) error {
+	if strings.TrimSpace(dimsJSON) == "" {
+		return domain.BadRequest("dims_required", "dims_json 不能为空：六维与依据是判断的主体："+candidateKey)
+	}
+	var dims map[string]struct {
+		Verdict string `json:"verdict"`
+		Basis   string `json:"basis"`
+	}
+	if err := json.Unmarshal([]byte(dimsJSON), &dims); err != nil {
+		return domain.BadRequest("bad_dims_json", "dims_json 不是合法 JSON："+candidateKey)
+	}
+	for _, key := range domain.JudgementDims {
+		d, ok := dims[key]
+		if !ok {
+			return domain.BadRequest("dim_missing",
+				fmt.Sprintf("缺维度 %s（六维不增不减）：%s", key, candidateKey))
+		}
+		if !domain.ValidDimVerdict(d.Verdict) {
+			return domain.BadRequest("bad_dim_verdict",
+				fmt.Sprintf("维度 %s 的 verdict 须为 yes / no / unclear，收到 %q：%s", key, d.Verdict, candidateKey))
+		}
+		if strings.TrimSpace(d.Basis) == "" {
+			return domain.BadRequest("dim_basis_required",
+				fmt.Sprintf("维度 %s 没给依据（编不出来就判 unclear，不许空着）：%s", key, candidateKey))
+		}
+	}
+	return nil
 }

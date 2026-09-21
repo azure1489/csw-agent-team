@@ -24,9 +24,10 @@ func TestMigrate(t *testing.T) {
 	).Scan(&n); err != nil {
 		t.Fatalf("count tables: %v", err)
 	}
-	// 0014 outbox、0015 run_items、0020–0022 数据子系统 8 张、0028 采集留痕 3 张。
-	if n != 36 {
-		t.Fatalf("want 36 tables, got %d", n)
+	// 0014 outbox、0015 run_items、0020–0022 数据子系统 8 张、0028 采集留痕 3 张、
+	// 0036 intake_judgements、0039 选题记忆 2 张。
+	if n != 39 {
+		t.Fatalf("want 39 tables, got %d", n)
 	}
 
 	// 0009 新增列：阶段四列 + 任务快照三列。
@@ -37,6 +38,9 @@ func TestMigrate(t *testing.T) {
 		// 0011 tasks 重建带入的列。
 		{"tasks", "item_key"}, {"tasks", "fail_reason"}, {"tasks", "last_activity_at"},
 		{"tasks", "overdue_notified_at"}, {"tasks", "rework_pending"},
+		// 0037 run_items 溯源两列、0038 台账两列。
+		{"run_items", "origin"}, {"run_items", "first_seen_at"},
+		{"ledger_published_posts", "publish_evidence"}, {"ledger_published_posts", "is_reference"},
 		// 0012 deliverables 重建、0013 reviews 扩列。
 		{"deliverables", "kind"}, {"deliverables", "affects_deliverable_id"}, {"deliverables", "edit_of"},
 		{"deliverables", "diff_summary"}, {"deliverables", "collab"},
@@ -363,5 +367,75 @@ func TestSeedDailyNewsV8(t *testing.T) {
 	}
 	if n := count(`SELECT instr(common_acceptance,'11-小红书选图包') FROM workflows WHERE id=?`, wfID); n == 0 {
 		t.Fatal("common acceptance should list v3 stage names")
+	}
+}
+
+// TestMigrateRollback 验证 0036–0039 能干净回滚再重上。
+//
+// 为什么专门测这个：0036 要重建 intake_sweeps（SQLite 改不了 CHECK），
+// 重建路径上一旦漏列或漏索引，正向跑得通、回滚才炸——而回滚是出事那天才走的路，
+// 不能等到那天才发现。切换失败时要能五分钟回到 v8，这条测试守的就是那五分钟。
+func TestMigrateRollback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollback.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	if err := Migrate(db); err != nil {
+		t.Fatalf("migrate up: %v", err)
+	}
+
+	// 塞几行真实形态的数据，确保回滚不是在空表上跑
+	// seed 迁移已经插了 daily_news 的若干版本，取当前 active 的那一版挂 run
+	var wfID int64
+	if err := db.QueryRow(`SELECT id FROM workflows WHERE wf_key='daily_news' AND status='active'`).Scan(&wfID); err != nil {
+		t.Fatalf("找不到 active 的 daily_news: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO runs (id, workflow_id, workflow_ver, subject, status)
+		VALUES (1, ?, 8, '2026-09-22', 'active')`, wfID); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO intake_sweeps (run_id, sweep_key, platform, tool, found, in_window)
+		VALUES (1, 'csw-window', 'instagram', 'csw_api', 438, 358)`); err != nil {
+		t.Fatalf("seed sweep: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO intake_judgements (run_id, candidate_key, tier, image_seen)
+		VALUES (1, 'snowpeak-abc123', 'recommend', 1)`); err != nil {
+		t.Fatalf("seed judgement: %v", err)
+	}
+
+	// 口径的硬规则要能在库层面拦住：没读到实图就不许落非待核档
+	if _, err := db.Exec(`INSERT INTO intake_judgements (run_id, candidate_key, tier, image_seen)
+		VALUES (1, 'x-000000', 'not_recommend', 0)`); err == nil {
+		t.Fatal("image_seen=0 却落了 not_recommend，CHECK 没拦住")
+	}
+
+	if err := DownTo(db, 35); err != nil {
+		t.Fatalf("migrate down: %v", err)
+	}
+	// 回滚后 csw_api 归到 other，行不能丢
+	var tool string
+	var n int
+	if err := db.QueryRow(`SELECT tool FROM intake_sweeps WHERE sweep_key='csw-window'`).Scan(&tool); err != nil {
+		t.Fatalf("回滚后采集轮丢了: %v", err)
+	}
+	if tool != "other" {
+		t.Fatalf("回滚后 tool 应归到 other，实为 %q", tool)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='intake_judgements'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("回滚后 intake_judgements 应当没了，count=%d err=%v", n, err)
+	}
+	var integrity string
+	if err := db.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
+		t.Fatalf("回滚后 integrity_check=%q err=%v", integrity, err)
+	}
+
+	// 再上一次，回到最新
+	if err := Migrate(db); err != nil {
+		t.Fatalf("migrate up again: %v", err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='intake_judgements'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("重上后 intake_judgements 应当回来，count=%d err=%v", n, err)
 	}
 }

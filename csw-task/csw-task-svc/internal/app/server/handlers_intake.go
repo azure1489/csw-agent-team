@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -157,4 +158,122 @@ func intakeSources(ctx context.Context, s *Server) []gin.H {
 			"entry_url": src.EntryURL, "required": src.Required, "note": src.Note})
 	}
 	return out
+}
+
+// ── 逐条判断 ──────────────────────────────────────────────────────────
+
+type reportJudgementsReq struct {
+	Judgements []struct {
+		CandidateKey   string          `json:"candidate_key"`
+		ItemKey        string          `json:"item_key"`
+		Platform       string          `json:"platform"`
+		PostRef        string          `json:"post_ref"`
+		SourceURL      string          `json:"source_url"`
+		Tier           string          `json:"tier"`
+		Dims           json.RawMessage `json:"dims"`
+		ThreeSentences json.RawMessage `json:"three_sentences"`
+		Comparison     json.RawMessage `json:"comparison"`
+		HeatNote       string          `json:"heat_note"`
+		Gaps           json.RawMessage `json:"gaps"`
+		Hits           json.RawMessage `json:"hits"`
+		Jev            json.RawMessage `json:"jev"`
+		RubricVersion  string          `json:"rubric_version"`
+		ImageSeen      bool            `json:"image_seen"`
+		Carried        bool            `json:"carried"`
+	} `json:"judgements"`
+}
+
+// judgementDTO 出参。
+// 没有分数字段，也不会有——口径是「不打数字分、无权重」。
+type judgementDTO struct {
+	CandidateKey   string          `json:"candidate_key"`
+	ItemKey        string          `json:"item_key,omitempty"`
+	Platform       string          `json:"platform"`
+	PostRef        string          `json:"post_ref,omitempty"`
+	SourceURL      string          `json:"source_url,omitempty"`
+	Tier           string          `json:"tier"`
+	Dims           json.RawMessage `json:"dims"`
+	ThreeSentences json.RawMessage `json:"three_sentences"`
+	Comparison     json.RawMessage `json:"comparison"`
+	HeatNote       string          `json:"heat_note,omitempty"`
+	Gaps           json.RawMessage `json:"gaps"`
+	Hits           json.RawMessage `json:"hits"`
+	Jev            json.RawMessage `json:"jev,omitempty"`
+	RubricVersion  string          `json:"rubric_version,omitempty"`
+	RoleCode       string          `json:"role_code,omitempty"`
+	CreatedAt      string          `json:"created_at"`
+	ImageSeen      bool            `json:"image_seen"`
+	Carried        bool            `json:"carried,omitempty"`
+}
+
+func toJudgementDTOs(js []domain.IntakeJudgement) []judgementDTO {
+	out := make([]judgementDTO, 0, len(js))
+	for _, j := range js {
+		out = append(out, judgementDTO{
+			CandidateKey: j.CandidateKey, ItemKey: j.ItemKey, Platform: j.Platform, PostRef: j.PostRef,
+			SourceURL: j.SourceURL, Tier: j.Tier,
+			Dims: json.RawMessage(j.DimsJSON), ThreeSentences: json.RawMessage(j.ThreeJSON),
+			Comparison: json.RawMessage(j.ComparisonJSON), HeatNote: j.HeatNote,
+			Gaps: json.RawMessage(j.GapsJSON), Hits: json.RawMessage(j.HitsJSON),
+			Jev: json.RawMessage(j.JevJSON), RubricVersion: j.RubricVersion, RoleCode: j.RoleCode,
+			CreatedAt: j.CreatedAt, ImageSeen: j.ImageSeen, Carried: j.Carried,
+		})
+	}
+	return out
+}
+
+func rawOrEmpty(r json.RawMessage, fallback string) string {
+	if len(r) == 0 {
+		return fallback
+	}
+	return string(r)
+}
+
+// PUT /runs/:id/intake-judgements —— 批量上报逐条判断（参与角色或中枢；按 candidate_key 幂等）
+func (s *Server) handleReportJudgements(c *gin.Context) {
+	id, err := pathID(c, "id")
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	var req reportJudgementsReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		s.renderErr(c, domain.BadRequest("bad_body", "请求体非法："+err.Error()))
+		return
+	}
+	in := make([]engine.JudgementInput, 0, len(req.Judgements))
+	for _, j := range req.Judgements {
+		in = append(in, engine.JudgementInput{
+			CandidateKey: j.CandidateKey, ItemKey: j.ItemKey, Platform: j.Platform, PostRef: j.PostRef,
+			SourceURL: j.SourceURL, Tier: j.Tier,
+			DimsJSON: rawOrEmpty(j.Dims, ""), ThreeJSON: rawOrEmpty(j.ThreeSentences, "{}"),
+			ComparisonJSON: rawOrEmpty(j.Comparison, "{}"), HeatNote: j.HeatNote,
+			GapsJSON: rawOrEmpty(j.Gaps, "[]"), HitsJSON: rawOrEmpty(j.Hits, "{}"),
+			JevJSON: rawOrEmpty(j.Jev, "{}"), RubricVersion: j.RubricVersion,
+			ImageSeen: j.ImageSeen, Carried: j.Carried,
+		})
+	}
+	agent, role := mwAgent(c)
+	js, err := s.eng.ReportJudgements(c.Request.Context(), agent, role, id, in)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"judgements": toJudgementDTOs(js)})
+}
+
+// GET /runs/:id/intake-judgements —— 判断台账。
+// 02 / 03 据此看「每条都判了什么、凭什么」，不必解压交付物；旧 run 没有记录时给空列表。
+func (s *Server) handleListJudgements(c *gin.Context) {
+	id, err := pathID(c, "id")
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	js, err := s.eng.ListJudgements(c.Request.Context(), id)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"judgements": toJudgementDTOs(js)})
 }
