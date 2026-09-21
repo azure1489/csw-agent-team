@@ -8,6 +8,8 @@
 //!
 //! 只取图文的判据是严格的：`contentType ∈ {Image, Carousel}` **且** `mediaList` 里没有 Video。
 
+pub mod collector;
 pub mod csw;
 pub mod download;
+pub mod pipeline;
 pub mod recognize;
