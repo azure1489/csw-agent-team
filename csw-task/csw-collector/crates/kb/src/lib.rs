@@ -15,4 +15,5 @@
 pub mod brands;
 pub mod docs;
 pub mod fts;
+pub mod search;
 pub mod vectors;

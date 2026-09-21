@@ -235,6 +235,10 @@ pub async fn prepare(candidates: Vec<Candidate>, deps: &Deps<'_>) -> (Vec<Prepar
     (prepared, stats)
 }
 
+/// 一条候选自己最多同时打几个识别请求。全局信号量是 8，这里只占一半——
+/// 一个二十图的轮播不该把闸门占满让别的候选全排队。
+const MAX_PARALLEL_BATCHES: usize = 4;
+
 /// 一条候选走完识别与向量化。下载在外面已经统一做过。
 async fn prepare_one(
     mut c: Candidate,
@@ -265,11 +269,30 @@ async fn prepare_one(
             }
         }
 
-        // 识别：按批走；某一批失败只影响那一批，不牵连整条候选
+        // 识别：按批走；某一批失败只影响那一批，不牵连整条候选。
+        //
+        // **批与批之间也要并发。** 这里原本是串行的，M1 实测暴露出来：网关的有效
+        // 并发只有 3.5（上限 8），GPU 占用率才 21%——两边都闲着，墙钟却下不来。
+        // 原因是候选之间的图数很不均匀，一个二十图的轮播要连打四次，到了尾部
+        // 它独占墙钟，其他槽位全空着。批级并发让这条候选自己就能把闸门填上。
+        //
+        // 每条候选自己最多占 `MAX_PARALLEL_BATCHES` 个，不用满全局的 8：
+        // 留一半给别的候选，免得一个大轮播把闸门占满、其他候选全卡在信号量上。
         let t_rec = std::time::Instant::now();
+        let batches: Vec<&[recognize::ImageRef]> =
+            refs.chunks(recognize::MAX_IMAGES_PER_CALL).collect();
+        let done: Vec<_> = futures::StreamExt::collect::<Vec<_>>(futures::StreamExt::buffered(
+            futures::stream::iter(
+                batches
+                    .iter()
+                    .map(|b| recognize::recognize_batch(deps.model, &c.text, b)),
+            ),
+            MAX_PARALLEL_BATCHES,
+        ))
+        .await;
         let mut descriptions = Vec::new();
-        for batch in refs.chunks(recognize::MAX_IMAGES_PER_CALL) {
-            match recognize::recognize_batch(deps.model, &c.text, batch).await {
+        for (batch, r) in batches.iter().zip(done) {
+            match r {
                 Ok(mut d) => descriptions.append(&mut d),
                 Err(e) => {
                     tracing::warn!(候选 = %c.candidate_key, 原因 = %format!("{e:#}"), "识别失败，这批图标未识别");

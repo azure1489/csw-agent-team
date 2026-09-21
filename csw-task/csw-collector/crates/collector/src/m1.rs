@@ -224,6 +224,27 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
         stats.embed_ms as f64 / 1000.0,
         stats.gpu_busy() * 100.0
     );
+    // 候选之间的图数很不均匀，最慢的那条会拖住尾巴——把分布摆出来
+    let mut rec: Vec<u128> = prepared.iter().map(|p| p.recognize_ms).collect();
+    rec.sort_unstable();
+    let mut imgs: Vec<usize> = prepared
+        .iter()
+        .map(|p| {
+            p.candidate
+                .media
+                .iter()
+                .filter(|m| m.kind == MediaKind::Photo)
+                .count()
+        })
+        .collect();
+    imgs.sort_unstable();
+    println!(
+        "  单条识别耗时  中位 {:.1}s、最慢 {:.1}s；单条图数 中位 {}、最多 {}",
+        rec.get(rec.len() / 2).copied().unwrap_or(0) as f64 / 1000.0,
+        rec.last().copied().unwrap_or(0) as f64 / 1000.0,
+        imgs.get(imgs.len() / 2).copied().unwrap_or(0),
+        imgs.last().copied().unwrap_or(0)
+    );
 
     let bad: Vec<_> = prepared
         .iter()

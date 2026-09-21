@@ -160,6 +160,25 @@ pub fn search(conn: &Connection, tok: &Tokenizer, query: &str, limit: usize) -> 
     Ok(rows.filter_map(Result::ok).collect())
 }
 
+/// 这个词在索引里命中多少篇。用来把「新品」「上市」这类满库都有的词挑出来剔掉——
+/// 真正该剔的是**词频高**的词，不是短词：`Dyneema` 只有七个字母却极specific，
+/// 「新品」只有两个字却满库都是。
+///
+/// 一次查询 0.06 ms 量级，每条候选多花不到 1 ms。
+pub fn doc_frequency(conn: &Connection, tok: &Tokenizer, term: &str) -> Result<usize> {
+    let Some(q) = tok.phrase_query(term) else {
+        return Ok(0);
+    };
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM kb_fts WHERE kb_fts MATCH ?1",
+            [&q],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    Ok(n as usize)
+}
+
 /// jieba 的词典文件（给 LanceDB 的分词器用；我们自己的路径用不上它，
 /// 但部署脚本要知道去哪儿拷）。
 ///
