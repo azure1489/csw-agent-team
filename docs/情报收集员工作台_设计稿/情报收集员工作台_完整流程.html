@@ -89,7 +89,7 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
 <p>只有图片的贴文占八成，平均每条约 5.5 张图：单图占四分之一，十张以上占一成半（Instagram 轮播上限 20 张）。一次「前一天到当天」的窗口约 380 条贴文，取图文后约 300 条、1,700 张图；因为两天窗口有一天重叠，扣掉上一轮已判过的，每天新判的量是工作日约 120 到 180 条、650 到 1,000 张图，周末减半。按并行 10 路、每张 4 秒粗估，识别一天的新图约 5 到 7 分钟；准确的速度与费用在 M0 实测。</p>
 <p><b>下载与识别是这一步的一部分，不是后面的步。</b>每条候选的全部图片都下到本地：取 w_768 缩略，05 / 11 取原图。然后每张图连同该条正文送视觉模型，结构化输出：对应正文哪一点、画面里的产品 / 场景 / 文字、正文提到但画面没有的、图片类型（产品图 / 海报 / 场景 / 截图 / 无关）、可否作配图。描述随候选保存，候选卡上每张图下一行描述。下载或识别失败的图标「未识别」，不算看过，不阻塞其他候选；一条候选只有图片全部处理完（成功或标记）才算采集完成。加新采集器不用管下载与识别，它们对所有来源通用。</p>
 <div class="table-wrap"><table><tr><th>内置采集器</th><th>来源</th><th>取法</th><th>参数</th></tr>
-<tr><td>csw 贴文窗口</td><td>agent.campsomewhere.com</td><td>GET /api/v1/posts/window，按 has_more 续取；已返回点赞、评论、粉丝，<b>标签与话题待补进返回</b>（csw-agent 一处查询改动）</td><td>窗口、是否含隐藏、limit</td></tr>
+<tr><td>csw 贴文窗口</td><td>agent.campsomewhere.com</td><td>GET /api/v1/posts/window，按 has_more 续取；返回点赞、评论、粉丝、标签与话题（标签与话题 9/21 已在本地补进查询并通过测试，待部署生产）</td><td>窗口、是否含隐藏、limit</td></tr>
 <tr><td>csw 单条</td><td>agent.campsomewhere.com</td><td>GET /api/v1/posts/{id}?include-media=true</td><td>贴文 id 清单（从条目 source_url 解析）</td></tr>
 <tr><td>小红书</td><td>opencli，已登录 Chrome</td><td>按账号或关键词受控调用，随机间隔</td><td>账号 / 关键词、条数上限</td></tr>
 <tr><td>网页 / RSS</td><td>品牌官网、媒体页</td><td>域名白名单抓取，体积上限</td><td>入口地址、解析规则</td></tr>
