@@ -211,8 +211,14 @@ impl CswClient {
     }
 
     /// 单条。注意查询参数是 `include-media`（**连字符**，不是下划线）。
-    pub async fn post(&self, short_code: &str) -> Result<RawPost> {
-        self.get(&format!("/api/v1/posts/{short_code}?include-media=true"))
+    ///
+    /// 给数字 id 或链接里的短码都行。**csw 只认数字 id**——拿短码去查一律 404
+    /// （`Post not found`），这是线上跑 M2 时才发现的：本地候选存的是数字 id，
+    /// 所以正式一轮一直没踩到；从链接切出来的短码（Van 补的链接、05/11 的回退）全踩。
+    pub async fn post(&self, id_or_code: &str) -> Result<RawPost> {
+        let id = media_id(id_or_code)
+            .with_context(|| format!("认不出贴文编号 {id_or_code}：既不是数字 id，也不是短码"))?;
+        self.get(&format!("/api/v1/posts/{id}?include-media=true"))
             .await
     }
 
@@ -341,6 +347,31 @@ fn parse_ts(s: &str) -> Option<Timestamp> {
 /// 这条贴文的入库时间落在目标窗口里吗。
 ///
 /// 窗口是左闭右开：`[from, to)`。边界上的一条被两期都算或都不算，都是错。
+/// 贴文编号 → csw 认的数字 id。
+///
+/// Instagram 的短码就是媒体 id 的 base64（字母表 `A-Z a-z 0-9 - _`），逐位解码即得，
+/// 与 csw 的 `postId` 逐条对过。已经是数字就原样返回。
+/// 超过 11 位的是私密分享码，解不出公开 id，返回 None 而不是猜。
+pub fn media_id(s: &str) -> Option<String> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let s = s.trim();
+    if s.is_empty() || s.len() > 20 {
+        return None;
+    }
+    if s.bytes().all(|b| b.is_ascii_digit()) {
+        return Some(s.to_string());
+    }
+    if s.len() > 11 {
+        return None;
+    }
+    let mut n: u128 = 0;
+    for b in s.bytes() {
+        let v = ALPHABET.iter().position(|&a| a == b)?;
+        n = n * 64 + v as u128;
+    }
+    Some(n.to_string())
+}
+
 pub fn in_ingest_window(p: &RawPost, from: Timestamp, to: Timestamp) -> bool {
     match parse_ts(&p.ingested_at) {
         Some(t) => t >= from && t < to,
@@ -599,5 +630,25 @@ mod tests {
             timeout: Duration::from_secs(5),
         })
         .unwrap()
+    }
+
+    #[test]
+    fn 短码解成csw认的数字id() {
+        // 三对都是线上本地候选里的真实 postId 与链接
+        for (code, id) in [
+            ("DdfP3uvkUc-", "3989977595332609854"),
+            ("DdfRXZVE8zY", "3989984169409367256"),
+            ("DdfRlyulxLr", "3989985158753620715"),
+        ] {
+            assert_eq!(media_id(code).as_deref(), Some(id), "{code}");
+        }
+        assert_eq!(
+            media_id("3989977595332609854").as_deref(),
+            Some("3989977595332609854")
+        );
+        // 路径穿越、私密分享码、空串一律不认
+        assert_eq!(media_id("../admin"), None);
+        assert_eq!(media_id("DdfP3uvkUc-abcdefgh"), None);
+        assert_eq!(media_id(""), None);
     }
 }
