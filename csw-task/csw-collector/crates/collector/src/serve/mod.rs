@@ -39,13 +39,15 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
         &secrets.engine_token,
         Duration::from_secs(120),
     )?;
-    // 客户端一次建好整个进程复用：闸门藏在里面，每处各建一个等于把闸门复制几份
-    let svc = services::Services::build(cfg, secrets, &conn).await?;
-
-    // 一、把上次没退干净的收拾了
+    // 一、先把上次没退干净的收拾了。
+    // 排在建客户端之前是有意的：这一步只动本地库，而建客户端要开向量库、
+    // 探网络，任何一样卡住都会让「上次崩在哪」一直没人标记。
     let n = rounds::recover_interrupted(&conn)?;
     let running = rounds::running_rounds(&conn)?;
     tracing::info!(中断的步 = n, 还在跑的轮 = running.len(), "启动自检");
+
+    // 客户端一次建好整个进程复用：闸门藏在里面，每处各建一个等于把闸门复制几份
+    let svc = services::Services::build(cfg, secrets, &conn).await?;
 
     // 二、先把欠引擎的发完，再去接新单
     match outbox_sender::drain(&conn, &engine).await {
