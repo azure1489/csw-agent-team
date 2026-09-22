@@ -12,6 +12,7 @@
 pub mod check;
 pub mod materials;
 pub mod merge;
+pub mod pipeline;
 pub mod rubric;
 pub mod triage;
 pub mod verdict;

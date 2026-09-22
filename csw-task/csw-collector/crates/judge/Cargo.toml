@@ -16,6 +16,8 @@ tracing.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
 rusqlite.workspace = true
+futures.workspace = true
+blake3.workspace = true
 jiff.workspace = true
 
 [dev-dependencies]

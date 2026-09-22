@@ -1115,8 +1115,10 @@ name = "csw-collector-judge"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "csw-collector-core",
  "csw-collector-kb",
+ "futures",
  "jiff",
  "reqwest 0.13.5",
  "rusqlite",
