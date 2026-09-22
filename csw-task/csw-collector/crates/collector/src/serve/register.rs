@@ -129,6 +129,11 @@ pub fn item_inputs(js: &[Judgement], by_key: impl Fn(&str) -> Option<Candidate>)
         .collect()
 }
 
+/// 判断一次最多发多少条。引擎侧限 200，**在排队时就分好批**——
+/// 一条 outbox 就是一次请求，发的时候原样发，不再切。
+/// 切在发送侧的话「重试发同样的字节」就守不住了。
+pub const JUDGEMENT_BATCH: usize = 200;
+
 /// 按依赖顺序把这一轮要写的都排进 outbox。返回最后一条的 seq，
 /// 交付物提交挂在它后面。
 pub fn enqueue_registration(
@@ -139,15 +144,18 @@ pub fn enqueue_registration(
     sweeps: &[SweepInput],
     judgements: &[JudgementInput],
 ) -> Result<i64> {
-    let mut prev: Option<i64> = None;
-    for (kind, body) in [
+    let mut bodies: Vec<(OutboxKind, serde_json::Value)> = vec![
         (OutboxKind::Items, serde_json::json!({ "items": items })),
         (OutboxKind::Sweeps, serde_json::json!({ "sweeps": sweeps })),
-        (
+    ];
+    for chunk in judgements.chunks(JUDGEMENT_BATCH.max(1)) {
+        bodies.push((
             OutboxKind::Judgements,
-            serde_json::json!({ "judgements": judgements }),
-        ),
-    ] {
+            serde_json::json!({ "judgements": chunk }),
+        ));
+    }
+    let mut prev: Option<i64> = None;
+    for (kind, body) in bodies {
         let json = body.to_string();
         // 幂等键从内容派生：同样的内容重排队不会写重，内容变了就是新的一条
         let sha = blake3::hash(json.as_bytes()).to_hex().to_string();

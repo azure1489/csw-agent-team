@@ -59,6 +59,9 @@ impl EngineError {
     }
 }
 
+/// **克隆它是安全的**：`reqwest::Client` 内部是 `Arc`，克隆出来的还是同一个连接池。
+/// 心跳那条后台任务要自己持有一份，所以需要这个。
+#[derive(Clone)]
 pub struct EngineClient {
     base: String,
     token: String,
@@ -276,6 +279,19 @@ impl EngineClient {
                 Err(e) => return Err(e),
             }
         }
+    }
+
+    /// 原样发一份已经拼好的 JSON。
+    ///
+    /// 给 outbox 用：那边存的是**要发的确切字节**，重试必须发同样的字节。
+    /// 反序列化成结构体再序列化回去，字段顺序与 `skip_serializing_if`
+    /// 都可能让字节变样，那就不是同一份请求了。
+    pub async fn put_raw(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, EngineError> {
+        self.put_json(path, body).await
     }
 
     async fn put_json<T: DeserializeOwned>(

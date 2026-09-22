@@ -15,8 +15,6 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use anyhow::Result;
-
 use csw_collector_engineapi::client::EngineClient;
 use csw_collector_engineapi::types::{MyTask, TaskStatus};
 

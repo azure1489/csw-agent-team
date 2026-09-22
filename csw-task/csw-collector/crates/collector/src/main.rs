@@ -174,7 +174,14 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Command::Serve => todo!("阶段 6：任务驱动 + 工作台 HTTP + 进程内定时"),
+        Command::Serve => {
+            let cfg =
+                csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
+            let secrets = csw_collector_core::Secrets::from_env();
+            let missing = secrets.missing(cfg.jev.enabled);
+            anyhow::ensure!(missing.is_empty(), "缺环境变量：{}", missing.join("、"));
+            serve::run(&cfg, &secrets).await
+        }
         Command::Run { .. } => todo!("阶段 6：手动开启一轮"),
         Command::Replay { .. } => todo!("阶段 1.3：录制回放层"),
         Command::Kb(sub) => {
