@@ -67,6 +67,8 @@ pub fn api_router(state: Arc<AppState>, auth: Arc<AuthState>) -> Router {
         .route("/api/rounds/{id}/judgements", get(judgements))
         .route("/api/rounds/{id}/outbox", get(outbox))
         .route("/api/rounds/{id}/van-marks", get(van_marks))
+        .route("/api/rounds/{id}/exclusions", get(round_exclusions))
+        .route("/api/exclusions", get(exclusions))
         .route("/api/rounds/{id}/judgements/{key}", get(judgement_detail))
         .route("/api/rounds/{id}/coverage", get(coverage))
         .route("/api/rounds/{id}/media", get(round_media))
@@ -1381,6 +1383,53 @@ async fn van_marks(
     Ok(Json(
         csw_collector_core::workbench::van_marks(&conn, id).map_err(ApiError::any)?,
     ))
+}
+
+/// 全部排除规则，停用的也给——那一页要把没生效的也摆出来让人确认。
+async fn exclusions(
+    State(st): State<Arc<AppState>>,
+) -> Result<Json<Vec<csw_collector_core::exclusion::Exclusion>>, ApiError> {
+    let conn = st.conn.lock().await;
+    Ok(Json(
+        csw_collector_core::exclusion::all(&conn).map_err(ApiError::any)?,
+    ))
+}
+
+/// 这一轮哪几条被规则挡下了，判据是多少，谁捞回过。
+///
+/// 台账上「它为什么没判」只能从这儿答——被排除的条目没走模型，
+/// `judgements` 里那一行的六维全是「不明」。
+async fn round_exclusions(
+    State(st): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let conn = st.conn.lock().await;
+    let hits = csw_collector_core::exclusion::hits(&conn, id).map_err(ApiError::any)?;
+    let rules = csw_collector_core::exclusion::all(&conn).map_err(ApiError::any)?;
+    let by_id: std::collections::HashMap<i64, _> = rules.iter().map(|r| (r.id, r)).collect();
+    let rows: Vec<serde_json::Value> = hits
+        .iter()
+        .map(|h| {
+            let r = by_id.get(&h.exclusion_id);
+            serde_json::json!({
+                "候选": h.candidate_key,
+                "规则": h.exclusion_id,
+                "否过的条目": r.map(|r| r.title.clone()).unwrap_or_default(),
+                // 原话从本地库直接读给人看，没经过任何外部服务
+                "原话": r.map(|r| r.quote.clone()).unwrap_or_default(),
+                "同一事实": h.same_fact,
+                "新料": h.new_substance,
+                "已捞回": h.restored,
+                "捞回人": h.restored_by,
+                "捞回理由": h.restored_reason,
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({
+        "挡下": rows.iter().filter(|r| r["已捞回"] == false).count(),
+        "捞回": rows.iter().filter(|r| r["已捞回"] == true).count(),
+        "明细": rows,
+    })))
 }
 
 /// 排队的活排到哪了、做成没有、没成是为什么。

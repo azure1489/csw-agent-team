@@ -257,6 +257,11 @@ pub async fn sync_decisions(
     let mut rep = SourceReport::new(SRC_LEDGER_DECISIONS);
     rep.fetched = list.len();
     for d in &list {
+        // 被否决的那些顺手落一条排除规则。同一批数据两个去处、两种用法：
+        // 参考库是**给模型看的材料**，排除表是**代码执行的硬规则**。
+        if let Err(e) = note_rejection(conn, d) {
+            tracing::warn!(item_key = %d.item_key, "登记排除规则失败：{e:#}");
+        }
         let Some(doc) = decision_doc(d) else {
             rep.skipped += 1;
             continue;
@@ -273,6 +278,46 @@ pub async fn sync_decisions(
         &jiff::Timestamp::now().to_string(),
     )?;
     Ok(rep)
+}
+
+/// 把一次否决登记成排除规则。
+///
+/// **只认 `rejected`。** `deferred` 是暂缓——那恰恰是「以后还想要」的意思，
+/// 拿它去挡后续候选正好挡反。`dropped` 是流程淘汰（这期没排上），不是口味表态。
+///
+/// 原话两处都看：`quote_ref` 是这次决定的轨迹原话，更准；`decision_source`
+/// 是条目上那句，作兜底。两处都空的规则照样进表，但不自动生效
+/// （见 [`csw_collector_core::exclusion::upsert`]）。
+fn note_rejection(conn: &Connection, d: &Decision) -> Result<()> {
+    if d.status != "rejected" || d.item_key.trim().is_empty() {
+        return Ok(());
+    }
+    let quote = if d.quote_ref.trim().is_empty() {
+        d.decision_source.trim()
+    } else {
+        d.quote_ref.trim()
+    };
+    csw_collector_core::exclusion::upsert(
+        conn,
+        &csw_collector_core::exclusion::Exclusion {
+            id: 0,
+            decision_ref: format!("{}#{}", d.run_id, d.item_key),
+            item_key: d.item_key.clone(),
+            title: d.title.clone(),
+            brand: d.brand.clone(),
+            source_url: d.source_url.clone(),
+            quote: quote.to_string(),
+            reason: d.reason.clone(),
+            reason_code: d.reason_code.clone(),
+            decided_at: d.decided_at.clone(),
+            actor_role: d.actor_role.clone(),
+            active: true,
+            inactive_reason: String::new(),
+            changed_by: String::new(),
+            changed_at: String::new(),
+        },
+    )?;
+    Ok(())
 }
 
 fn decision_doc(d: &Decision) -> Option<KbDoc> {

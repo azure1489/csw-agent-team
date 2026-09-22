@@ -352,6 +352,8 @@ async fn harvest_and_judge(
     // 三～五、合并、对照、逐条判断
     let step = rounds::begin_step(conn, round.id, StepCode::Judge, &round.instructions_hash)?;
     let items = judge_items(conn, &prepared, svc, cfg).await?;
+    // 判之前先把 Van 否过的同一件事挡掉。挡下来的不进模型，单独出一行台账。
+    let (items, excluded) = apply_exclusions(conn, round, svc, items).await;
     let cache = JudgeCache { conn };
     let outcome = csw_collector_judge::pipeline::run(
         &items,
@@ -369,7 +371,7 @@ async fn harvest_and_judge(
     )
     .await;
 
-    for j in &outcome.judgements {
+    for j in outcome.judgements.iter().chain(excluded.iter()) {
         let flags: Vec<String> = outcome
             .flags
             .iter()
@@ -395,6 +397,7 @@ async fn harvest_and_judge(
             "判了": outcome.judgements.len(),
             "其中复用": outcome.reused.len(),
             "未判": outcome.unjudged.len(),
+            "规则排除": excluded.len(),
             "合并成事件": outcome.groups.len(),
             "被标出的依据": outcome.flags.len(),
         }),
@@ -410,7 +413,11 @@ async fn harvest_and_judge(
         reused_recognition: prepared.iter().filter(|p| p.reused).count(),
         prepared,
         sweeps,
-        judgements: outcome.judgements,
+        judgements: {
+            let mut all = outcome.judgements;
+            all.extend(excluded);
+            all
+        },
     })
 }
 
@@ -602,6 +609,98 @@ pub struct Finished {
     pub by_key: HashMap<String, Candidate>,
     /// 深核补出来的缺口，按条目键
     pub deep_gaps: HashMap<String, Vec<String>>,
+}
+
+/// 六、硬性排除：Van 否过的同一件事，没有新料的不送判断。
+///
+/// 返回（留下来要判的, 被挡下的那几条的台账行）。
+///
+/// # 三道闸都在这儿
+///
+/// 1. **Jev 不在就整段跳过。** 没有判据就不排除，整轮照常判。
+/// 2. **没读到实图的不排除。** 那种条目只有正文能给 Jev 看，「同一事实」
+///    本来就判不准；让它走正常流程落 `pending_check` 才对。
+/// 3. **一条判断失败只影响那一条。** 排除是省钱的优化，不是必须成功的一步。
+async fn apply_exclusions<'a>(
+    conn: &Connection,
+    round: &Round,
+    svc: &super::services::Services,
+    items: Vec<csw_collector_judge::pipeline::Item<'a>>,
+) -> (Vec<csw_collector_judge::pipeline::Item<'a>>, Vec<Judgement>) {
+    use csw_collector_judge::exclude;
+
+    let Some(jev) = svc.jev.as_ref() else {
+        return (items, Vec::new());
+    };
+    let rules = match csw_collector_core::exclusion::active(conn) {
+        Ok(r) if !r.is_empty() => r,
+        Ok(_) => return (items, Vec::new()),
+        Err(e) => {
+            tracing::warn!("读排除规则失败，这一轮不排除：{e:#}");
+            return (items, Vec::new());
+        }
+    };
+
+    let mut keep = Vec::with_capacity(items.len());
+    let mut out = Vec::new();
+    for it in items {
+        // 连图都没读到的不排除——见上面第 2 条
+        if !it.image_seen {
+            keep.push(it);
+            continue;
+        }
+        let descriptions = it
+            .descriptions
+            .iter()
+            .map(|d| d.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let hits = svc.brands.hits(&format!(
+            "{}\n{}\n{}",
+            it.candidate.text, it.candidate.translated, descriptions
+        ));
+        let mut hit = None;
+        for rule in exclude::candidates_for(&hits, &rules) {
+            match exclude::ask(jev, it.candidate, &descriptions, rule).await {
+                Ok(m) if m.holds() => {
+                    hit = Some((rule.clone(), m));
+                    break;
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(
+                    候选 = %it.candidate.candidate_key,
+                    规则 = %rule.decision_ref,
+                    "排除判定失败，按不排除处理：{e:#}"
+                ),
+            }
+        }
+        match hit {
+            Some((rule, m)) => {
+                if let Err(e) = csw_collector_core::exclusion::record_hit(
+                    conn,
+                    round.id,
+                    &it.candidate.candidate_key,
+                    rule.id,
+                    m.same_fact,
+                    m.new_substance,
+                ) {
+                    // 记不下来就不排除：台账上解释不了的排除等于凭空消失一条
+                    tracing::warn!(候选 = %it.candidate.candidate_key, "排除没记下来，按不排除处理：{e:#}");
+                    keep.push(it);
+                    continue;
+                }
+                tracing::info!(
+                    候选 = %it.candidate.candidate_key,
+                    规则 = %rule.decision_ref,
+                    "规则排除：{}",
+                    exclude::explain(&rule, &m)
+                );
+                out.push(exclude::excluded_judgement(it.candidate, &rule, &m));
+            }
+            None => keep.push(it),
+        }
+    }
+    (keep, out)
 }
 
 /// 把采集产物与检索结果拼成判断那一步要的输入。

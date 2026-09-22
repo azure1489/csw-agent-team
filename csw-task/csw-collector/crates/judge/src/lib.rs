@@ -10,6 +10,7 @@
 //! Jev 只做初评、核对与窄判断；深核交给 `deepcheck`。
 
 pub mod check;
+pub mod exclude;
 pub mod extract;
 pub mod materials;
 pub mod merge;

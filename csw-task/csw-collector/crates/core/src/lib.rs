@@ -25,6 +25,7 @@
 pub mod alert;
 pub mod config;
 pub mod disk;
+pub mod exclusion;
 pub mod jev;
 pub mod ledger;
 pub mod media;

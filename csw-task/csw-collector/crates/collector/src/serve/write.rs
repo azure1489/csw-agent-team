@@ -50,6 +50,11 @@ pub fn write_router(app: Arc<AppState>, auth: Arc<AuthState>) -> Router {
         .route("/api/rounds/{id}/steps/{step}/rerun", post(rerun))
         .route("/api/rounds/{id}/first-batch", post(set_first_batch))
         .route("/api/van/marks", post(van_mark))
+        .route("/api/exclusions/{id}/active", post(set_exclusion_active))
+        .route(
+            "/api/rounds/{id}/exclusions/{key}/restore",
+            post(restore_excluded),
+        )
         .route(
             "/api/rounds/{id}/judgements/{key}/override",
             post(override_tier),
@@ -193,6 +198,85 @@ async fn set_first_batch(
         let n = workbench::set_first_batch(c, id, &req.keys).map_err(ApiError::any)?;
         Ok((n, serde_json::json!({"要的": req.keys.len(), "标上的": n})))
     })?;
+    Ok(Json(CountResp { marked: n }))
+}
+
+// ──────────────────────────── 硬性排除 ────────────────────────────
+
+#[derive(Deserialize)]
+struct ActiveReq {
+    active: bool,
+    /// 关掉时必填：这条否决为什么不该再挡人
+    #[serde(default)]
+    reason: String,
+}
+
+/// 开或关一条排除规则。
+///
+/// 关 = 「Van 当初否的那个理由现在不成立了」，或者「这条否决没留原话，
+/// 我看过了，不该拿它挡人」。开 = 反过来，多半是确认一条没原话的否决。
+///
+/// **关必须给理由**：一条规则能让候选不经判断就落定，撤掉它同样要留下交代。
+async fn set_exclusion_active(
+    State(st): State<WriteState>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    Json(req): Json<ActiveReq>,
+) -> Result<Json<CountResp>, ApiError> {
+    let s = require(&st, &headers, Need::Editor)?;
+    if !req.active && req.reason.trim().is_empty() {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "停用排除规则要写明理由"
+        )));
+    }
+    let conn = st.app.conn.lock().await;
+    let who = actor(&s);
+    let n = with_audit(&conn, &who, "exclusion_active", &format!("e{id}"), |c| {
+        let n = csw_collector_core::exclusion::set_active(c, id, req.active, &req.reason, &who)
+            .map_err(ApiError::any)?;
+        Ok((n, serde_json::json!({"开": req.active, "理由": req.reason})))
+    })?;
+    Ok(Json(CountResp { marked: n }))
+}
+
+#[derive(Deserialize)]
+struct RestoreReq {
+    #[serde(default)]
+    reason: String,
+}
+
+/// 捞回一条被规则挡下的候选。**只对这一轮这一条生效**，规则本身还开着。
+///
+/// 捞回之后它要重新走判断——它当初根本没送模型，没有结论可以拿来改档。
+/// 页面上捞回完该提示「重跑判断那一步」。
+async fn restore_excluded(
+    State(st): State<WriteState>,
+    Path((id, key)): Path<(i64, String)>,
+    headers: HeaderMap,
+    Json(req): Json<RestoreReq>,
+) -> Result<Json<CountResp>, ApiError> {
+    let s = require(&st, &headers, Need::Editor)?;
+    if req.reason.trim().is_empty() {
+        return Err(ApiError::bad_request(anyhow::anyhow!("捞回要写明理由")));
+    }
+    let conn = st.app.conn.lock().await;
+    let who = actor(&s);
+    let n = with_audit(
+        &conn,
+        &who,
+        "exclusion_restore",
+        &format!("r{id}/{key}"),
+        |c| {
+            let n = csw_collector_core::exclusion::restore(c, id, &key, &who, &req.reason)
+                .map_err(ApiError::any)?;
+            Ok((n, serde_json::json!({"候选": key, "理由": req.reason})))
+        },
+    )?;
+    if n == 0 {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "这一轮没有这一条被排除的记录"
+        )));
+    }
     Ok(Json(CountResp { marked: n }))
 }
 
@@ -590,6 +674,16 @@ mod tests {
                 serde_json::json!({"candidate_key": "k1", "mark": "like"}),
             ),
             ("/api/rounds", serde_json::json!({"days": 1})),
+            // 排除那两个接口同样是主编档：一个能让候选不经判断就落定，
+            // 一个能把已落定的捞回来
+            (
+                "/api/exclusions/1/active",
+                serde_json::json!({"active": false, "reason": "过时了"}),
+            ),
+            (
+                "/api/rounds/1/exclusions/k1/restore",
+                serde_json::json!({"reason": "这次有新料"}),
+            ),
         ] {
             assert_eq!(
                 status(&app, req(path, body)).await,
@@ -653,6 +747,97 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM judgement_overrides", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0, "留痕没写成，改档却留下来了");
+    }
+
+    #[tokio::test]
+    async fn 停用排除规则要理由而且留痕() {
+        let (app, st) = app_with("operator");
+        let id = {
+            let conn = st.conn.lock().await;
+            csw_collector_core::exclusion::upsert(
+                &conn,
+                &csw_collector_core::exclusion::Exclusion {
+                    id: 0,
+                    decision_ref: "1#a".into(),
+                    item_key: "a".into(),
+                    title: "旧条目".into(),
+                    brand: "snow peak".into(),
+                    source_url: String::new(),
+                    quote: "这种普通上新没看点".into(),
+                    reason: String::new(),
+                    reason_code: String::new(),
+                    decided_at: "2026-09-01".into(),
+                    actor_role: "van".into(),
+                    active: true,
+                    inactive_reason: String::new(),
+                    changed_by: String::new(),
+                    changed_at: String::new(),
+                },
+            )
+            .unwrap();
+            csw_collector_core::exclusion::all(&conn).unwrap()[0].id
+        };
+
+        // 不给理由挡下：撤掉一条能让候选不经判断落定的规则，同样要留交代
+        assert_eq!(
+            status(
+                &app,
+                req(
+                    &format!("/api/exclusions/{id}/active"),
+                    serde_json::json!({"active": false})
+                )
+            )
+            .await,
+            StatusCode::BAD_REQUEST
+        );
+
+        let (code, _) = body_json(
+            &app,
+            req(
+                &format!("/api/exclusions/{id}/active"),
+                serde_json::json!({"active": false, "reason": "这个角度现在又想要了"}),
+            ),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+
+        let conn = st.conn.lock().await;
+        let got = &csw_collector_core::exclusion::all(&conn).unwrap()[0];
+        assert!(!got.active);
+        assert_eq!(got.inactive_reason, "这个角度现在又想要了");
+        assert_eq!(got.changed_by, "主编");
+        // 生效清单里没有它了
+        assert!(
+            csw_collector_core::exclusion::active(&conn)
+                .unwrap()
+                .is_empty()
+        );
+        // 留痕同事务落下
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit WHERE action = 'exclusion_active'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[tokio::test]
+    async fn 捞回不存在的记录要报错不能静默成功() {
+        let (app, _) = app_with("operator");
+        // 静默成功最糟：页面显示捞回了，下一轮它还是被挡着
+        assert_eq!(
+            status(
+                &app,
+                req(
+                    "/api/rounds/1/exclusions/没有这条/restore",
+                    serde_json::json!({"reason": "有新料"})
+                )
+            )
+            .await,
+            StatusCode::BAD_REQUEST
+        );
     }
 
     #[tokio::test]
