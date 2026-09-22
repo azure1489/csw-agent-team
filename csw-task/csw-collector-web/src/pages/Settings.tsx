@@ -21,6 +21,8 @@ export function Settings() {
   const openRound = useOpenRound()
   const rerun = useRerun()
   const [days, setDays] = useState(1)
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
   const [rerunRound, setRerunRound] = useState<number | ''>('')
   const [rerunStep, setRerunStep] = useState<'harvest' | 'judge'>('judge')
 
@@ -77,6 +79,43 @@ export function Settings() {
         </button>
         <span className="text-[12.5px] text-muted">
           手动轮不写引擎，是拿来看的，不是拿来交的。
+        </span>
+      </div>
+
+      {/* 按天开轮最少也是一整天（约三百多条候选、一个多小时、一笔模型钱）。
+          先拿一个小窗口验证链路时，按天是不够用的——所以把接口本来就支持的
+          自定义窗口露出来。 */}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <span className="text-[13px] text-muted">或指定窗口</span>
+        <input
+          type="datetime-local"
+          value={from}
+          onChange={(e) => setFrom(e.target.value)}
+          className="rounded-[var(--r-sm)] border border-rule bg-surface px-2 py-1 text-[13px]"
+        />
+        <span className="text-[13px] text-muted">到</span>
+        <input
+          type="datetime-local"
+          value={to}
+          onChange={(e) => setTo(e.target.value)}
+          className="rounded-[var(--r-sm)] border border-rule bg-surface px-2 py-1 text-[13px]"
+        />
+        <button
+          onClick={() =>
+            openRound.mutate({
+              // 输入框给的是本地时间，接口要 RFC3339 UTC。
+              // 去掉毫秒：库里存的窗口是拿来比对与展示的，毫秒只会让它更难读。
+              window_start: new Date(from).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+              window_end: new Date(to).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+            })
+          }
+          disabled={openRound.isPending || !from || !to}
+          className="rounded-[var(--r-sm)] border border-rule bg-surface px-3 py-1 text-[13px] disabled:opacity-50"
+        >
+          排进队
+        </button>
+        <span className="text-[12.5px] text-muted">
+          窗口按**首次入库时间**算，不是发布时间。试链路用两三个小时就够。
         </span>
       </div>
       {openRound.error && <div className="mt-2"><ErrorBox error={openRound.error} /></div>}
