@@ -1041,6 +1041,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "utoipa",
+ "wiremock",
 ]
 
 [[package]]

@@ -122,12 +122,16 @@ pub async fn recognize_batch(
         "一批最多 {MAX_IMAGES_PER_CALL} 张，收到 {}",
         images.len()
     );
+    // 正文是第三方写的，先过不可信边界：它马上要和「【正文】」这个结构标记
+    // 拼在一起，而一条贴文的正文里原样写上那四个字就能伪造出一段
+    let fenced = csw_collector_core::prompt::fence(text.trim());
     let mut parts = vec![Part::Text(format!(
-        "{PROMPT}\n\n【正文】\n{}\n\n下面是这条贴文的 {} 张图，按顺序编号。",
-        if text.trim().is_empty() {
+        "{PROMPT}\n\n{}\n\n【正文】\n{}\n\n下面是这条贴文的 {} 张图，按顺序编号。",
+        csw_collector_core::prompt::DATA_NOT_INSTRUCTIONS,
+        if fenced.is_empty() {
             "（无正文）"
         } else {
-            text
+            &fenced
         },
         images.len()
     ))];

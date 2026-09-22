@@ -260,6 +260,72 @@ mod tests {
     }
 
     #[test]
+    fn 崩在采集中间时已识别的留着没做完的重来() {
+        let c = crate::store::open_in_memory().unwrap();
+        let round = crate::rounds::open_round(
+            &c,
+            &crate::rounds::NewRound {
+                kind: crate::types::RoundKind::Task,
+                trigger: crate::types::RoundTrigger::Dispatch,
+                run_id: Some(48),
+                task_id: Some(1),
+                stage_code: Some("intake".into()),
+                target_version: 1,
+                parent_round_id: None,
+                window_start: "A".into(),
+                window_end: "B".into(),
+                plan_version: 1,
+                rubric_version: "v1".into(),
+                kb_snapshot: "s".into(),
+                instructions_hash: "h".into(),
+            },
+        )
+        .unwrap()
+        .0
+        .id;
+
+        // 崩之前：第一条两张图都识别完了，第二条只做了一半
+        let step = crate::rounds::begin_step(&c, round, crate::types::StepCode::Harvest, "hash-1")
+            .unwrap();
+        for (key, done) in [("aw-1", 2usize), ("ym-2", 1usize)] {
+            let mut cc = cand(key);
+            cc.media = (0..2)
+                .map(|i| media(i, Some(&format!("{key}-b{i}"))))
+                .collect();
+            crate::ledger::upsert_candidate(&c, &cc).unwrap();
+            let ds: Vec<_> = (0..done)
+                .map(|i| desc(&format!("{key}-b{i}"), i as u16, "recognize/v1"))
+                .collect();
+            put_prepared(&c, key, &cc.media, &ds).unwrap();
+        }
+        assert_eq!(step.status, "running", "这时候进程被砍掉");
+
+        // 重启
+        assert_eq!(crate::rounds::recover_interrupted(&c).unwrap(), 1);
+        assert_eq!(
+            crate::rounds::latest(&c, round, crate::types::StepCode::Harvest)
+                .unwrap()
+                .unwrap()
+                .status,
+            "interrupted",
+            "标 interrupted 而不是 failed：它多半做了一半"
+        );
+
+        // 续跑：第一条命中缓存，第二条只有一半
+        assert_eq!(
+            descriptions_for(&c, "aw-1", "recognize/v1").unwrap().len(),
+            2
+        );
+        assert_eq!(
+            descriptions_for(&c, "ym-2", "recognize/v1").unwrap().len(),
+            1,
+            "只做了一半的那条，命中判据是「每张图都有描述」，所以它会整条重识别"
+        );
+        // 再调一次恢复没活干：不该把已经收过的步又标一遍
+        assert_eq!(crate::rounds::recover_interrupted(&c).unwrap(), 0);
+    }
+
+    #[test]
     fn 没识别过的候选给空不给半截() {
         let c = setup();
         assert!(

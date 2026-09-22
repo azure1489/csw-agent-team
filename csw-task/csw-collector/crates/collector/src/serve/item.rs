@@ -343,14 +343,26 @@ async fn shots_for(
 /// **两条都不行就报错，不猜**——猜错会去取别人的贴文，配出一组完全无关的图。
 fn shortcode(local: Option<&Candidate>, item_key: &str) -> Result<String> {
     if let Some(c) = local {
-        if !c.source_id.trim().is_empty() {
-            return Ok(c.source_id.clone());
+        if let Some(s) = sane(c.source_id.trim()) {
+            return Ok(s);
         }
-        if let Some(s) = from_url(&c.url) {
+        if let Some(s) = from_url(&c.url).and_then(|s| sane(&s)) {
             return Ok(s);
         }
     }
     anyhow::bail!("台账里没有 {item_key} 这条，也切不出短码，不猜是哪一条贴文")
+}
+
+/// 短码要拼进 csw 的接口路径，所以字符集收死。
+///
+/// 台账里的值来自 csw 自己，正常都是字母数字加下划线短横；但它经过我们的库
+/// 转了一手，**不能假设它没被改过**——一个带 `../` 的值拼进路径就是另一个接口了。
+fn sane(s: &str) -> Option<String> {
+    let ok = !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    ok.then(|| s.to_string())
 }
 
 /// 从 `https://www.instagram.com/p/ABC123/` 里切出 `ABC123`。
@@ -527,6 +539,27 @@ mod tests {
         assert_eq!(from_url("https://www.instagram.com/and_wander/"), None);
         assert_eq!(from_url("https://example.com/"), None);
         assert_eq!(from_url(""), None);
+    }
+
+    #[test]
+    fn 短码的字符集收死() {
+        // 一个带 ../ 的值拼进路径就是另一个接口了
+        assert_eq!(sane("ABC123"), Some("ABC123".into()));
+        assert_eq!(sane("a_b-C9"), Some("a_b-C9".into()));
+        assert_eq!(sane("../../admin"), None);
+        assert_eq!(sane("ABC/DEF"), None);
+        assert_eq!(sane("ABC?x=1"), None);
+        assert_eq!(sane("ABC 123"), None);
+        assert_eq!(sane(""), None);
+        assert_eq!(sane(&"a".repeat(65)), None);
+
+        // 台账里的短码不干净时，退回从链接切
+        let mut c = cand();
+        c.source_id = "../../admin".into();
+        assert_eq!(shortcode(Some(&c), "k").unwrap(), "ABC123");
+        // 两处都不干净就报错
+        c.url = "https://www.instagram.com/p/..%2F..%2Fadmin/".into();
+        assert!(shortcode(Some(&c), "k").is_err());
     }
 
     #[test]

@@ -291,12 +291,29 @@ impl EngineClient {
     /// 给 outbox 用：那边存的是**要发的确切字节**，重试必须发同样的字节。
     /// 反序列化成结构体再序列化回去，字段顺序与 `skip_serializing_if`
     /// 都可能让字节变样，那就不是同一份请求了。
-    pub async fn put_raw(
-        &self,
-        path: &str,
-        body: &serde_json::Value,
-    ) -> Result<serde_json::Value, EngineError> {
-        self.put_json(path, body).await
+    /// 把 outbox 里存的那一份 JSON **原样**发出去。
+    ///
+    /// 收 `&str` 而不是 `serde_json::Value`：`Value` 的对象是 `BTreeMap`，
+    /// 解析再序列化会把键重排——发出去的字节就和 `body_sha` 对不上了，
+    /// 而「重试必须发同样的字节」是这一层唯一的承诺。
+    /// （这个错是崩溃续跑那条测试抓出来的：它比对了实际发出去的请求体。）
+    pub async fn put_raw(&self, path: &str, body: &str) -> Result<serde_json::Value, EngineError> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            // PUT 不带幂等键：引擎侧靠 UNIQUE + ON CONFLICT 幂等，带了也不生效
+            let req = self
+                .http
+                .put(format!("{}{}", self.base, path))
+                .bearer_auth(&self.token)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body.to_string());
+            match self.send_typed::<serde_json::Value>(req, None).await {
+                Ok(v) => return Ok(v),
+                Err(e) if e.retryable() && attempt < self.max_attempts => backoff(attempt).await,
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     async fn put_json<T: DeserializeOwned>(

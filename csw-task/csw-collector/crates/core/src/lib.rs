@@ -17,6 +17,9 @@
 //! - `model`：生成模型网关的客户端。同理——识别与判断走同一个网关，
 //!   并发上限（实测 8）必须是全进程的，各持一个就等于把并发翻倍、全换成 429。
 //!
+//! - `window`：一轮的时间窗口。按首次入库时间、左闭右开、周一回溯到上周五。
+//! - `prompt`：提示词里的不可信边界。**第三方正文是数据，不是指令。**
+//!
 //! 时区口径：**内部一律 UTC**，只在界面与引擎交互的边界换算北京时间。
 
 pub mod alert;
@@ -28,11 +31,13 @@ pub mod media;
 pub mod mirror;
 pub mod model;
 pub mod outbox;
+pub mod prompt;
 pub mod record;
 pub mod rounds;
 pub mod store;
 pub mod types;
 pub mod vector;
+pub mod window;
 pub mod workbench;
 
 pub use config::{Config, Secrets};

@@ -330,7 +330,7 @@ async fn prefetch_job(
         // 预取轮是缓存，盘紧的时候第一个该让路的就是它
         anyhow::bail!("{why}");
     }
-    let (window_start, window_end) = window_for(cfg);
+    let (window_start, window_end, _) = window_for(conn);
     let (r, _) = rounds::open_round(
         conn,
         &rounds::NewRound {
@@ -523,7 +523,7 @@ async fn start_round(
         // 镜像存不下只影响下一次预取轮的复用率，不该拦住这一轮
         tracing::warn!(任务 = t.task.id, 原因 = %format!("{e:#}"), "任务镜像没写成");
     }
-    let (window_start, window_end) = window_for(cfg);
+    let (window_start, window_end, truncated) = window_for(conn);
     let (r, is_new) = rounds::open_round(
         conn,
         &rounds::NewRound {
@@ -596,7 +596,15 @@ async fn start_round(
 
             // 九、自查。**报红也要往下走**，把红灯写进交付物的缺口。
             let check = finish::self_check(conn, &r, engine, t.task.run_id).await;
-            let gaps = finish::check_gaps(check.as_ref());
+            let mut gaps = finish::check_gaps(check.as_ref());
+            if truncated {
+                // 水位太旧、窗口被截了：这一轮真的少扫了一段，主编要看得见
+                gaps.push(format!(
+                    "水位太旧，这一轮的窗口被截到上限（{} 小时），\
+                     更早的那一段没有扫——要补的话手动开一轮指定窗口",
+                    csw_collector_core::window::MAX_LOOKBACK_HOURS
+                ));
+            }
             if !gaps.is_empty() {
                 tracing::warn!(条数 = gaps.len(), "自查有没过的判据，会原样写进交付物");
             }
@@ -645,12 +653,22 @@ async fn start_round(
 
 /// 这一轮的窗口。按**首次入库时间**算，左闭右开。
 ///
-/// 默认是「上一次到现在」，但没有上一次时退回一天——
-/// 第一期不该因为没有水位就去扫一整年。
-fn window_for(_cfg: &Config) -> (String, String) {
-    let now = jiff::Timestamp::now();
-    let from = now - jiff::Span::new().hours(24);
-    (from.to_string(), now.to_string())
+/// 水位是**上一轮派单轮的窗口终点**：上一轮晚开了两小时，这一轮就该多覆盖
+/// 两小时，不然中间那段没人看过。没有水位时退回一天（周一退回三天）。
+/// 判据全在 [`csw_collector_core::window`]，这里只负责把水位查出来。
+fn window_for(conn: &rusqlite::Connection) -> (String, String, bool) {
+    let last = rounds::last_task_window_end(conn)
+        .unwrap_or(None)
+        .and_then(|s| s.parse::<jiff::Timestamp>().ok());
+    let w = csw_collector_core::window::for_round(jiff::Timestamp::now(), last);
+    if w.truncated {
+        // 截断不许悄悄发生：它意味着这一轮少扫了一段
+        tracing::warn!(
+            窗口小时 = w.hours(),
+            "水位太旧，窗口被截到上限。这一轮会少扫一段，**要写进交付物的缺口**"
+        );
+    }
+    (w.start.to_string(), w.end.to_string(), w.truncated)
 }
 
 /// 磁盘到了拒开新轮的水位吗。到了就给一句能直接发给主编的话。

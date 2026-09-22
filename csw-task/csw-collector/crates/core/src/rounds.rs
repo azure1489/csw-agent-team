@@ -303,6 +303,20 @@ pub fn recover_interrupted(conn: &Connection) -> Result<usize> {
     Ok(n)
 }
 
+/// 上一轮**派单轮**的窗口终点，就是这一轮的水位。
+///
+/// 只看派单轮：手动轮与预取轮的窗口是人随手指定或凌晨那一次的，
+/// 拿它们当水位会让正式轮少扫一段——而少扫的那一段没有任何地方会报错。
+pub fn last_task_window_end(conn: &Connection) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT window_end FROM rounds WHERE kind='task' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
 /// 还在跑的轮次。重启后要把它们捡起来。
 pub fn running_rounds(conn: &Connection) -> Result<Vec<Round>> {
     let mut st = conn.prepare(&format!(
@@ -547,6 +561,27 @@ mod tests {
         );
         // 再调一次没活干
         assert_eq!(recover_interrupted(&c).unwrap(), 0);
+    }
+
+    #[test]
+    fn 水位只看派单轮() {
+        let c = conn();
+        assert_eq!(last_task_window_end(&c).unwrap(), None);
+        open_round(&c, &task_round(1, 1, RoundTrigger::Dispatch)).unwrap();
+
+        // 手动轮的窗口是人随手指定的，拿它当水位会让正式轮少扫一段，
+        // 而少扫的那一段没有任何地方会报错
+        let mut manual = task_round(0, 1, RoundTrigger::Manual);
+        manual.kind = RoundKind::Manual;
+        manual.task_id = None;
+        manual.run_id = None;
+        manual.window_end = "2020-01-01T00:00:00Z".into();
+        open_round(&c, &manual).unwrap();
+
+        assert_eq!(
+            last_task_window_end(&c).unwrap().as_deref(),
+            Some("2026-09-19T00:00:00Z")
+        );
     }
 
     #[test]
