@@ -34,7 +34,10 @@ const usage = `用法：
                                                   人工校对后的合集拆条（覆盖自动拆条）
   syncer feedback import F.jsonl                  导入历史编辑反馈（每行一条 JSON）
   syncer feedback expire                          把过期的临时反馈置为 expired
-  syncer kb-import F.jsonl                        导入知识库范例（每行一篇，写入发布记录并标 is_reference=1）`
+  syncer kb-import F.jsonl                        导入知识库范例（每行一篇，写入发布记录并标 is_reference=1）
+  syncer memory-import cases F.jsonl              导入选题案例（P5 第二步的 cases.jsonl；原话原样存）
+  syncer memory-import rules F.jsonl              导入准则卡草稿（P5 的 rules.jsonl；**不会自动标成她确认过**）
+  syncer memory-confirm <rule_key> [--undo]       人工确认一条准则卡（只有确认过的才能当判断依据）`
 
 // Run 执行 syncer，返回退出码。
 func Run(args []string) int { return RunWith(args, config.Load(), os.Stdout, nil) }
@@ -206,6 +209,35 @@ func RunWith(args []string, cfg config.Config, out io.Writer, adapter func(platf
 			return 2
 		}
 		return importKB(ctx, st, out, pos[0])
+
+	case "memory-import":
+		if len(pos) < 2 {
+			fmt.Fprintln(out, "用法：syncer memory-import cases|rules F.jsonl")
+			return 2
+		}
+		return importMemory(ctx, st, out, pos[0], pos[1])
+
+	case "memory-confirm":
+		if len(pos) == 0 {
+			fmt.Fprintln(out, "缺 rule_key")
+			return 2
+		}
+		undo := false
+		for _, a := range args {
+			if a == "--undo" {
+				undo = true
+			}
+		}
+		if err := st.Q().SetRuleConfirmed(ctx, pos[0], !undo); err != nil {
+			fmt.Fprintln(out, "失败：", err)
+			return 1
+		}
+		if undo {
+			fmt.Fprintf(out, "已撤销确认：%s（这条准则回到草稿，不能再当判断依据）\n", pos[0])
+		} else {
+			fmt.Fprintf(out, "已确认：%s\n", pos[0])
+		}
+		return 0
 
 	case "feedback":
 		if len(pos) == 0 {
@@ -547,4 +579,126 @@ func importKB(ctx context.Context, st *sqlite.Store, out io.Writer, path string)
 		return 1
 	}
 	return 0
+}
+
+// importMemory 导入选题记忆。kind 为 cases 或 rules。
+//
+// # 为什么两种分开导
+//
+// 案例存的是**她说过的原话**，准则存的是**我们的归纳**（迁移 0039 的建表注释）。
+// 同一个文件里混着导，迟早有人把归纳写进 quote 字段——那条界线一旦破了，
+// 案例库就不再是「她说过什么」的可靠记录，而这正是它唯一的价值。
+//
+// # 导入永远不标「她确认过」
+//
+// `UpsertSelectionRule` 不碰 `confirmed_by_van`。确认是人的动作，走
+// `syncer memory-confirm`。自动置 1 会让未经她确认的归纳直接变成 02 / 03 的
+// 判断依据；反过来，重新导入把已确认的冲掉，那条准则会悄悄降级成猜测。
+func importMemory(ctx context.Context, st *sqlite.Store, out io.Writer, kind, path string) int {
+	if kind != "cases" && kind != "rules" {
+		fmt.Fprintln(out, "第一个参数须为 cases 或 rules")
+		return 2
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		fmt.Fprintln(out, err)
+		return 1
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 8<<20)
+	ok, bad, line := 0, 0, 0
+	for sc.Scan() {
+		line++
+		txt := strings.TrimSpace(sc.Text())
+		if txt == "" {
+			continue
+		}
+		var err error
+		if kind == "cases" {
+			err = importOneCase(ctx, st, txt)
+		} else {
+			err = importOneRule(ctx, st, txt)
+		}
+		if err != nil {
+			// 坏一行不该让整份作废，但要说出是哪一行坏在哪
+			fmt.Fprintf(out, "第 %d 行：%v\n", line, err)
+			bad++
+			continue
+		}
+		ok++
+	}
+	if err := sc.Err(); err != nil {
+		fmt.Fprintln(out, "读文件：", err)
+		return 1
+	}
+	fmt.Fprintf(out, "导入 %s：成功 %d 条，跳过 %d 条\n", kind, ok, bad)
+	if kind == "rules" && ok > 0 {
+		fmt.Fprintln(out, "**全部是草稿。** 她逐条确认之前不能当判断依据；"+
+			"确认走 syncer memory-confirm <rule_key>。")
+	}
+	return 0
+}
+
+func importOneCase(ctx context.Context, st *sqlite.Store, txt string) error {
+	var r struct {
+		CaseKey    string `json:"case_key"`
+		RunID      *int64 `json:"run_id"`
+		ItemKey    string `json:"item_key"`
+		Brand      string `json:"brand"`
+		Title      string `json:"title"`
+		SourceURL  string `json:"source_url"`
+		Decision   string `json:"decision"`
+		Quote      string `json:"quote"`
+		QuoteRef   string `json:"quote_ref"`
+		DecidedAt  string `json:"decided_at"`
+		JudgedTier string `json:"judged_tier"`
+	}
+	if err := json.Unmarshal([]byte(txt), &r); err != nil {
+		return err
+	}
+	if strings.TrimSpace(r.CaseKey) == "" {
+		return errors.New("缺 case_key")
+	}
+	// 没有原话的案例进来也没用：案例库的全部价值就是「她说过什么」
+	if strings.TrimSpace(r.Quote) == "" {
+		return errors.New("缺 quote（原话）——没有原话的不是案例")
+	}
+	switch r.Decision {
+	case "adopted", "rejected", "deferred", "pending_check":
+	default:
+		return fmt.Errorf("decision 须为 adopted / rejected / deferred / pending_check，收到 %q", r.Decision)
+	}
+	return st.Q().UpsertSelectionCase(ctx, domain.SelectionCase{
+		CaseKey: r.CaseKey, RunID: r.RunID, ItemKey: r.ItemKey, Brand: r.Brand,
+		Title: r.Title, SourceURL: r.SourceURL, Decision: r.Decision,
+		Quote: r.Quote, QuoteRef: r.QuoteRef, DecidedAt: r.DecidedAt, JudgedTier: r.JudgedTier,
+	})
+}
+
+func importOneRule(ctx context.Context, st *sqlite.Store, txt string) error {
+	var r struct {
+		RuleKey     string   `json:"rule_key"`
+		Category    string   `json:"category"`
+		Text        string   `json:"text"`
+		DerivedFrom []string `json:"derived_from"`
+		Version     string   `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(txt), &r); err != nil {
+		return err
+	}
+	if strings.TrimSpace(r.RuleKey) == "" || strings.TrimSpace(r.Text) == "" {
+		return errors.New("缺 rule_key 或 text")
+	}
+	switch r.Category {
+	case "":
+		r.Category = "frame"
+	case "frame", "prefer", "lower", "dedup", "other":
+	default:
+		return fmt.Errorf("category 须为 frame / prefer / lower / dedup / other，收到 %q", r.Category)
+	}
+	return st.Q().UpsertSelectionRule(ctx, domain.SelectionRule{
+		RuleKey: r.RuleKey, Category: r.Category, Text: r.Text,
+		DerivedFrom: strings.Join(r.DerivedFrom, ","), Version: r.Version,
+	})
 }

@@ -281,3 +281,49 @@ func (s *Server) handleLedgerDecisions(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"decisions": ds, "since": since})
 }
+
+// GET /memory/rules?category=&confirmed=1&limit= —— 选题准则卡。
+//
+// `confirmed=1` 只给她确认过的。02 / 03 取判断依据时**必须带上它**：
+// 未经确认的归纳只是我们的猜测，拿它当依据等于以她的名义下判断。
+// 不带时全给，但每条都带着 confirmed_by_van，调用方要自己分清。
+func (s *Server) handleListSelectionRules(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	rs, err := s.store.Q().ListSelectionRules(c.Request.Context(),
+		c.Query("category"), c.Query("confirmed") == "1", limit)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	out := make([]gin.H, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, gin.H{
+			"rule_key": r.RuleKey, "category": r.Category, "text": r.Text,
+			"derived_from": r.DerivedFrom, "version": r.Version,
+			"confirmed_by_van": r.ConfirmedByVan, "confirmed_at": r.ConfirmedAt,
+			"updated_at": r.UpdatedAt,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"rules": out})
+}
+
+// GET /memory/cases?decision=&brand=&limit= —— 选题案例（含她的原话）。
+func (s *Server) handleListSelectionCases(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	cs, err := s.store.Q().ListSelectionCases(c.Request.Context(),
+		c.Query("decision"), c.Query("brand"), limit)
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	out := make([]gin.H, 0, len(cs))
+	for _, x := range cs {
+		out = append(out, gin.H{
+			"case_key": x.CaseKey, "run_id": x.RunID, "item_key": x.ItemKey,
+			"brand": x.Brand, "title": x.Title, "source_url": x.SourceURL,
+			"decision": x.Decision, "quote": x.Quote, "quote_ref": x.QuoteRef,
+			"decided_at": x.DecidedAt, "judged_tier": x.JudgedTier,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"cases": out})
+}

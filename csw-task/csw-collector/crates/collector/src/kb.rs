@@ -69,6 +69,14 @@ pub async fn sync(cfg: &Config, secrets: &Secrets, o: SyncOpts) -> Result<()> {
         Err(e) => println!("  已生成贴文失败：{e:#}"),
     }
 
+    // ── 二点五、选题记忆 ──
+    // 它不是「对照材料」那五类之一，不进参考库也不算向量——准则与案例是判断的
+    // 口径，要的是每条都看一遍，不是检索相似。所以单独报一行。
+    match sync::sync_memory(&conn, &engine).await {
+        Ok((rules, cases)) => println!("选题记忆：准则 {rules} 条、案例 {cases} 条"),
+        Err(e) => println!("  选题记忆失败：{e:#}"),
+    }
+
     println!("\n来源            取到    新增    变了    没变    跳过");
     for r in &reports {
         println!(

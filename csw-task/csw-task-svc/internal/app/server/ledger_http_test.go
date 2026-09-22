@@ -83,6 +83,37 @@ func TestLedgerAndFeedbackEndpoints(t *testing.T) {
 	if fb := get(collectorTok, "/api/v1/memory/feedback?tags=stage:collect")["feedback"].([]any); len(fb) != 1 {
 		t.Fatalf("list feedback: %v", fb)
 	}
+
+	// 选题记忆：准则卡与案例库。
+	// **confirmed=1 是 02 / 03 取判断依据的那条路**——未确认的归纳只是我们的猜测，
+	// 混进去等于以她的名义下判断。
+	if err := q.UpsertSelectionRule(ctx, domain.SelectionRule{
+		RuleKey: "lower-plain", Category: "lower", Text: "普通上新降低优先级",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.UpsertSelectionCase(ctx, domain.SelectionCase{
+		CaseKey: "p5-a-1", Decision: "rejected", Quote: "这个不要", Brand: "Snow Peak",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if rs := get(collectorTok, "/api/v1/memory/rules")["rules"].([]any); len(rs) != 1 ||
+		rs[0].(map[string]any)["confirmed_by_van"] != false {
+		t.Fatalf("导进来的准则该是草稿：%v", rs)
+	}
+	if rs := get(collectorTok, "/api/v1/memory/rules?confirmed=1")["rules"].([]any); len(rs) != 0 {
+		t.Fatalf("未确认的不该出现在 confirmed=1 里：%v", rs)
+	}
+	if err := q.SetRuleConfirmed(ctx, "lower-plain", true); err != nil {
+		t.Fatal(err)
+	}
+	if rs := get(collectorTok, "/api/v1/memory/rules?confirmed=1")["rules"].([]any); len(rs) != 1 {
+		t.Fatalf("确认后该拿得到：%v", rs)
+	}
+	cs := get(collectorTok, "/api/v1/memory/cases?decision=rejected")["cases"].([]any)
+	if len(cs) != 1 || cs[0].(map[string]any)["quote"] != "这个不要" {
+		t.Fatalf("案例要带着原话原样回：%v", cs)
+	}
 	// 任务详情随附相关反馈（v1 的 01-采集 阶段 code 为 collect）。
 	editor, _ := q.ActiveAgentByRole(ctx, "editor")
 	role, _ := q.GetRole(ctx, "editor")

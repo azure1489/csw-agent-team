@@ -77,6 +77,8 @@ func (s *Server) Router() *gin.Engine {
 		v1.GET("/ledger/decisions", s.handleLedgerDecisions)
 		v1.GET("/memory/feedback", s.handleListFeedback)
 		v1.POST("/memory/feedback", s.handleCreateFeedback)
+		v1.GET("/memory/rules", s.handleListSelectionRules)
+		v1.GET("/memory/cases", s.handleListSelectionCases)
 
 		// 花名册（任意角色 token 可读，群播报查 open_id 用）
 		v1.GET("/roster", s.handleRoster)

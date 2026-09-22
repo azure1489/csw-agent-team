@@ -612,6 +612,72 @@ fn non_empty(s: &str) -> Option<String> {
     (!t.is_empty()).then(|| t.to_string())
 }
 
+// ─────────────────────── 选题记忆：准则卡与案例 ───────────────────────
+
+/// 从引擎同步准则卡与案例到本地库。
+///
+/// # 它不进参考库
+///
+/// 准则与案例是**判断的口径**，不是给模型检索的材料——检索是「找相似的已发条目」，
+/// 而准则要的是「每一条都看一遍」。所以它们只落结构化表，不算向量、不进 FTS。
+///
+/// # `confirmed_by_van` 原样带过来
+///
+/// 引擎那边这一列区分「她确认过的准则」与「我们的归纳草稿」。本地这一列必须
+/// 跟着走：判断那一步只认确认过的，工作台那一页两种都显示但要标清楚。
+/// **这里不做任何「默认当成确认过」的宽容处理**——那等于让猜测冒名顶替。
+pub async fn sync_memory(conn: &Connection, engine: &EngineClient) -> Result<(usize, usize)> {
+    // 两种都全量拉：加起来不过几百条，增量游标的复杂度换不来什么
+    let rules = engine.memory_rules(false, 200).await.context("拉准则卡")?;
+    for r in &rules {
+        conn.execute(
+            "INSERT INTO memory_rules(rule_key, text, version, confirmed_by_van, updated_at)
+             VALUES (?1,?2,?3,?4,?5)
+             ON CONFLICT(rule_key) DO UPDATE SET
+               text=excluded.text, version=excluded.version,
+               confirmed_by_van=excluded.confirmed_by_van, updated_at=excluded.updated_at",
+            rusqlite::params![
+                r.rule_key,
+                r.text,
+                r.version,
+                r.confirmed_by_van as i64,
+                r.updated_at
+            ],
+        )
+        .context("写准则卡")?;
+    }
+
+    let mut cases = 0usize;
+    for d in ["adopted", "rejected", "deferred", "pending_check"] {
+        let rows = engine
+            .memory_cases(d, 200)
+            .await
+            .with_context(|| format!("拉 {d} 案例"))?;
+        for c in &rows {
+            conn.execute(
+                "INSERT INTO memory_cases(case_key, decision, quote, source_url, decided_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6)
+                 ON CONFLICT(case_key) DO UPDATE SET
+                   decision=excluded.decision, quote=excluded.quote,
+                   source_url=excluded.source_url, decided_at=excluded.decided_at,
+                   updated_at=excluded.updated_at",
+                rusqlite::params![
+                    c.case_key,
+                    c.decision,
+                    // 原话原样落，不清洗——这张表的价值全在于它存的是她说过的话
+                    c.quote,
+                    c.source_url,
+                    c.decided_at,
+                    jiff::Timestamp::now().to_string()
+                ],
+            )
+            .context("写案例")?;
+            cases += 1;
+        }
+    }
+    Ok((rules.len(), cases))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -974,5 +1040,75 @@ mod tests {
         assert_eq!(again.inserted, 0);
         assert_eq!(again.changed, 0);
         assert_eq!(again.unchanged, 2);
+    }
+
+    /// `confirmed_by_van` 要**原样**带过来。
+    ///
+    /// 这条钉的是迁移 0039 建表注释那句硬约束：未经她确认的归纳只能展示，
+    /// 不能当判断依据。同步这一跳要是把它宽容成真（「反正都在引擎里了」），
+    /// 我们的猜测就会以她的名义进入判断——而台账上看不出来。
+    #[tokio::test]
+    async fn 同步准则时确认标记原样带过来() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let srv = wiremock::MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/memory/rules"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "rules": [
+                    {"rule_key": "confirmed-one", "text": "她点过头的", "version": "v1",
+                     "confirmed_by_van": true, "updated_at": "2026-09-01T00:00:00Z"},
+                    {"rule_key": "draft-one", "text": "我们归纳的", "version": "v1",
+                     "confirmed_by_van": false, "updated_at": "2026-09-02T00:00:00Z"}
+                ]
+            })))
+            .mount(&srv)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/memory/cases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "cases": [{"case_key": "p5-a-1", "decision": "rejected",
+                           "quote": "这个不要", "decided_at": "2026-09-01T00:00:00Z"}]
+            })))
+            .mount(&srv)
+            .await;
+
+        let engine = EngineClient::new(
+            &format!("{}/api/v1", srv.uri()),
+            "t",
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        let c = conn();
+        let (rules, _) = sync_memory(&c, &engine).await.unwrap();
+        assert_eq!(rules, 2);
+
+        let mut got: Vec<(String, i64)> = c
+            .prepare("SELECT rule_key, confirmed_by_van FROM memory_rules ORDER BY rule_key")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("confirmed-one".to_string(), 1),
+                ("draft-one".to_string(), 0)
+            ],
+            "草稿不能被同步成「她确认过」"
+        );
+
+        // 原话原样落
+        let q: String = c
+            .query_row(
+                "SELECT quote FROM memory_cases WHERE case_key='p5-a-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(q, "这个不要");
     }
 }

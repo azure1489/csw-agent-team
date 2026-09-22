@@ -223,6 +223,45 @@ impl EngineClient {
         self.get(&format!("/memory/feedback?limit={limit}")).await
     }
 
+    /// 选题准则卡。
+    ///
+    /// `only_confirmed` **判断那一步必须传真**：未经她确认的归纳只是我们的猜测，
+    /// 拿它当依据等于以她的名义下判断。展示用的地方传假，但要把
+    /// `confirmed_by_van` 一起显示出来。
+    pub async fn memory_rules(
+        &self,
+        only_confirmed: bool,
+        limit: u32,
+    ) -> Result<Vec<MemoryRuleRow>, EngineError> {
+        #[derive(serde::Deserialize)]
+        struct W {
+            #[serde(default)]
+            rules: Vec<MemoryRuleRow>,
+        }
+        let c = if only_confirmed { "1" } else { "0" };
+        let w: W = self
+            .get(&format!("/memory/rules?confirmed={c}&limit={limit}"))
+            .await?;
+        Ok(w.rules)
+    }
+
+    /// 选题案例。带着她的原话。
+    pub async fn memory_cases(
+        &self,
+        decision: &str,
+        limit: u32,
+    ) -> Result<Vec<MemoryCaseRow>, EngineError> {
+        #[derive(serde::Deserialize)]
+        struct W {
+            #[serde(default)]
+            cases: Vec<MemoryCaseRow>,
+        }
+        let w: W = self
+            .get(&format!("/memory/cases?decision={decision}&limit={limit}"))
+            .await?;
+        Ok(w.cases)
+    }
+
     // ── 提交 ──────────────────────────────────────────────────────────
 
     /// 一步式提交。**只发已落盘的那一份 zip**，不在这里现构建。

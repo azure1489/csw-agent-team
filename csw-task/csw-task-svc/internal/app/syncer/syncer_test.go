@@ -137,3 +137,69 @@ func TestSyncerKBImport(t *testing.T) {
 		t.Fatalf("重跑后应仍是 2 篇 2 条，实为 %d 篇 %d 条", posts, its)
 	}
 }
+
+// memory-import 把案例与准则分开导，且**导入永远不标「她确认过」**。
+//
+// 三条闸各测一遍：没有原话的不是案例、决定只认四种、准则导进来是草稿。
+func TestSyncerMemoryImport(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Config{DBPath: filepath.Join(dir, "s.db")}
+	run := func(args ...string) (int, string) {
+		var out bytes.Buffer
+		code := RunWith(args, cfg, &out, nil)
+		return code, out.String()
+	}
+
+	cases := write(t, dir, "cases.jsonl",
+		`{"case_key":"p5-a-1","decision":"rejected","quote":"这个不要","brand":"Snow Peak"}`+"\n"+
+			// 没有原话：案例库的全部价值就是「她说过什么」
+			`{"case_key":"p5-a-2","decision":"rejected","quote":"  "}`+"\n"+
+			// 决定不在四种里
+			`{"case_key":"p5-a-3","decision":"maybe","quote":"再说"}`+"\n"+
+			`{"case_key":"p5-a-4","decision":"adopted","quote":"这条可以，联名的读者爱看"}`+"\n")
+	code, out := run("memory-import", "cases", cases)
+	if code != 0 || !strings.Contains(out, "成功 2 条，跳过 2 条") {
+		t.Fatalf("import cases: %d %s", code, out)
+	}
+	if !strings.Contains(out, "缺 quote") || !strings.Contains(out, "decision 须为") {
+		t.Fatalf("跳过的理由要说清是哪一行坏在哪：%s", out)
+	}
+
+	rules := write(t, dir, "rules.jsonl",
+		`{"rule_key":"lower-plain","category":"lower","text":"普通上新降低优先级","derived_from":["p5-a-1"]}`+"\n"+
+			`{"rule_key":"bad","text":""}`+"\n")
+	code, out = run("memory-import", "rules", rules)
+	if code != 0 || !strings.Contains(out, "成功 1 条，跳过 1 条") {
+		t.Fatalf("import rules: %d %s", code, out)
+	}
+	// 导进来的准则必须明说是草稿
+	if !strings.Contains(out, "全部是草稿") {
+		t.Fatalf("导入准则要说明它还不能当依据：%s", out)
+	}
+
+	st, err := sqlite.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	q := sqlite.New(st).Q()
+	got, _ := q.ListSelectionRules(context.Background(), "", false, 10)
+	if len(got) != 1 || got[0].ConfirmedByVan {
+		t.Fatalf("导入不该标成她确认过：%+v", got)
+	}
+	// 确认之后才进 confirmed=1 那条路
+	if code, _ := run("memory-confirm", "lower-plain"); code != 0 {
+		t.Fatal("confirm failed")
+	}
+	only, _ := q.ListSelectionRules(context.Background(), "", true, 10)
+	if len(only) != 1 {
+		t.Fatalf("确认后该有一条，拿到 %d", len(only))
+	}
+	// 撤销确认：回到草稿
+	if code, out := run("memory-confirm", "lower-plain", "--undo"); code != 0 || !strings.Contains(out, "回到草稿") {
+		t.Fatalf("undo: %d %s", code, out)
+	}
+	if back, _ := q.ListSelectionRules(context.Background(), "", true, 10); len(back) != 0 {
+		t.Fatal("撤销后不该还在 confirmed=1 里")
+	}
+}

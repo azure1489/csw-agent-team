@@ -379,3 +379,46 @@ pub struct SubmitInput {
     pub affects_deliverable_id: Option<i64>,
     pub item_key: String,
 }
+
+/// 引擎那边的一条选题准则卡。
+///
+/// `confirmed_by_van` 是这一行的要害：**未经她确认的只是我们的归纳**，
+/// 可以展示，不能当判断依据。取判断依据时要用 `memory_rules(true, …)`。
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemoryRuleRow {
+    pub rule_key: String,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub derived_from: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub confirmed_by_van: bool,
+    #[serde(default)]
+    pub confirmed_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+/// 引擎那边的一条选题案例。**`quote` 是她的原话，一字不动。**
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemoryCaseRow {
+    pub case_key: String,
+    #[serde(default)]
+    pub brand: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub source_url: String,
+    #[serde(default)]
+    pub decision: String,
+    #[serde(default)]
+    pub quote: String,
+    #[serde(default)]
+    pub decided_at: String,
+    #[serde(default)]
+    pub judged_tier: String,
+}

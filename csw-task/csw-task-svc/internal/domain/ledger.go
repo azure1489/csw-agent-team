@@ -104,3 +104,40 @@ type AccountSnapshot struct {
 	DefinitionsJSON string // 指标定义与口径来源，原样保存
 	ID              int64
 }
+
+// SelectionRule 选题准则卡。**归纳，不是原话。**
+//
+// 与 SelectionCase 的分工是硬约束（迁移 0039 的建表注释）：案例库只存她说过的
+// 原话与当时的决定，归纳放这里，且必须标明是否经她确认过。没确认过的只能展示，
+// 不能当判断依据——这条区分一旦模糊，我们的猜测就会以她的名义进入判断。
+type SelectionRule struct {
+	RuleKey        string
+	Category       string // frame | prefer | lower | dedup | other
+	Text           string
+	DerivedFrom    string // 逗号分隔的 case_key，回头能核
+	Version        string
+	ConfirmedByVan bool
+	ConfirmedAt    string
+	Enabled        bool
+	CreatedAt      string
+	UpdatedAt      string
+	ID             int64
+}
+
+// SelectionCase 选题案例。**只存她说过的原话与当时的决定，不存归纳。**
+type SelectionCase struct {
+	CaseKey    string
+	RunID      *int64
+	ItemKey    string
+	Brand      string
+	Title      string
+	SourceURL  string
+	Decision   string // adopted | rejected | deferred | pending_check
+	Quote      string // 她的原话。代录也要原样附，不许转述
+	QuoteRef   string
+	DecidedAt  string
+	JudgedTier string // 当时系统给的结论档，用来算「我们判得准不准」
+	CreatedAt  string
+	UpdatedAt  string
+	ID         int64
+}
