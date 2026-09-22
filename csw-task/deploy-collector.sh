@@ -288,7 +288,8 @@ server {
         # 会话 cookie 的 HttpOnly / Secure / SameSite 由服务端自己带，nginx 不改
     }
 
-    # 运维两个：**根本不转发**。
+    # 页面要显示服务状态，走 /api/healthz（在上面那个 location /api/ 里，要会话）。
+    # 下面这两个裸的**根本不转发**。
     #
     # 一开始这里写的是 allow 127.0.0.1 / 172.16.0.0/12 / 10.0.0.0/8 + deny all，
     # 实测**挡不住**：nginx 跑在 docker 里，公网请求经 docker-proxy 进来之后，
@@ -332,6 +333,16 @@ echo "   Hermes 主网关: $(systemctl --user is-active hermes-gateway.service 2
 REMOTE
 
 log "5/6 检查"
+# ⚠️ **下面这些检查没有一个位置是完全可信的**，踩过两次才弄明白：
+#
+#   - 从**本机**发：开发机挂着代理（DNS 被劫持到 198.18.x.x），
+#     代理给的响应与服务器上真实的响应能差出一个状态码——曾经报过一次假 403。
+#   - 从**服务器上**发：它访问不了自己的公网域名（发夹弯 NAT，云厂商常见），
+#     一律 000——曾经据此误判成「全挂了」。
+#
+# 所以这里从本机发，把它当**参照而不是结论**；真要确认安全边界（尤其 8090
+# 有没有对公网敞着），用一条第三方线路：手机流量、另一台机器、或在线端口扫描。
+
 # 第一次启动要建 LanceDB 的表，比平时慢，所以等得久一点
 printf '   healthz（内网）: %s\n' "$("${SSH[@]}" 'curl -fsS --retry 45 --retry-connrefused --retry-delay 2 --max-time 10 http://127.0.0.1:8090/healthz' || echo '✗ 起不来，上去看 journalctl -u csw-collector -n 50')"
 printf '   前端:            HTTP %s\n' "$(curl -s -o /dev/null -w '%{http_code}' "https://$DOMAIN/")"
@@ -339,7 +350,12 @@ printf '   接口未登录:      HTTP %s（401 即正常——读接口也要会
 printf '   /metrics 公网:   HTTP %s（403 即正常）\n' "$(curl -s -o /dev/null -w '%{http_code}' "https://$DOMAIN/metrics")"
 
 # 8090 直连必须打不通。nginx 的 allow/deny 只管经过它的流量，
-# 端口本身若对公网开着，绕过 nginx 就什么都读得到
+# 端口本身若对公网开着，绕过 nginx 就什么都读得到。
+#
+# ⚠️ **这一条是从本机发的，而本机可能有代理**——代理拦下请求的话，这里会显示
+# 「打不通」，而实际上它对公网敞着。也就是说**这条检查给得出假的安全结论**。
+# 真要确认，用一条不经代理的线路（手机流量、另一台机器）再试一次：
+#     curl -m5 -o /dev/null -w '%{http_code}\n' http://<公网IP>:8090/metrics
 HOSTIP="${HOST#*@}"
 RAW="$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://$HOSTIP:8090/metrics" || echo 000)"
 if [ "$RAW" = "200" ]; then
@@ -347,7 +363,7 @@ if [ "$RAW" = "200" ]; then
   printf '  /metrics 与 /healthz 没有鉴权，现在等于公开。\n'
   printf '  处置：给这台机的安全组或 firewalld 关掉 8090 的入站，只留 443。\033[0m\n'
 else
-  printf '   8090 公网直连:   %s（打不通即正常）\n' "$RAW"
+  printf '   8090 公网直连:   %s（打不通即正常，但见上面那条注意）\n' "$RAW"
 fi
 
 log "6/6 完成 → https://$DOMAIN"

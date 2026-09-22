@@ -83,6 +83,12 @@ pub fn api_router(state: Arc<AppState>, auth: Arc<AuthState>) -> Router {
         .route("/api/work", get(work_queue))
         .route("/api/audit", get(audit_log))
         .route("/api/settings", get(settings))
+        // 与 `/healthz` 同一个 handler，区别只在**这个要会话**。
+        //
+        // 裸的 `/healthz` 得留着不鉴权（探活与看门狗都从回环读它），但它会露出
+        // 库路径与磁盘百分比，所以反代那层不往公网放。页面上要显示服务状态，
+        // 走这个带鉴权的。
+        .route("/api/healthz", get(healthz))
         // route_layer 只套在匹配到的路由上：没有的路径照常 404，不会先要求登录
         .route_layer(axum::middleware::from_fn_with_state(auth, require_session))
         .with_state(state)

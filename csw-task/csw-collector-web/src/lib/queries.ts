@@ -199,8 +199,9 @@ export const useSettings = () =>
 export const useHealth = () =>
   useQuery({
     queryKey: ['health'],
-    // healthz 不在 /api 下
-    queryFn: async () => (await api.get<Health>('/../healthz')).data,
+    // 走 /api/healthz 而不是裸的 /healthz：后者不鉴权（探活与看门狗要从回环读它），
+    // 因此反代那层不往公网放，页面拿不到。两个是同一个 handler。
+    queryFn: () => get<Health>('/healthz'),
     refetchInterval: 30_000,
   })
 
