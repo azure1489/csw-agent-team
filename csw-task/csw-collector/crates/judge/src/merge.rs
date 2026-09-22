@@ -225,6 +225,70 @@ mod tests {
         x
     }
 
+    /// 合成的周一：一期四百五十条。
+    ///
+    /// 周一要把周五之后的都捞进来，实测周末那一批大致是平日的三倍。
+    /// 这一条盯的是**问 Jev 的次数**：粗并是 O(n²)，四百五十条就是十万对，
+    /// 留满会把 Jev 的调用量炸开——而炸开的表现是那一步跑一个小时，
+    /// 不是报错。
+    #[test]
+    fn 合成的周一四百五十条问的对数仍然有上限() {
+        const N: usize = 450;
+        // 十条一簇：同一簇里彼此都很像，正是最容易把对数炸开的形状
+        let cands: Vec<Candidate> = (0..N)
+            .map(|i| cand(&format!("k{i}"), "acc", &format!("第 {} 簇", i / 10), 3))
+            .collect();
+        let vecs: Vec<Vec<f32>> = (0..N)
+            .map(|i| v(i % 8, 1.0 - (i % 10) as f32 * 0.001))
+            .collect();
+        let items: Vec<MergeInput<'_>> = cands
+            .iter()
+            .zip(&vecs)
+            .map(|(c, x)| MergeInput {
+                candidate: c,
+                fused: Some(x.as_slice()),
+            })
+            .collect();
+
+        let pairs = coarse_pairs(&items);
+        // 每条最多留 MAX_PAIRS_PER_CANDIDATE 对，所以总数有硬上限
+        assert!(
+            pairs.len() <= N * MAX_PAIRS_PER_CANDIDATE,
+            "问了 {} 对，上限是 {}",
+            pairs.len(),
+            N * MAX_PAIRS_PER_CANDIDATE
+        );
+        // 而且确实筛掉了绝大部分：这个形状全比一遍是十万对
+        let all_pairs = N * (N - 1) / 2;
+        assert!(
+            pairs.len() * 20 < all_pairs,
+            "筛得不够狠：{} 对，全比是 {all_pairs} 对",
+            pairs.len()
+        );
+        // 实测这个形状留下一千出头。按 Jev 并发 8、每次 0.3 秒算，
+        // 合并那一段约四十秒——可以接受；真要涨到上限的两千二，就该调阈值了
+        assert!(
+            pairs.len() < 1500,
+            "{} 对，比预期多，去看看阈值",
+            pairs.len()
+        );
+        for (i, j, _) in &pairs {
+            assert!(i < j, "对要有序，免得同一对被问两遍");
+        }
+
+        // 并起来之后，事件数不该超过候选数，也不该是一个大团
+        let merged: Vec<(usize, usize, f64)> =
+            pairs.iter().map(|(i, j, _)| (*i, *j, 0.9)).collect();
+        let groups = group(&items, &merged);
+        assert!(groups.len() <= N);
+        assert!(
+            groups.len() > 1,
+            "四百五十条并成了一件事，说明阈值或并查集有问题"
+        );
+        let total: usize = groups.iter().map(|g| g.members.len()).sum();
+        assert_eq!(total, N, "并完之后一条都不能少——合并只分组，不淘汰");
+    }
+
     #[test]
     fn 只把像的送去问() {
         let (a, b, c) = (

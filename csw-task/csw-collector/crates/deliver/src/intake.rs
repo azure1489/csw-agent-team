@@ -335,6 +335,65 @@ mod tests {
         }
     }
 
+    /// 合成的周一：四百五十条的台账打成包有多大。
+    ///
+    /// 交付物上限 48 MiB，而台账是**每条都写**（包括不推荐的）。
+    /// 这一条盯的是「正文会不会自己把包撑爆」——图是另算的，
+    /// 预览图每条一张，真要撑爆是图先撑。
+    #[test]
+    fn 合成的周一四百五十条的台账不会把包撑爆() {
+        const N: usize = 450;
+        let tiers = [
+            Tier::Recommend,
+            Tier::Alternate,
+            Tier::PendingCheck,
+            Tier::NotRecommend,
+        ];
+        let js: Vec<Judgement> = (0..N)
+            .map(|i| j(&format!("k{i:03}"), tiers[i % 4], i % 7 != 0))
+            .collect();
+        let cs: Vec<Candidate> = (0..N).map(|i| cand(&format!("k{i:03}"))).collect();
+        let by: std::collections::HashMap<String, Candidate> = cs
+            .iter()
+            .map(|c| (c.candidate_key.clone(), c.clone()))
+            .collect();
+
+        let body = ledger_body(("2026-09-19T16:00:00Z", "2026-09-22T16:00:00Z"), &js, |k| {
+            by.get(k).cloned()
+        });
+        // 每条都写：四百五十条一条不少
+        for i in [0usize, 137, N - 1] {
+            assert!(body.contains(&format!("k{i:03}")), "第 {i} 条没写进去");
+        }
+
+        let entries = assemble(
+            crate::index::Meta {
+                at: "2026-09-22T16:00:00Z".into(),
+                ..Default::default()
+            },
+            body,
+            &[],
+            String::new(),
+            String::new(),
+        );
+        let dir = tempdir::TempDir::new("mon").unwrap();
+        let out = dir.path().join("mon.zip");
+        let built = crate::pack::build("mon", &entries, &out).unwrap();
+
+        // 上限 48 MiB。纯台账应当只占其中很小一块——剩下的留给图
+        assert!(
+            built.bytes < crate::pack::MAX_ZIP_BYTES / 10,
+            "光台账就占了 {} 字节，图还没进来",
+            built.bytes
+        );
+        // 两次构建仍要一样：确定性不该随条数变
+        let out2 = dir.path().join("mon2.zip");
+        assert_eq!(
+            built.sha256,
+            crate::pack::build("mon", &entries, &out2).unwrap().sha256
+        );
+    }
+
     #[test]
     fn 四档都出现哪怕是空的() {
         let body = ledger_body(("A", "B"), &[j("k1", Tier::Recommend, true)], |k| {

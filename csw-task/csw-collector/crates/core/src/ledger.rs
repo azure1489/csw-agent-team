@@ -476,6 +476,56 @@ mod tests {
     }
 
     #[test]
+    fn 合成的周一四百五十条落库与对账都还算得动() {
+        const N: usize = 450;
+        let (c, r) = setup(1);
+        let t0 = std::time::Instant::now();
+        for i in 0..N {
+            let key = format!("k{i:03}");
+            upsert_candidate(&c, &cand(&key, 6)).unwrap();
+            attach_candidate(&c, r, &key, "csw-window", i % 9 == 0).unwrap();
+            let tier = match i % 4 {
+                0 => Tier::Recommend,
+                1 => Tier::Alternate,
+                2 => Tier::PendingCheck,
+                _ => Tier::NotRecommend,
+            };
+            put_judgement(&c, r, &judgement(&key, tier, true), &[], "m", "v1").unwrap();
+        }
+        let write = t0.elapsed();
+
+        let t1 = std::time::Instant::now();
+        let (total, carried) = round_candidate_count(&c, r).unwrap();
+        let judged = judged_keys(&c, r).unwrap().len();
+        let unjudged = unjudged_keys(&c, r).unwrap().len();
+        let tiers = tier_counts(&c, r).unwrap();
+        let read = t1.elapsed();
+
+        assert_eq!(
+            (total, judged, unjudged),
+            (N, N, 0),
+            "每条都判，未判必须是 0"
+        );
+        assert_eq!(carried, 50);
+        assert_eq!(tiers.len(), 4, "四档都要出现");
+        // 对账那几条查询是自查每一轮都要跑的，不该随条数变慢到离谱。
+        // 门槛放得很松（debug 构建、机器忙时也要过），它挡的是
+        // 「不小心写出一条 N 次查询」那种数量级的退化
+        assert!(write.as_secs() < 20, "写四百五十条用了 {write:?}");
+        assert!(read.as_millis() < 2000, "对账用了 {read:?}");
+
+        // 待核跨轮那条查询是整库扫的，也一起量一下
+        let t2 = std::time::Instant::now();
+        let open = open_pending_checks(&c, 100).unwrap();
+        assert_eq!(open.len(), 100);
+        assert!(
+            t2.elapsed().as_millis() < 2000,
+            "待核结转用了 {:?}",
+            t2.elapsed()
+        );
+    }
+
+    #[test]
     fn 指纹一致的旧结论跨轮拿得回来() {
         let (c, r1) = setup(1);
         upsert_candidate(&c, &cand("k1", 3)).unwrap();
