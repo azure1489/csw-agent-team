@@ -16,7 +16,10 @@
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::types::{Candidate, Judgement, MediaKind, Tier};
+use crate::types::{
+    Candidate, Comparison, ComparisonVerdict, Judgement, MediaKind, ThreeSentences, Tier,
+    Unanswered,
+};
 
 /// 写候选。**按 `candidate_key` 覆盖元数据，但 `first_seen_at` 只写第一次**——
 /// 它是「这条第一次进我们视野」的时间，被后来的同步改掉就没意义了。
@@ -238,8 +241,78 @@ pub fn unjudged_keys(conn: &Connection, round_id: i64) -> Result<Vec<String>> {
         .collect())
 }
 
+/// 按输入指纹找一条能直接拿来用的旧结论。**跨轮找**——预取轮判过的，
+/// 正式轮就是靠这个把判断那一段省下来的。
+///
+/// 指纹一致意味着正文、图片描述、对照材料、准则版本、提示词版本、作业标准
+/// 全都没变。任何一样变了指纹就变，这里自然就找不到——
+/// **「换了东西还在用旧结论」这件事没有别的地方能挡住。**
+///
+/// 找不到不是错误，是「这条得重新判」。
+pub fn judgement_by_hash(
+    conn: &Connection,
+    candidate_key: &str,
+    inputs_hash: &str,
+) -> Result<Option<Judgement>> {
+    if inputs_hash.is_empty() {
+        // 空指纹表示「这条没记输入」，不是「输入一样」
+        return Ok(None);
+    }
+    Ok(conn
+        .query_row(
+            "SELECT tier, dims_json, three_json, unanswered, comparison_json, heat_note, look,
+                    image_seen, gaps_json, priority_hits_json, lower_hits_json, jev_disagreement,
+                    kb_refs_json, memory_refs_json
+             FROM judgements WHERE candidate_key = ?1 AND inputs_hash = ?2
+             ORDER BY round_id DESC LIMIT 1",
+            params![candidate_key, inputs_hash],
+            |r| {
+                let js = |i: usize| -> Vec<String> {
+                    r.get::<_, String>(i)
+                        .ok()
+                        .and_then(|s| serde_json::from_str(&s).ok())
+                        .unwrap_or_default()
+                };
+                // 每个字段的目标类型不同，闭包只能定型一次，所以逐个写开
+                let raw = |i: usize| r.get::<_, String>(i).unwrap_or_default();
+                Ok(Judgement {
+                    candidate_key: candidate_key.to_string(),
+                    tier: serde_json::from_value(serde_json::Value::String(r.get(0)?))
+                        .unwrap_or(Tier::PendingCheck),
+                    dims: serde_json::from_str(&raw(1)).unwrap_or_default(),
+                    three_sentences: serde_json::from_str(&raw(2)).unwrap_or(ThreeSentences {
+                        what_changed: String::new(),
+                        why_it_matters: String::new(),
+                        how_different: String::new(),
+                    }),
+                    unanswered: serde_json::from_value(serde_json::Value::String(r.get(3)?))
+                        .unwrap_or(Unanswered::None),
+                    comparison: serde_json::from_str(&raw(4)).unwrap_or(Comparison {
+                        verdict: ComparisonVerdict::Unrelated,
+                        against: String::new(),
+                        note: String::new(),
+                    }),
+                    heat_note: r.get(5)?,
+                    look: r.get(6)?,
+                    image_seen: r.get::<_, i64>(7)? != 0,
+                    gaps: js(8),
+                    priority_hits: js(9),
+                    lower_hits: js(10),
+                    jev_disagreement: r.get(11)?,
+                    kb_refs: js(12),
+                    memory_refs: js(13),
+                    inputs_hash: inputs_hash.to_string(),
+                })
+            },
+        )
+        .optional()?)
+}
+
 /// 上一轮台账：第五类对照材料。**留在本地库，不进参考库**——
 /// 否则系统自己的判断会被当成 Van 的口味证据。
+///
+/// **预取轮的结论不算数。** 它是同一天凌晨为这一轮预先算的，不是「上一轮」；
+/// 当成对照材料等于让这一轮拿自己几小时前的判断给自己作证。
 pub fn prior_ledger(
     conn: &Connection,
     before_round_id: i64,
@@ -247,7 +320,9 @@ pub fn prior_ledger(
 ) -> Result<Vec<(String, String, String)>> {
     let mut st = conn.prepare(
         "SELECT j.candidate_key, j.tier, j.created_at FROM judgements j
-         WHERE j.round_id < ?1 ORDER BY j.round_id DESC, j.candidate_key LIMIT ?2",
+         JOIN rounds r ON r.id = j.round_id
+         WHERE j.round_id < ?1 AND r.kind <> 'prefetch'
+         ORDER BY j.round_id DESC, j.candidate_key LIMIT ?2",
     )?;
     Ok(st
         .query_map(params![before_round_id, limit as i64], |r| {
@@ -398,6 +473,64 @@ mod tests {
             memory_refs: vec![],
             inputs_hash: "ih".into(),
         }
+    }
+
+    #[test]
+    fn 指纹一致的旧结论跨轮拿得回来() {
+        let (c, r1) = setup(1);
+        upsert_candidate(&c, &cand("k1", 3)).unwrap();
+        attach_candidate(&c, r1, "k1", "csw-window", false).unwrap();
+        let mut j = judgement("k1", Tier::Recommend, true);
+        j.gaps = vec!["价格未写".into()];
+        j.priority_hits = vec!["新品发布".into()];
+        j.kb_refs = vec!["kb:published_item:42".into()];
+        put_judgement(
+            &c,
+            r1,
+            &j,
+            &["依据 3 材料不支持".into()],
+            "m",
+            "van-rubric/v1",
+        )
+        .unwrap();
+
+        // 正式轮拿预取轮判过的：档、六维、三句话、缺口一样不少
+        let got = judgement_by_hash(&c, "k1", "ih")
+            .unwrap()
+            .expect("该找得到");
+        assert_eq!(got.tier, Tier::Recommend);
+        assert_eq!(got.dims.len(), Dim::ALL.len());
+        assert_eq!(got.three_sentences.what_changed, "甲");
+        assert_eq!(got.gaps, ["价格未写"]);
+        assert_eq!(got.priority_hits, ["新品发布"]);
+        assert_eq!(got.kb_refs, ["kb:published_item:42"]);
+        assert_eq!(got.heat_note, "369 赞");
+        assert!(got.image_seen);
+        assert_eq!(got.inputs_hash, "ih");
+        // 拿回来的必须还能过契约自检，否则等于把脏数据搬进新一轮
+        assert!(got.violations().is_empty(), "{:?}", got.violations());
+    }
+
+    #[test]
+    fn 指纹不一致就不给旧结论() {
+        let (c, r1) = setup(1);
+        upsert_candidate(&c, &cand("k1", 3)).unwrap();
+        attach_candidate(&c, r1, "k1", "csw-window", false).unwrap();
+        put_judgement(
+            &c,
+            r1,
+            &judgement("k1", Tier::Recommend, true),
+            &[],
+            "m",
+            "v1",
+        )
+        .unwrap();
+        // 换了正文、换了描述、换了作业标准，指纹都会变——旧结论不能再用
+        assert!(judgement_by_hash(&c, "k1", "别的指纹").unwrap().is_none());
+        // 空指纹表示「这条没记输入」，不是「输入一样」
+        assert!(judgement_by_hash(&c, "k1", "").unwrap().is_none());
+        // 没判过的当然没有
+        assert!(judgement_by_hash(&c, "k2", "ih").unwrap().is_none());
     }
 
     #[test]
@@ -594,6 +727,46 @@ mod tests {
         assert_eq!(prior.len(), 1, "只看更早的轮次");
         assert_eq!(prior[0].0, "k1");
         assert_eq!(prior[0].1, "recommend");
+    }
+
+    #[test]
+    fn 预取轮的结论不当对照材料() {
+        let c = crate::store::open_in_memory().unwrap();
+        let pre = open_round(
+            &c,
+            &NewRound {
+                kind: RoundKind::Prefetch,
+                trigger: RoundTrigger::Manual,
+                run_id: None,
+                task_id: None,
+                stage_code: Some("intake".into()),
+                target_version: 0,
+                parent_round_id: None,
+                window_start: "A".into(),
+                window_end: "B".into(),
+                plan_version: 1,
+                rubric_version: "v1".into(),
+                kb_snapshot: "s".into(),
+                instructions_hash: String::new(),
+            },
+        )
+        .unwrap()
+        .0
+        .id;
+        upsert_candidate(&c, &cand("k1", 1)).unwrap();
+        put_judgement(
+            &c,
+            pre,
+            &judgement("k1", Tier::Recommend, true),
+            &[],
+            "m",
+            "v1",
+        )
+        .unwrap();
+
+        // 预取轮是同一天凌晨为这一轮预先算的，拿它作证等于自己给自己作证
+        let formal = open_one(&c, 9);
+        assert!(prior_ledger(&c, formal, 10).unwrap().is_empty());
     }
 
     #[test]

@@ -64,11 +64,24 @@ pub struct Deps<'a> {
     pub batch_concurrency: usize,
     /// 每判完一批调一次，给流式推进用。批内顺序与送进去的一致。
     pub on_batch: Option<OnBatch<'a>>,
+    /// 指纹一致的旧结论从哪儿取。传 None 就是每条都重新问模型。
+    pub cached: Option<&'a dyn Cached>,
+}
+
+/// 已经判过、且输入一点没变的结论从哪儿来。预取轮判过的，正式轮直接拿。
+///
+/// **判据全在指纹里**：正文、图片描述、对照材料、准则版本、提示词版本、
+/// 作业标准，任何一样变了指纹就变，这里自然取不到。所以实现方**不要**
+/// 自己再加宽松条件——那等于绕开唯一一道拦着「换了东西还在用旧结论」的闸。
+pub trait Cached {
+    fn get(&self, candidate_key: &str, inputs_hash: &str) -> Option<Judgement>;
 }
 
 #[derive(Debug, Default)]
 pub struct Outcome {
     pub judgements: Vec<Judgement>,
+    /// 直接拿了旧结论、没问模型的那些条目键
+    pub reused: Vec<String>,
     pub triages: Vec<Triage>,
     pub groups: Vec<EventGroup>,
     pub flags: Vec<Flag>,
@@ -134,7 +147,42 @@ pub async fn run(items: &[Item<'_>], deps: &Deps<'_>) -> Outcome {
         out.judgements.push(j);
     }
 
-    let batches: Vec<Vec<usize>> = seen.chunks(verdict::BATCH).map(<[usize]>::to_vec).collect();
+    // 指纹一致的旧结论直接拿来用。预取轮 01:40 判过的，这里一次网关调用都不花，
+    // 而且**结论立刻就在手上**——首批 ≤20 分钟主要靠这一段。
+    let mut fresh = Vec::with_capacity(seen.len());
+    let mut reused: Vec<Judgement> = Vec::new();
+    for i in seen {
+        let it = &items[i];
+        let hash = inputs_hash(it, deps.work_standard);
+        match deps
+            .cached
+            .and_then(|c| c.get(&it.candidate.candidate_key, &hash))
+        {
+            // 拿回来的也要过契约自检：库被手改过、或者旧版本写进去的结论
+            // 不合现在的契约时，宁可重判一遍，也不要把它当成这一轮的结论
+            Some(j) if j.violations().is_empty() => {
+                out.reused.push(j.candidate_key.clone());
+                reused.push(j);
+            }
+            Some(j) => {
+                tracing::warn!(候选 = %j.candidate_key, 原因 = %j.violations().join("；"), "旧结论不合契约，重判");
+                fresh.push(i);
+            }
+            None => fresh.push(i),
+        }
+    }
+    if !reused.is_empty() {
+        // 复用的这一批与判出来的那几批一样要回调：调用方凑首批时不该区别对待
+        if let Some(cb) = deps.on_batch {
+            cb(&reused);
+        }
+        out.judgements.extend(reused);
+    }
+
+    let batches: Vec<Vec<usize>> = fresh
+        .chunks(verdict::BATCH)
+        .map(<[usize]>::to_vec)
+        .collect();
     let conc = deps.batch_concurrency.max(1);
     // 借一份给闭包用：闭包是 FnMut，直接引 out.triages 会被当成整体移动
     let triages = &out.triages;
@@ -329,7 +377,9 @@ pub fn inputs_hash(item: &Item<'_>, work_standard: &str) -> String {
 mod tests {
     use super::*;
     use csw_collector_core::model::ModelConfig;
-    use csw_collector_core::types::{ImageKind, MaterialKind, MediaKind, MediaRef, Platform, Tier};
+    use csw_collector_core::types::{
+        Dim, ImageKind, MaterialKind, MediaKind, MediaRef, Platform, Tier,
+    };
     use serde_json::json;
 
     fn cand(key: &str, text: &str) -> Candidate {
@@ -483,6 +533,22 @@ mod tests {
         assert!(attach(js, &[0], &items, "标准").is_empty());
     }
 
+    /// 模型会回的一条完整推荐结论
+    fn one_recommend(k: &str) -> serde_json::Value {
+        json!({
+            "candidate_key": k, "tier": "recommend",
+            "dims": {"change": {"verdict":"yes","basis":"b"}, "use": {"verdict":"yes","basis":"b"},
+                     "gain": {"verdict":"yes","basis":"b"}, "compare": {"verdict":"yes","basis":"b"},
+                     "explain": {"verdict":"yes","basis":"b"}, "csw": {"verdict":"yes","basis":"b"}},
+            "three_sentences": {"what_changed":"a","why_it_matters":"b","how_different":"c"},
+            "unanswered": "none",
+            "comparison": {"verdict":"unrelated","against":"","note":""},
+            "heat_note": "", "look": "", "image_seen": true,
+            "gaps": [], "priority_hits": [], "lower_hits": [],
+            "jev_disagreement": "", "kb_refs": [], "memory_refs": []
+        })
+    }
+
     async fn model_returning(body: serde_json::Value) -> (wiremock::MockServer, ModelClient) {
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
@@ -535,6 +601,7 @@ mod tests {
                 work_standard: "标准",
                 batch_concurrency: 1,
                 on_batch: None,
+                cached: None,
             },
         )
         .await;
@@ -548,21 +615,7 @@ mod tests {
 
     #[tokio::test]
     async fn 判完一批就回调一次() {
-        let one = |k: &str| {
-            json!({
-                "candidate_key": k, "tier": "recommend",
-                "dims": {"change": {"verdict":"yes","basis":"b"}, "use": {"verdict":"yes","basis":"b"},
-                         "gain": {"verdict":"yes","basis":"b"}, "compare": {"verdict":"yes","basis":"b"},
-                         "explain": {"verdict":"yes","basis":"b"}, "csw": {"verdict":"yes","basis":"b"}},
-                "three_sentences": {"what_changed":"a","why_it_matters":"b","how_different":"c"},
-                "unanswered": "none",
-                "comparison": {"verdict":"unrelated","against":"","note":""},
-                "heat_note": "", "look": "", "image_seen": true,
-                "gaps": [], "priority_hits": [], "lower_hits": [],
-                "jev_disagreement": "", "kb_refs": [], "memory_refs": []
-            })
-        };
-        let payload = json!({"judgements": [one("k1")]});
+        let payload = json!({"judgements": [one_recommend("k1")]});
         let (_s, m) = model_returning(json!({
             "output": [{"content": [{"type": "output_text", "text": payload.to_string()}]}],
             "usage": {"input_tokens": 10, "output_tokens": 5}
@@ -585,6 +638,7 @@ mod tests {
                 work_standard: "标准",
                 batch_concurrency: 1,
                 on_batch: Some(&cb),
+                cached: None,
             },
         )
         .await;
@@ -593,6 +647,173 @@ mod tests {
         assert!(!out.judgements[0].inputs_hash.is_empty());
         // 首批 ≤20 分钟只能靠流式推进达成，回调不能少
         assert_eq!(*seen.lock().unwrap(), ["k1"]);
+    }
+
+    struct Store(Vec<Judgement>);
+    impl Cached for Store {
+        fn get(&self, key: &str, hash: &str) -> Option<Judgement> {
+            self.0
+                .iter()
+                .find(|j| j.candidate_key == key && j.inputs_hash == hash)
+                .cloned()
+        }
+    }
+
+    /// 一条合契约的完整结论，给复用那几个测试当料
+    fn full_judgement(key: &str, hash: &str) -> Judgement {
+        Judgement {
+            candidate_key: key.into(),
+            tier: Tier::Alternate,
+            dims: Dim::ALL
+                .into_iter()
+                .map(|d| {
+                    (
+                        d,
+                        csw_collector_core::types::DimJudgement {
+                            verdict: csw_collector_core::types::Verdict::Yes,
+                            basis: "正文第一句".into(),
+                        },
+                    )
+                })
+                .collect(),
+            three_sentences: csw_collector_core::types::ThreeSentences {
+                what_changed: "甲".into(),
+                why_it_matters: "乙".into(),
+                how_different: "丙".into(),
+            },
+            unanswered: csw_collector_core::types::Unanswered::None,
+            comparison: csw_collector_core::types::Comparison {
+                verdict: csw_collector_core::types::ComparisonVerdict::Unrelated,
+                against: String::new(),
+                note: String::new(),
+            },
+            heat_note: String::new(),
+            look: String::new(),
+            image_seen: true,
+            gaps: vec![],
+            priority_hits: vec![],
+            lower_hits: vec![],
+            jev_disagreement: String::new(),
+            kb_refs: vec![],
+            memory_refs: vec![],
+            inputs_hash: hash.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn 指纹一致就不再问模型() {
+        // 一次网关调用都不该发出去：预取轮已经判过了
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let m = ModelClient::new(ModelConfig {
+            base_url: server.uri(),
+            api_key: "k".into(),
+            model: "m".into(),
+            fallback_model: String::new(),
+            concurrency: 1,
+            timeout: std::time::Duration::from_secs(5),
+            max_attempts: 1,
+        })
+        .unwrap();
+
+        let c = cand("k1", "甲");
+        let ds = [desc()];
+        let it = item(&c, &ds, vec![]);
+        let hash = inputs_hash(&it, "标准");
+        let store = Store(vec![full_judgement("k1", &hash)]);
+
+        let seen = std::sync::Mutex::new(Vec::<String>::new());
+        let cb = |js: &[Judgement]| {
+            seen.lock()
+                .unwrap()
+                .extend(js.iter().map(|j| j.candidate_key.clone()));
+        };
+        let out = run(
+            &[it],
+            &Deps {
+                model: &m,
+                jev: None,
+                work_standard: "标准",
+                batch_concurrency: 1,
+                on_batch: Some(&cb),
+                cached: Some(&store),
+            },
+        )
+        .await;
+        assert_eq!(out.judgements.len(), 1);
+        assert_eq!(out.judgements[0].tier, Tier::Alternate);
+        assert_eq!(out.reused, ["k1"]);
+        // 复用的也要回调：调用方凑首批时不该区别对待
+        assert_eq!(*seen.lock().unwrap(), ["k1"]);
+    }
+
+    #[tokio::test]
+    async fn 作业标准变了就得重判() {
+        let payload = json!({"judgements": [one_recommend("k1")]});
+        let (_s, m) = model_returning(json!({
+            "output": [{"content": [{"type": "output_text", "text": payload.to_string()}]}],
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        }))
+        .await;
+
+        let c = cand("k1", "甲");
+        let ds = [desc()];
+        let it = item(&c, &ds, vec![]);
+        // 预取轮用的是上一次的标准，这一轮主编改了派工单备注
+        let store = Store(vec![full_judgement("k1", &inputs_hash(&it, "旧标准"))]);
+        let out = run(
+            &[it],
+            &Deps {
+                model: &m,
+                jev: None,
+                work_standard: "新标准",
+                batch_concurrency: 1,
+                on_batch: None,
+                cached: Some(&store),
+            },
+        )
+        .await;
+        assert!(out.reused.is_empty(), "指纹对不上就不许拿旧结论");
+        assert_eq!(out.judgements.len(), 1);
+        assert_eq!(out.judgements[0].tier, Tier::Recommend, "是模型这次判的");
+    }
+
+    #[tokio::test]
+    async fn 旧结论不合契约就重判() {
+        let payload = json!({"judgements": [one_recommend("k1")]});
+        let (_s, m) = model_returning(json!({
+            "output": [{"content": [{"type": "output_text", "text": payload.to_string()}]}],
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        }))
+        .await;
+
+        let c = cand("k1", "甲");
+        let ds = [desc()];
+        let it = item(&c, &ds, vec![]);
+        let hash = inputs_hash(&it, "标准");
+        let mut broken = full_judgement("k1", &hash);
+        broken.dims.truncate(2); // 六维缺了四维
+        let store = Store(vec![broken]);
+        let out = run(
+            &[it],
+            &Deps {
+                model: &m,
+                jev: None,
+                work_standard: "标准",
+                batch_concurrency: 1,
+                on_batch: None,
+                cached: Some(&store),
+            },
+        )
+        .await;
+        // 宁可重判一遍，也不要把不合契约的结论当成这一轮的结论
+        assert!(out.reused.is_empty());
+        assert_eq!(out.judgements.len(), 1);
+        assert!(out.judgements[0].violations().is_empty());
     }
 
     #[tokio::test]
@@ -608,6 +829,7 @@ mod tests {
                 work_standard: "标准",
                 batch_concurrency: 1,
                 on_batch: None,
+                cached: None,
             },
         )
         .await;

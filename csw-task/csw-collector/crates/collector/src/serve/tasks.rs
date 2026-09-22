@@ -19,6 +19,11 @@ use csw_collector_engineapi::client::EngineClient;
 use csw_collector_engineapi::types::{MyTask, TaskStatus};
 
 /// 我们接哪些阶段的单。其余的不是我们的活，看见也不碰。
+///
+/// **认得不等于做得了**：目前只有 `intake` 真跑得起来，另外两个会被
+/// `serve::start_round` 挡下并**如实向引擎报失败**（见那里的分支）。
+/// 写在这里而不是删掉，是因为「派到我们头上却没人应」比「明说做不了」更糟：
+/// 前者要等引擎的未接单提醒升级到中枢，主编才知道出事了。
 pub const OUR_STAGES: [&str; 3] = ["intake", "material", "xhs_pick"];
 
 /// 这一条派单该怎么处理。

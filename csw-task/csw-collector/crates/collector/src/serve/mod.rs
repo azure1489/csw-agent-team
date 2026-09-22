@@ -32,6 +32,10 @@ use csw_collector_engineapi::client::EngineClient;
 
 use tasks::Action;
 
+/// 现在真正跑得起来的那一个阶段。`tasks::OUR_STAGES` 里的另外两个
+/// （`material`、`xhs_pick`）会被接下来的 `start_round` 挡在门外并如实报失败。
+const STAGE_INTAKE: &str = "intake";
+
 pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
     let conn = csw_collector_core::store::open(&cfg.db_path())
         .with_context(|| format!("打开本地库 {}", cfg.db_path().display()))?;
@@ -136,12 +140,7 @@ async fn run_job(
     tracing::info!(活 = name, "定时的活开始");
     let r = match name {
         "kb_sync_1" | "kb_sync_2" => kb_sync_job(cfg, conn, svc).await,
-        "prefetch" => {
-            // 预取轮是缓存不是前置条件。它还没接进编排，先如实说一声，
-            // 免得日志看起来像跑过了
-            tracing::warn!("预取轮还没接进编排，这一次只跑知识库同步");
-            kb_sync_job(cfg, conn, svc).await
-        }
+        "prefetch" => prefetch_job(cfg, conn, svc).await,
         other => Err(anyhow::anyhow!("不认识的定时活：{other}")),
     };
     match r {
@@ -155,6 +154,57 @@ async fn run_job(
         Ok(n) if n > 0 => tracing::info!(删了 = n, "清掉了过期的图"),
         Ok(_) => {}
         Err(e) => tracing::warn!(原因 = %format!("{e:#}"), "清图失败"),
+    }
+}
+
+/// 预取轮：01:40 先把第 2–5 步跑一遍，产物落本地库。
+///
+/// **失败只记一笔。** 它是缓存不是前置条件：没跑成，05:30 那一轮照样
+/// 从零跑得完，只是慢——而这件事要让日志说清楚，不能悄悄过去。
+async fn prefetch_job(
+    cfg: &Config,
+    conn: &rusqlite::Connection,
+    svc: &services::Services,
+) -> Result<String> {
+    let (window_start, window_end) = window_for(cfg);
+    let (r, _) = rounds::open_round(
+        conn,
+        &rounds::NewRound {
+            kind: csw_collector_core::types::RoundKind::Prefetch,
+            trigger: csw_collector_core::types::RoundTrigger::Manual,
+            // 不挂任何任务：预取轮不属于哪一期，也不许写引擎
+            run_id: None,
+            task_id: None,
+            stage_code: Some("intake".into()),
+            target_version: 0,
+            parent_round_id: None,
+            window_start,
+            window_end,
+            plan_version: 1,
+            rubric_version: csw_collector_judge::rubric::RUBRIC_VERSION.into(),
+            kb_snapshot: cfg.vector.embed_model.clone(),
+            // 预取轮没有派单，作业标准从镜像里取上一次的（见 round::run_prefetch）
+            instructions_hash: String::new(),
+        },
+    )?;
+    match round::run_prefetch(conn, &r, cfg, svc).await {
+        Ok(counts) => {
+            rounds::finish_round(conn, r.id, "done", "")?;
+            Ok(format!(
+                "预取了 {} 条，判了 {}（推荐 {} 备选 {} 待核 {}）",
+                counts.candidates,
+                counts.judged,
+                counts.recommend,
+                counts.alternate,
+                counts.pending_check
+            ))
+        }
+        Err(e) => {
+            let why = format!("{e:#}");
+            rounds::finish_round(conn, r.id, "failed", &why)?;
+            // 不往引擎报：引擎根本不知道有这一轮
+            Err(e.context("预取轮没跑成，正式轮要从零跑，会慢四十分钟"))
+        }
     }
 }
 
@@ -237,7 +287,44 @@ async fn start_round(
     t: &csw_collector_engineapi::types::MyTask,
     action: Action,
 ) -> Result<()> {
+    // 05 配图与 11 选图包也是我们的活，但还**没实现**。在这里岔开：
+    // 不岔开的话它们会走 01 的十步，交出一份文不对题的台账——
+    // 那种错在群播报里看不出来，要等主编打开交付物才发现。
+    if t.task.stage_code != STAGE_INTAKE {
+        let why = format!(
+            "{} 阶段本服务尚未实现（只做 {STAGE_INTAKE}），请主编改派人工或等版本上线",
+            t.task.stage_code
+        );
+        tracing::error!(任务 = t.task.id, 阶段 = %t.task.stage_code, "{why}");
+        let idem = format!("fail-{}-unsupported", t.task.id);
+        engine
+            .fail(t.task.id, &why, &idem)
+            .await
+            .context("报告不支持的阶段")?;
+        return Ok(());
+    }
+
     let detail = engine.task_detail(t.task.id).await.context("取任务详情")?;
+    // 把这份派单镜像下来：预取轮 01:40 没有单可接，作业标准只能从这里取上一次的。
+    // 存的是**拼好的那一段**，与这一轮送进模型的一字不差，指纹才对得上。
+    if let Err(e) = csw_collector_core::mirror::put(
+        conn,
+        &csw_collector_core::mirror::TaskSnapshot {
+            task_id: t.task.id,
+            run_id: t.task.run_id,
+            stage_code: t.task.stage_code.clone(),
+            status: format!("{:?}", t.task.status).to_lowercase(),
+            item_key: t.task.item_key.clone(),
+            editor_note: detail.editor_note.clone(),
+            work_standard: round::work_standard(&detail),
+            upstreams_json: serde_json::to_string(&detail.upstreams).unwrap_or_default(),
+            latest_review_json: serde_json::to_string(&detail.latest_review).unwrap_or_default(),
+            deadline_at: t.task.due_at.clone(),
+        },
+    ) {
+        // 镜像存不下只影响下一次预取轮的复用率，不该拦住这一轮
+        tracing::warn!(任务 = t.task.id, 原因 = %format!("{e:#}"), "任务镜像没写成");
+    }
     let (window_start, window_end) = window_for(cfg);
     let (r, is_new) = rounds::open_round(
         conn,

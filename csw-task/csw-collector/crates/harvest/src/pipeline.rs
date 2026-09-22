@@ -57,6 +57,8 @@ pub struct Prepared {
     pub image_vectors: Vec<Vec<f32>>,
     /// 下载或识别失败的图
     pub failed_media: Vec<String>,
+    /// 描述是从缓存里拿的，这一条没走网关
+    pub reused: bool,
     /// 这条候选在模型网关上花的毫秒（识别）。**是占用时长不是墙钟**，
     /// 多条并发时各自的和会远大于整段墙钟——那正是要看的：
     /// 和 ÷ 墙钟 ≈ 网关的有效并发度，明显低于并发上限就说明重叠没做起来。
@@ -150,6 +152,18 @@ pub struct Deps<'a> {
     /// 同时处理几条候选。取模型网关的并发上限即可——真正的闸门在客户端里，
     /// 这里只是别让它们闲着。
     pub concurrency: usize,
+    /// 已经识别过的描述从哪儿来。传 None 就是每张图都重新识别一遍。
+    pub cache: Option<&'a dyn Descriptions>,
+}
+
+/// 已经识别过的图从哪儿取。预取轮把描述写进库，正式轮靠它把识别整段跳过。
+///
+/// **命中的判据是「这条候选的每一张图都有描述」**，不是「有几条描述」：
+/// 缺一张就得重识别，否则判断那一步会拿着一份不全的画面去下结论，
+/// 而台账上看不出来少了什么。
+pub trait Descriptions {
+    /// 这条候选在当前提示词版本下的全部描述。没有就给空。
+    fn get(&self, candidate_key: &str) -> Vec<MediaDescription>;
 }
 
 /// 跑一遍取候选：每个采集器一条采集轮账。
@@ -291,6 +305,30 @@ async fn prepare_one(
             }
         }
 
+        // 先问缓存：预取轮 01:40 已经识别过的，正式轮不必再走一趟网关。
+        // 这是「整轮 ≤45 分钟」的主要来源——识别是四十分钟里最大的一块。
+        let hit = deps
+            .cache
+            .and_then(|cache| covered(cache, &c.candidate_key, &refs));
+        if let Some(cached) = hit {
+            let t_emb = std::time::Instant::now();
+            // 只算融合向量，不再逐图算：这条候选的图上一轮已经算过了。
+            // （等 11 选图包要用图向量时，这里要改成**从库里读回来**，
+            // 而不是改回重算——重算的那三秒多是整轮 GPU 时间的大头。）
+            let (fused, _) = embed_for(&c, &refs, &cached, deps.vector, false).await;
+            return Prepared {
+                candidate: c,
+                descriptions: cached,
+                fused,
+                image_vectors: vec![],
+                failed_media,
+                reused: true,
+                // 没走网关，占用就是 0：把它算进去会让「网关有效并发」虚高
+                recognize_ms: 0,
+                embed_ms: t_emb.elapsed().as_millis(),
+            };
+        }
+
         // 识别：按批走；某一批失败只影响那一批，不牵连整条候选。
         //
         // **批与批之间也要并发。** 这里原本是串行的，M1 实测暴露出来：网关的有效
@@ -327,24 +365,55 @@ async fn prepare_one(
 
         // 向量化：图文融合一条 + 每张图一条
         let t_emb = std::time::Instant::now();
-        let (fused, image_vectors) = embed_for(&c, &refs, &descriptions, deps.vector).await;
+        let (fused, image_vectors) = embed_for(&c, &refs, &descriptions, deps.vector, true).await;
         Prepared {
             candidate: c,
             descriptions,
             fused,
             image_vectors,
             failed_media,
+            reused: false,
             recognize_ms,
             embed_ms: t_emb.elapsed().as_millis(),
         }
     }
 }
 
+/// 缓存里这条候选的描述够不够用。**每一张图都要有**，少一张就算没命中。
+///
+/// 按 blake3 比而不是按数量比：贴文被编辑过、换了图的时候数量可能还一样，
+/// 而那正是最该重识别的情形。
+fn covered(
+    cache: &dyn Descriptions,
+    candidate_key: &str,
+    refs: &[recognize::ImageRef],
+) -> Option<Vec<MediaDescription>> {
+    if refs.is_empty() {
+        // 没有图就没什么可省的，照常走（纯文本那条路也在下面）
+        return None;
+    }
+    let cached = cache.get(candidate_key);
+    let mut out = Vec::with_capacity(refs.len());
+    for r in refs {
+        let d = cached.iter().find(|d| d.blake3 == r.blake3)?;
+        // 描述里的「第几张图」要与这一轮的图序一致：判断的依据指的就是它
+        let mut d = d.clone();
+        d.ordinal = r.ordinal;
+        out.push(d);
+    }
+    Some(out)
+}
+
+/// 算向量。`with_images` 为 false 时只算融合那一条。
+///
+/// GPU 是全进程串行的，逐图那几条是整轮 GPU 时间的大头；命中缓存时
+/// 那些图上一轮已经算过，再算一遍纯属白占卡。
 async fn embed_for(
     c: &Candidate,
     refs: &[recognize::ImageRef],
     descriptions: &[MediaDescription],
     vector: &VectorClient,
+    with_images: bool,
 ) -> (Option<Vec<f32>>, Vec<Vec<f32>>) {
     if refs.is_empty() && c.text.trim().is_empty() {
         return (None, vec![]);
@@ -359,7 +428,9 @@ async fn embed_for(
             .map(|r| vec![r.b64.clone()])
             .unwrap_or_default(),
     });
-    inputs.extend(refs.iter().map(|r| EmbedInput::Image(r.b64.clone())));
+    if with_images {
+        inputs.extend(refs.iter().map(|r| EmbedInput::Image(r.b64.clone())));
+    }
 
     match vector.embed(&inputs).await {
         Ok(mut vs) => {
@@ -680,6 +751,7 @@ mod tests {
             fused: None,
             image_vectors: vec![],
             failed_media: vec![],
+            reused: false,
             recognize_ms: 0,
             embed_ms: 0,
         };
@@ -690,6 +762,7 @@ mod tests {
             fused: None,
             image_vectors: vec![],
             failed_media: vec![],
+            reused: false,
             recognize_ms: 0,
             embed_ms: 0,
         };
@@ -700,10 +773,204 @@ mod tests {
             fused: None,
             image_vectors: vec![],
             failed_media: vec!["x".into()],
+            reused: false,
             recognize_ms: 0,
             embed_ms: 0,
         };
         assert!(!failed.image_seen(), "有下载失败的就不算读到实图");
+    }
+
+    struct Cache(Vec<MediaDescription>);
+    impl Descriptions for Cache {
+        fn get(&self, _: &str) -> Vec<MediaDescription> {
+            self.0.clone()
+        }
+    }
+
+    fn img(b3: &str, ordinal: u16) -> recognize::ImageRef {
+        recognize::ImageRef {
+            blake3: b3.into(),
+            b64: "x".into(),
+            ordinal,
+        }
+    }
+
+    fn cached(b3: &str, ordinal: u16) -> MediaDescription {
+        MediaDescription {
+            blake3: b3.into(),
+            ordinal,
+            matches_text: String::new(),
+            content: format!("{b3} 的画面"),
+            missing_from_text: String::new(),
+            kind: ImageKind::Product,
+            usable_as_figure: true,
+            model: "m".into(),
+            prompt_version: "recognize/v1".into(),
+        }
+    }
+
+    #[test]
+    fn 每张图都有描述才算命中缓存() {
+        let refs = [img("b0", 0), img("b1", 1)];
+        let full = Cache(vec![cached("b0", 0), cached("b1", 1)]);
+        let got = covered(&full, "k1", &refs).expect("两张都有就该命中");
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].content, "b0 的画面");
+
+        // 少一张就得重识别：拿一份不全的画面去判断，台账上看不出来少了什么
+        let half = Cache(vec![cached("b0", 0)]);
+        assert!(covered(&half, "k1", &refs).is_none());
+        assert!(covered(&Cache(vec![]), "k1", &refs).is_none());
+    }
+
+    #[test]
+    fn 换了图就不算命中() {
+        // 贴文被编辑过、换掉一张图时数量可能还一样，而那正是最该重识别的情形
+        let refs = [img("b0", 0), img("新图", 1)];
+        let old = Cache(vec![cached("b0", 0), cached("b1", 1)]);
+        assert!(covered(&old, "k1", &refs).is_none());
+    }
+
+    #[test]
+    fn 缓存里的图序按这一轮的来() {
+        // 描述里的「第几张图」是判断的依据，指错了依据就指向别人的画面
+        let refs = [img("b1", 0), img("b0", 1)];
+        let c = Cache(vec![cached("b0", 7), cached("b1", 9)]);
+        let got = covered(&c, "k1", &refs).unwrap();
+        assert_eq!((got[0].blake3.as_str(), got[0].ordinal), ("b1", 0));
+        assert_eq!((got[1].blake3.as_str(), got[1].ordinal), ("b0", 1));
+    }
+
+    #[test]
+    fn 没有图就没什么可省的() {
+        let c = Cache(vec![cached("b0", 0)]);
+        assert!(covered(&c, "k1", &[]).is_none());
+    }
+
+    /// 照着请求里的条数回同样多条向量，顺带把每次的条数记下来
+    struct CountEcho(std::sync::Arc<std::sync::Mutex<Vec<usize>>>);
+
+    impl wiremock::Respond for CountEcho {
+        fn respond(&self, req: &wiremock::Request) -> wiremock::ResponseTemplate {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap_or_default();
+            let n = body
+                .get("input")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            self.0.lock().unwrap().push(n);
+            let data: Vec<_> = (0..n)
+                .map(|_| serde_json::json!({"embedding": [0.1, 0.2]}))
+                .collect();
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": data}))
+        }
+    }
+
+    #[tokio::test]
+    async fn 命中缓存时既不识别也不逐图算向量() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // 图片服务：两张不同内容的图
+        let imgs = MockServer::start().await;
+        for (p, body) in [("/a.jpg", b"IMG-A".to_vec()), ("/b.jpg", b"IMG-B".to_vec())] {
+            Mock::given(method("GET"))
+                .and(path(p))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+                .mount(&imgs)
+                .await;
+        }
+        // 模型网关：**一次都不该被调到**
+        let model_srv = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&model_srv)
+            .await;
+        // 向量服务：记下每次送了几条
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let vec_srv = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(CountEcho(seen.clone()))
+            .mount(&vec_srv)
+            .await;
+
+        let dir = std::env::temp_dir().join(format!("csw-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let downloader = crate::download::Downloader::new(crate::download::DownloadConfig {
+            dir,
+            width: 768,
+            concurrency: 2,
+            timeout: std::time::Duration::from_secs(5),
+            max_attempts: 1,
+        })
+        .unwrap();
+        let model = ModelClient::new(csw_collector_core::model::ModelConfig {
+            base_url: model_srv.uri(),
+            api_key: "k".into(),
+            model: "m".into(),
+            fallback_model: String::new(),
+            concurrency: 1,
+            timeout: std::time::Duration::from_secs(5),
+            max_attempts: 1,
+        })
+        .unwrap();
+        let vector = VectorClient::new(csw_collector_core::vector::VectorConfig {
+            base_url: vec_srv.uri(),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let mut c = cand("p1", Some("2026-09-18T01:00:00Z"), &[]);
+        c.media = vec![
+            MediaRef {
+                source_hash: "s0".into(),
+                kind: MediaKind::Photo,
+                url: format!("{}/a.jpg", imgs.uri()),
+                blake3: None,
+                ordinal: 0,
+            },
+            MediaRef {
+                source_hash: "s1".into(),
+                kind: MediaKind::Photo,
+                url: format!("{}/b.jpg", imgs.uri()),
+                blake3: None,
+                ordinal: 1,
+            },
+        ];
+        // 缓存里放的就是这两张图上一轮的描述（哈希按内容算，与下载器一致）
+        let cache = Cache(vec![
+            cached(&blake3::hash(b"IMG-A").to_hex(), 0),
+            cached(&blake3::hash(b"IMG-B").to_hex(), 1),
+        ]);
+
+        let (prepared, stats) = prepare(
+            vec![c],
+            &Deps {
+                downloader: &downloader,
+                model: &model,
+                vector: &vector,
+                image_only: true,
+                concurrency: 2,
+                cache: Some(&cache),
+            },
+        )
+        .await;
+
+        assert_eq!(prepared.len(), 1);
+        let p = &prepared[0];
+        assert!(p.reused, "两张图都有描述就该命中");
+        assert_eq!(p.descriptions.len(), 2);
+        assert!(p.image_seen(), "复用回来的也算读到了实图");
+        assert!(p.failed_media.is_empty());
+        // 没走网关，占用就该是 0：算进去会让「网关有效并发」虚高
+        assert_eq!(p.recognize_ms, 0);
+        assert_eq!(stats.recognize_ms, 0);
+        // 只算了融合那一条。逐图那几条是整轮 GPU 时间的大头，上一轮已经算过了
+        assert_eq!(*seen.lock().unwrap(), vec![1]);
+        assert!(p.fused.is_some());
+        assert!(p.image_vectors.is_empty());
     }
 
     #[test]

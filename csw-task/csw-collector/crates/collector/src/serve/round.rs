@@ -14,6 +14,17 @@
 //!   `intake-check` 会因此报红——这是对的，不该被抹平。
 //!   - **深核失败** → 条目照样登记，只在缺口里写明。
 //! - **提交冲突** → 停下交给人，不换幂等键重试。
+//!
+//! # 预取轮与正式轮的关系
+//!
+//! 预取轮（[`run_prefetch`]）只跑第 2–5 步，产物落在本地库：图片描述进
+//! `media_descriptions`，判断结论进 `judgements`。正式轮**照样从接单开始、
+//! 照样重新取一次窗口**，只是逐条去查「这张图识别过吗」「这条判过吗」——
+//! 命中就跳过，没命中就照常跑。
+//!
+//! 复用做在**条**这一级，不在**步**这一级：两轮的窗口不是同一个
+//! （01:40 与 05:30 各取前 24 小时），步级指纹永远对不上，而条级的
+//! 绝大多数都能对上——重叠的那二十小时里的候选一条没变。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -23,8 +34,10 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 use csw_collector_core::rounds::{self, Round};
-use csw_collector_core::types::{Candidate, Judgement, StepCode, StepStatus, Timestamp};
-use csw_collector_core::{Config, ledger};
+use csw_collector_core::types::{
+    Candidate, Judgement, MediaDescription, StepCode, StepStatus, Timestamp,
+};
+use csw_collector_core::{Config, ledger, media, mirror};
 use csw_collector_engineapi::types::TaskDetail;
 use csw_collector_harvest::collector::{CswWindow, VanLinks};
 use csw_collector_harvest::csw::CswClient;
@@ -112,6 +125,7 @@ pub async fn harvest(
         ledger::attach_candidate(conn, round.id, &c.candidate_key, &c.collector, false)?;
     }
 
+    let cache = DescCache { conn };
     let (prepared, stats) = pipeline::prepare(
         cands,
         &pipeline::Deps {
@@ -120,14 +134,36 @@ pub async fn harvest(
             vector,
             image_only: true,
             concurrency: cfg.model.concurrency,
+            // 预取轮识别过的直接拿来用。识别是这一步里最大的一块开销。
+            cache: Some(&cache),
         },
     )
     .await;
 
+    // 描述立刻落库：只留在内存里的话，这一趟网关钱下一轮还要再花一遍
+    let mut stored = 0;
+    for p in &prepared {
+        match media::put_prepared(
+            conn,
+            &p.candidate.candidate_key,
+            &p.candidate.media,
+            &p.descriptions,
+        ) {
+            Ok((_, n)) => stored += n,
+            // 一条存不下不该让整轮停下：它只是下一轮要重识别一次
+            Err(e) => {
+                tracing::warn!(候选 = %p.candidate.candidate_key, 原因 = %format!("{e:#}"), "描述没落库")
+            }
+        }
+    }
+
     let seen = prepared.iter().filter(|p| p.image_seen()).count();
+    let reused = prepared.iter().filter(|p| p.reused).count();
     let counts = serde_json::json!({
         "候选": prepared.len(),
         "读到实图": seen,
+        "复用识别": reused,
+        "新落库描述": stored,
         "下载毫秒": stats.download_ms,
         "识别向量墙钟毫秒": stats.wall_ms,
         "网关占用毫秒": stats.recognize_ms,
@@ -245,19 +281,18 @@ pub fn downloader(cfg: &Config) -> Result<Downloader> {
     })
 }
 
-/// 跑一轮 01「情报逐条」，从已经接了的单开始。
+/// 第 2–5 步：采集 → 合并 → 对照 → 逐条判断，结论落本地库。
 ///
-/// 这里只到**登记**为止。深核、交付物与提交挂在登记确认之后
-/// （`intake-check` 要拿台账与采集轮对账，判断没登记就查，查出来的是假红灯）。
-pub async fn run_intake(
+/// **预取轮与正式轮走的是同一段代码。** 两边算出来的 `inputs_hash` 必须
+/// 一模一样，复用才成立；分两处写迟早会分叉，而分叉的表现只是
+/// 「复用永远落空、每天慢四十分钟」，不报任何错。
+async fn harvest_and_judge(
     conn: &Connection,
     round: &Round,
-    detail: &TaskDetail,
     cfg: &Config,
     svc: &super::services::Services,
-) -> Result<(RoundCounts, Finished)> {
-    let standard = work_standard(detail);
-
+    standard: &str,
+) -> Result<Judged> {
     // 二、采集媒体信息
     let (prepared, sweeps) = harvest(
         conn,
@@ -274,14 +309,17 @@ pub async fn run_intake(
     // 三～五、合并、对照、逐条判断
     let step = rounds::begin_step(conn, round.id, StepCode::Judge, &round.instructions_hash)?;
     let items = judge_items(conn, &prepared, svc).await?;
+    let cache = JudgeCache { conn };
     let outcome = csw_collector_judge::pipeline::run(
         &items,
         &csw_collector_judge::pipeline::Deps {
             model: &svc.model,
             jev: svc.jev.as_ref(),
-            work_standard: &standard,
+            work_standard: standard,
             batch_concurrency: cfg.model.concurrency,
             on_batch: None,
+            // 预取轮判过、且输入一点没变的，直接拿
+            cached: Some(&cache),
         },
     )
     .await;
@@ -310,6 +348,7 @@ pub async fn run_intake(
         },
         &serde_json::json!({
             "判了": outcome.judgements.len(),
+            "其中复用": outcome.reused.len(),
             "未判": outcome.unjudged.len(),
             "合并成事件": outcome.groups.len(),
             "被标出的依据": outcome.flags.len(),
@@ -317,36 +356,78 @@ pub async fn run_intake(
         &outcome.unjudged.join("、"),
     )?;
 
+    Ok(Judged {
+        by_key: prepared
+            .iter()
+            .map(|p| (p.candidate.candidate_key.clone(), p.candidate.clone()))
+            .collect(),
+        reused_judgements: outcome.reused.len(),
+        reused_recognition: prepared.iter().filter(|p| p.reused).count(),
+        prepared,
+        sweeps,
+        judgements: outcome.judgements,
+    })
+}
+
+/// 第 2–5 步的产物。
+struct Judged {
+    prepared: Vec<Prepared>,
+    sweeps: Vec<SweepCount>,
+    judgements: Vec<Judgement>,
+    by_key: HashMap<String, Candidate>,
+    /// 直接拿了旧结论、没问模型的条数
+    reused_judgements: usize,
+    /// 直接拿了旧描述、没走网关识别的条数
+    reused_recognition: usize,
+}
+
+/// 跑一轮 01「情报逐条」，从已经接了的单开始。
+///
+/// 这里只到**登记**为止。深核、交付物与提交挂在登记确认之后
+/// （`intake-check` 要拿台账与采集轮对账，判断没登记就查，查出来的是假红灯）。
+pub async fn run_intake(
+    conn: &Connection,
+    round: &Round,
+    detail: &TaskDetail,
+    cfg: &Config,
+    svc: &super::services::Services,
+) -> Result<(RoundCounts, Finished)> {
+    let standard = work_standard(detail);
+    let j = harvest_and_judge(conn, round, cfg, svc, &standard).await?;
+    if j.reused_recognition > 0 || j.reused_judgements > 0 {
+        tracing::info!(
+            复用识别 = j.reused_recognition,
+            复用结论 = j.reused_judgements,
+            "预取轮省下来的"
+        );
+    }
+
     // 八、登记
-    let by_key: HashMap<String, Candidate> = prepared
-        .iter()
-        .map(|p| (p.candidate.candidate_key.clone(), p.candidate.clone()))
-        .collect();
     let carried: HashSet<String> = HashSet::new();
     if let Some(run_id) = round.run_id {
         register_and_enqueue(
             conn,
             round,
             run_id,
-            &outcome.judgements,
-            &sweeps,
-            &by_key,
+            &j.judgements,
+            &j.sweeps,
+            &j.by_key,
             &carried,
         )?;
     } else {
         tracing::info!("手动轮不写引擎，只落本地");
     }
 
-    let mut counts = count_round(conn, round.id, &prepared)?;
+    let mut counts = count_round(conn, round.id, &j.prepared)?;
 
     // 六、深核首批。失败不抛错——条目照样登记，只在缺口里写明。
     let deep_out = super::finish::deepcheck(
         conn,
         round,
         cfg,
-        &outcome.judgements,
-        &by_key,
-        &prepared,
+        &j.judgements,
+        &j.by_key,
+        &j.prepared,
         &standard,
     )
     .await;
@@ -355,12 +436,83 @@ pub async fn run_intake(
     Ok((
         counts,
         Finished {
-            judgements: outcome.judgements,
-            sweeps,
-            by_key,
+            judgements: j.judgements,
+            sweeps: j.sweeps,
+            by_key: j.by_key,
             deep_gaps: super::finish::deepcheck_gaps(&deep_out),
         },
     ))
+}
+
+/// 预取轮：只跑第 2–5 步，**不写引擎、不群播报、不深核、不交付**。
+///
+/// # 它是缓存，不是前置条件
+///
+/// 没跑过、跑失败了、跑到一半断了，正式轮照样能从零跑完——只是慢，
+/// 而且**要如实告诉主编会迟到**，不能假装一切正常。所以这里的失败
+/// 只收轮、记日志，不往引擎报（引擎根本不知道有这一轮）。
+///
+/// # 作业标准从上一次派单来
+///
+/// 01:40 没有派单，判断却要把作业标准算进指纹。拿最近一次 01 的标准来跑：
+/// 它与当天派下来的那份一样时（主编没改派工单备注，常态），结论就复用得上；
+/// 不一样时描述和向量仍然省下了，只是判断那一段要重来。
+pub async fn run_prefetch(
+    conn: &Connection,
+    round: &Round,
+    cfg: &Config,
+    svc: &super::services::Services,
+) -> Result<RoundCounts> {
+    let standard = mirror::latest_work_standard(conn, "intake")?.unwrap_or_default();
+    if standard.is_empty() {
+        tracing::warn!("还没接过 01 的单，这一轮用空作业标准跑——描述与向量能省，判断那一段省不了");
+    }
+    let j = harvest_and_judge(conn, round, cfg, svc, &standard).await?;
+    let counts = count_round(conn, round.id, &j.prepared)?;
+    tracing::info!(
+        候选 = counts.candidates,
+        判了 = counts.judged,
+        复用识别 = j.reused_recognition,
+        复用结论 = j.reused_judgements,
+        "预取轮跑完，产物只在本地"
+    );
+    Ok(counts)
+}
+
+/// 把本地库当成识别缓存。
+///
+/// 取不到当没有：缓存读失败只会让这条重识别一遍，不该让整轮停下。
+struct DescCache<'a> {
+    conn: &'a Connection,
+}
+
+impl pipeline::Descriptions for DescCache<'_> {
+    fn get(&self, candidate_key: &str) -> Vec<MediaDescription> {
+        media::descriptions_for(
+            self.conn,
+            candidate_key,
+            csw_collector_harvest::recognize::PROMPT_VERSION,
+        )
+        .unwrap_or_else(|e| {
+            tracing::warn!(候选 = %candidate_key, 原因 = %format!("{e:#}"), "读识别缓存失败，重识别一遍");
+            Vec::new()
+        })
+    }
+}
+
+/// 把本地库当成判断缓存。
+struct JudgeCache<'a> {
+    conn: &'a Connection,
+}
+
+impl csw_collector_judge::pipeline::Cached for JudgeCache<'_> {
+    fn get(&self, candidate_key: &str, inputs_hash: &str) -> Option<Judgement> {
+        ledger::judgement_by_hash(self.conn, candidate_key, inputs_hash)
+            .unwrap_or_else(|e| {
+                tracing::warn!(候选 = %candidate_key, 原因 = %format!("{e:#}"), "读判断缓存失败，重判一遍");
+                None
+            })
+    }
 }
 
 /// 一轮跑到登记为止的产物，交给「自查 → 交付物 → 提交」那三步。

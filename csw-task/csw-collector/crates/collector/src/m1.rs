@@ -164,6 +164,8 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
             image_only: true,
             // 闸门在客户端里（模型信号量 8、GPU 互斥锁 1），这里只是别让它们闲着
             concurrency: cfg.model.concurrency,
+            // M1 量的是从零跑一遍要多久，用上缓存量出来的数就不是底数了
+            cache: None,
         },
     )
     .await;
