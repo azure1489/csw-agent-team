@@ -18,6 +18,7 @@ pub mod config;
 pub mod jev;
 pub mod model;
 pub mod record;
+pub mod rounds;
 pub mod store;
 pub mod types;
 pub mod vector;
