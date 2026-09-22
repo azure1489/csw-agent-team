@@ -186,9 +186,21 @@ pub async fn run(items: &[Item<'_>], deps: &Deps<'_>) -> Outcome {
     let conc = deps.batch_concurrency.max(1);
     // 借一份给闭包用：闭包是 FnMut，直接引 out.triages 会被当成整体移动
     let triages = &out.triages;
+    // 与采集那一步同理：不报进度的话，判断也是几十分钟的黑盒。
+    // 按**批**报而不是按条——一批就是一次网关调用，它才是真正的时间单位。
+    let total_batches = batches.len();
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    let done = &done;
+    tracing::info!(
+        待判 = fresh.len(),
+        批 = total_batches,
+        并发 = conc,
+        "判断：开始"
+    );
     let results: Vec<BatchResult> =
         futures::StreamExt::collect::<Vec<_>>(futures::StreamExt::buffered(
             futures::stream::iter(batches.into_iter().map(|b| async move {
+                let t = std::time::Instant::now();
                 let inputs: Vec<JudgeInput<'_>> = b
                     .iter()
                     .map(|i| {
@@ -206,6 +218,14 @@ pub async fn run(items: &[Item<'_>], deps: &Deps<'_>) -> Outcome {
                     })
                     .collect();
                 let r = verdict::judge_batch(deps.model, &inputs, deps.work_standard).await;
+                let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                tracing::info!(
+                    进度 = format!("{n}/{total_batches} 批"),
+                    这批 = b.len(),
+                    成 = r.is_ok(),
+                    秒 = t.elapsed().as_secs(),
+                    "判断：一批完成"
+                );
                 (b, r)
             })),
             conc,

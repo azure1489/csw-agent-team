@@ -253,8 +253,15 @@ pub async fn prepare(candidates: Vec<Candidate>, deps: &Deps<'_>) -> (Vec<Prepar
         .map(|m| m.url.clone())
         .collect();
     let t_dl = std::time::Instant::now();
+    tracing::info!(候选 = candidates.len(), 图 = urls.len(), "采集：开始下载");
     let report = deps.downloader.fetch_all(&urls).await;
     let download_ms = t_dl.elapsed().as_millis();
+    tracing::info!(
+        成功 = report.ok.len(),
+        失败 = report.failed.len(),
+        秒 = download_ms / 1000,
+        "采集：下载完成，开始逐条识别"
+    );
     let by_url: HashMap<String, _> = report
         .ok
         .iter()
@@ -264,9 +271,31 @@ pub async fn prepare(candidates: Vec<Candidate>, deps: &Deps<'_>) -> (Vec<Prepar
         report.failed.iter().map(|f| f.url.as_str()).collect();
 
     let conc = deps.concurrency.max(1);
-    let tasks = candidates
-        .into_iter()
-        .map(|c| prepare_one(c, &by_url, &failed_urls, deps));
+    let total = candidates.len();
+    // **每条完成时报一次数。**
+    //
+    // 不报的话这一步就是个四十分钟的黑盒：线上第一次真跑时，我只能靠数 blobs
+    // 文件、翻 TCP 连接、看 CPU 时间去猜它在下图、在识别、还是已经挂了，
+    // 猜了半小时也没敢下结论。主编早上看着进度条不动时，要能一眼分得出
+    // 「在走但慢」和「卡死了」——这两件事的处置完全不同。
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    // 下面那个 async move 块会把捕获的东西移进去，所以先各取一份引用
+    let (done, by_url, failed_urls) = (&done, &by_url, &failed_urls);
+    let tasks = candidates.into_iter().map(|c| async move {
+        let key = c.candidate_key.clone();
+        let t = std::time::Instant::now();
+        let p = prepare_one(c, &by_url, &failed_urls, deps).await;
+        let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        tracing::info!(
+            进度 = format!("{n}/{total}"),
+            候选 = %key,
+            图 = p.descriptions.len(),
+            复用 = p.reused,
+            秒 = t.elapsed().as_secs(),
+            "采集：一条完成"
+        );
+        p
+    });
     let t_prep = std::time::Instant::now();
     let prepared: Vec<Prepared> = futures::StreamExt::collect::<Vec<_>>(
         futures::StreamExt::buffered(futures::stream::iter(tasks), conc),
