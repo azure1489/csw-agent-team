@@ -18,6 +18,7 @@ mod codexprobe;
 mod kb;
 mod m1;
 mod mcp;
+mod p5;
 mod schema;
 mod serve;
 mod xcheck;
@@ -63,8 +64,28 @@ enum Command {
     Kb(KbCommand),
     /// 以 stdio 方式跑本地 MCP 服务
     Mcp,
-    /// 历史反馈回收（离线；每次运行须单独取得同意）
-    P5,
+    /// 历史反馈回收（离线只读；**每次运行须单独取得同意**）
+    ///
+    /// 不给 `--who` 就是探查模式：只列出各库里有哪些人、各说了多少条，
+    /// 一条消息内容都不读。认出是哪几个 id 之后再用 `--who` 抽。
+    P5 {
+        /// 扫哪个目录下的 profile
+        #[arg(long, default_value = "/root/.hermes/profiles")]
+        profiles_dir: String,
+        /// 只抽这几个人的话（open_id）。**按应用隔离，一个人在每个 profile 里都不同**，
+        /// 所以通常要给好几个。不给就是探查模式。
+        #[arg(long)]
+        who: Vec<String>,
+        /// 从哪天起（`YYYY-MM-DD` 或 RFC3339）
+        #[arg(long, default_value = "2026-06-01")]
+        since: String,
+        /// 一条原话前后各带几条上下文
+        #[arg(long, default_value_t = 3)]
+        context: usize,
+        /// 产物写到哪
+        #[arg(long, default_value = "/tmp/p5")]
+        out: String,
+    },
     /// M1 验收：对真数据跑一遍「采集媒体信息」
     M1 {
         /// 窗口起点（含），RFC3339 UTC
@@ -247,12 +268,19 @@ async fn main() -> anyhow::Result<()> {
                 csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
             mcp::run(&cfg).await
         }
-        Command::P5 => anyhow::bail!(
-            "历史反馈回收（P5）还没实现，它排在阶段 8。\n\
-             \n\
-             注意它读的是九个 Hermes 会话库——**每次运行都要单独取得同意**，\n\
-             不是实现完就能随手跑的东西。"
-        ),
+        Command::P5 {
+            profiles_dir,
+            who,
+            since,
+            context,
+            out,
+        } => p5::run(&p5::Opts {
+            profiles_dir: std::path::PathBuf::from(profiles_dir),
+            who,
+            since,
+            context,
+            out: std::path::PathBuf::from(out),
+        }),
         Command::M1 {
             from,
             to,
