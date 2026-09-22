@@ -392,26 +392,42 @@ pub fn import_examples(
     tok: &Tokenizer,
     path: &std::path::Path,
 ) -> Result<SourceReport> {
+    /// 把 `null` 也当成缺省值。
+    ///
+    /// **`#[serde(default)]` 只管「字段缺失」，不管「字段在、值是 null」**——
+    /// 后者会直接报 `invalid type: null, expected a string` 把整行判废。
+    /// 而真实范例里 `brand`、`title` 为 null 是合法的：有些条目本来就没有品牌，
+    /// 拆条时也不一定给得出标题。十条范例曾因此丢掉一条。
+    use serde::Deserialize as _;
+
+    fn null_ok<'de, D, T>(d: D) -> Result<T, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+        T: serde::Deserialize<'de> + Default,
+    {
+        Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+    }
+
     #[derive(serde::Deserialize)]
     struct Row {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_ok")]
         platform: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_ok")]
         post_id: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_ok")]
         url: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_ok")]
         published_at: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_ok")]
         title: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_ok")]
         body_text: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_ok")]
         items: Vec<RowItem>,
     }
     #[derive(serde::Deserialize, Default)]
     struct RowItem {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_ok")]
         brand: String,
     }
 
@@ -834,6 +850,45 @@ mod tests {
         // 按字符截不按字节：按字节会把汉字劈成半个
         assert_eq!(for_embedding(&long).chars().count(), EMBED_MAX_CHARS);
         assert_eq!(for_embedding("短的"), "短的");
+    }
+
+    /// 字段在、值是 `null`，照样要收。
+    ///
+    /// **`#[serde(default)]` 只管「字段缺失」，不管「值是 null」**——后者会报
+    /// `invalid type: null, expected a string`，把整行判成坏 JSON 丢掉。
+    /// 线上导入十条真实范例时就这么丢了一条：它的 `items[0].brand` 是 null，
+    /// 而那是合法的，有些条目本来就没有品牌。
+    ///
+    /// 丢得还很安静——只有一行 warn，报告里只是 `跳过 1`。
+    #[test]
+    fn 范例里的null不该让整行作废() {
+        let c = conn();
+        let tok = Tokenizer::new();
+        let dir = tempdir::TempDir::new("kbnull").unwrap();
+        let path = dir.path().join("kb_import.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                // brand 与 title 都是 null —— 真实数据里就长这样
+                r#"{"post_id":"n1","title":null,"body_text":"正文一","items":[{"brand":null}]}"#,
+                "
+",
+                // 顶层字段也可能是 null
+                r#"{"post_id":"n2","url":null,"published_at":null,"body_text":"正文二"}"#,
+                "
+",
+            ),
+        )
+        .unwrap();
+
+        let rep = import_examples(&c, &tok, &path).unwrap();
+        assert_eq!(rep.fetched, 2);
+        assert_eq!(rep.skipped, 0, "null 不是坏数据，不该跳过");
+        assert_eq!(rep.inserted, 2);
+        // null 落成空字符串，不是丢掉整条
+        let d = docs::get(&c, 1).unwrap().unwrap();
+        assert_eq!(d.brand, "");
+        assert_eq!(d.title, "");
     }
 
     #[test]
