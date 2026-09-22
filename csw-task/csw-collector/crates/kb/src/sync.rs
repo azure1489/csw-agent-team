@@ -291,8 +291,9 @@ pub async fn sync_decisions(
 /// 写着「Van 原话」）。09-23 拉到 394 条真决定之后，这个假设当场就破了：
 ///
 /// - 14 条否决里 `quote_ref` **全部为空**，全都回退到了 `decision_source`
-/// - 而那里存的是**一次批量操作的说明**，同一批每条都一样：
-///   「主选2备选1均批准继续推进，待核退回」
+/// - 而那里存的是 **Van 对整批的批复**，同一批每条都一样：
+///   「主选2备选1均批准继续推进，待核退回」（确是她的话，但说的是整批，
+///   不是这一条为什么被否）
 /// - 更要命的一条，内容是 Van 的一整段派工指令（含八个链接），意思是
 ///   「这期用我挑的这几条」
 ///
@@ -1124,13 +1125,13 @@ mod tests {
     /// 否决的原话**只认 `quote_ref`**，`decision_source` 里那句一律不当原话用。
     ///
     /// 这条有真实数据撑着：09-23 拉到 394 条决定，14 条否决的 `quote_ref`
-    /// 全部为空，而 `decision_source` 存的是批量操作的说明（同一批每条都一样），
+    /// 全部为空，而 `decision_source` 存的是 Van 对整批的批复（同一批每条都一样），
     /// 其中一条甚至是「这期用我挑的这几条」那种派工指令——
     /// 那是**批次替换**，不是质量否决，拿它挡后续候选是错的。
     ///
     /// 回退到 `decision_source` 会让「没原话不自动生效」那道闸形同虚设。
     #[test]
-    fn 否决的原话不回退到批量说明() {
+    fn 否决的原话不回退到整批批复() {
         let c = conn();
         let base = Decision {
             run_id: 50,
@@ -1141,7 +1142,7 @@ mod tests {
             source_url: String::new(),
             published_at: String::new(),
             status: "rejected".into(),
-            // 真实数据里这里是「主选2备选1均批准继续推进，待核退回」这种批量说明
+            // 真实数据里这里是「主选2备选1均批准继续推进，待核退回」这种整批批复
             decision_source: "主选2备选1均批准继续推进，待核退回".into(),
             decided_at: "2026-09-22T01:49:26Z".into(),
             reason_code: "reject".into(),
@@ -1152,7 +1153,7 @@ mod tests {
         note_rejection(&c, &base).unwrap();
         let rules = csw_collector_core::exclusion::all(&c).unwrap();
         assert_eq!(rules.len(), 1, "否决要进表");
-        assert_eq!(rules[0].quote, "", "批量说明不能当原话");
+        assert_eq!(rules[0].quote, "", "整批批复不能当这一条的否决理由");
         assert!(!rules[0].active, "拿不出针对这一条的原话就不该自动生效");
 
         // 真有针对这一条的原话时才自动生效
