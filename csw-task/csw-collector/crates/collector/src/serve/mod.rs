@@ -14,6 +14,7 @@
 //! 群消息只是提示。
 
 pub mod finish;
+pub mod http;
 pub mod outbox_sender;
 pub mod register;
 pub mod round;
@@ -59,7 +60,35 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
         tracing::error!("有 outbox 条目处在冲突状态，**先查任务状态对账**，不要换幂等键重试");
     }
 
-    // 三、轮询
+    // 三、把工作台挂起来。HTTP 与轮询各跑各的：
+    // 页面不该因为某一轮在跑就打不开，轮次也不该因为没人看页面就不跑。
+    let http_conn = csw_collector_core::store::open(&cfg.db_path())?;
+    let app_state = std::sync::Arc::new(http::AppState {
+        conn: tokio::sync::Mutex::new(http_conn),
+        cfg: cfg.clone(),
+        started: std::time::Instant::now(),
+    });
+    let auth = std::sync::Arc::new(crate::bff::AuthState {
+        engine: csw_collector_engineapi::admin::AdminClient::new(&cfg.engine.admin_url)?,
+        store: Default::default(),
+        van_usernames: cfg.web.van_usernames.clone(),
+        secure_cookie: cfg.web.secure_cookie,
+    });
+    let app = axum::Router::new()
+        .merge(http::ops_router(app_state.clone()))
+        .merge(http::api_router(app_state))
+        .merge(crate::bff::router(auth));
+    let listener = tokio::net::TcpListener::bind(&cfg.listen)
+        .await
+        .with_context(|| format!("监听 {}", cfg.listen))?;
+    tracing::info!(地址 = %cfg.listen, "工作台起来了");
+    tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, app).await {
+            tracing::error!(原因 = %e, "工作台 HTTP 退出了");
+        }
+    });
+
+    // 四、轮询
     let every = Duration::from_secs(cfg.engine.poll_secs.max(5));
     tracing::info!(间隔秒 = every.as_secs(), 地址 = %cfg.engine.base_url, "开始轮询派单");
     loop {
