@@ -28,6 +28,7 @@ METRICS="${METRICS:-http://127.0.0.1:8090/metrics}"
 HEALTHZ="${HEALTHZ:-http://127.0.0.1:8090/healthz}"
 STATE_DIR="${STATE_DIR:-/opt/csw-collector/data/watchdog}"
 ENV_FILE="${ENV_FILE:-/opt/csw-collector/watchdog.env}"
+CONFIG="${CONFIG:-/opt/csw-collector/collector.toml}"
 AUTO_ROLLBACK="${AUTO_ROLLBACK:-0}"
 WEBHOOK="${CSW_COLLECTOR_ALERT_WEBHOOK:-}"
 
@@ -173,8 +174,21 @@ if [ "$CONFLICT" -gt 0 ] 2>/dev/null; then
 **别换幂等键重发**，那会写重。去引擎查那一条落没落，再决定标 confirmed 还是 pending"
 fi
 
-# 三、早上那几个盘点。只在 05:30–07:10 之间看，其余时间这些判断没有意义
-if [ "$BJ_HM" -ge 530 ] && [ "$BJ_HM" -le 710 ]; then
+# 三、早上那几个盘点。只在 05:30–07:10 之间看，其余时间这些判断没有意义。
+#
+# **预览模式下整段跳过。** 预览配置把运行面指向打不通的 127.0.0.1:1，工作台
+# 永远接不到单——照原样判，每天 05:35 都会得出「没接到单，该回退」。
+# 判断依据是配置文件第一行的 `# PREVIEW` 标记：部署脚本 `--preview` 生成的就是它，
+# 切正式时那份配置要删掉重生成，标记跟着消失，这一段自动恢复——不靠人记得去开。
+PREVIEW=0
+head -1 "$CONFIG" 2>/dev/null | grep -q "PREVIEW" && PREVIEW=1
+if [ "$PREVIEW" = "1" ] && [ "$BJ_HM" -ge 530 ] && [ "$BJ_HM" -le 710 ]; then
+  [ -f "$STATE_DIR/$(date +%F).preview_note" ] || {
+    : > "$STATE_DIR/$(date +%F).preview_note"
+    say "预览模式（$CONFIG 第一行带 PREVIEW）：工作台不接单，跳过早上那一轮的盘点"
+  }
+fi
+if [ "$PREVIEW" = "0" ] && [ "$BJ_HM" -ge 530 ] && [ "$BJ_HM" -le 710 ]; then
 
   # 05:35 还没开轮 = 没接到单
   if [ "$BJ_HM" -ge 535 ] && ! started_today; then
