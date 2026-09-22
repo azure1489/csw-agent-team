@@ -509,8 +509,7 @@ mod tests {
     fn 时间存成unix秒的真实会话库也数得出人() {
         let dir = tempdir::TempDir::new("p5real").unwrap();
         fake_db_real(dir.path(), "chief");
-        let dbs = vec![("chief".to_string(), dir.path().join("chief/state.db"))];
-        let sp = speakers_in(&dbs[0].1, "chief", "2026-06-01").unwrap();
+        let sp = speakers_in(&dir.path().join("chief/state.db"), "chief", "2026-06-01").unwrap();
         // 两个人都在窗口里说过话；五月那句被窗口卡掉，但 Van 六月还有一句
         assert_eq!(sp.len(), 2, "REAL 时间也要数得出人：{sp:?}");
         let van = sp.iter().find(|s| s.user_id == "ou_van").unwrap();
