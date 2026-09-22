@@ -13,6 +13,7 @@ import { api } from './api'
 import type {
   AuditRow,
   Coverage,
+  Exclusion,
   Health,
   ImageRow,
   JudgementDetail,
@@ -23,6 +24,7 @@ import type {
   MemoryRule,
   RoundBrief,
   RoundDetail,
+  RoundExclusions,
   Rubric,
   Settings,
   StepRow,
@@ -236,5 +238,44 @@ export function useRerun() {
         {},
       ),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['work'] }),
+  })
+}
+
+// ───────────────────────────── 硬性排除 ─────────────────────────────
+
+export const useExclusions = () =>
+  useQuery({ queryKey: ['exclusions'], queryFn: () => get<Exclusion[]>('/exclusions') })
+
+export const useRoundExclusions = (roundId?: number) =>
+  useQuery({
+    queryKey: ['round-exclusions', roundId],
+    queryFn: () => get<RoundExclusions>(`/rounds/${roundId}/exclusions`),
+    enabled: !!roundId,
+  })
+
+export function useSetExclusionActive() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (v: { id: number; active: boolean; reason: string }) =>
+      api.post(`/exclusions/${v.id}/active`, { active: v.active, reason: v.reason }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['exclusions'] })
+      void qc.invalidateQueries({ queryKey: ['audit'] })
+    },
+  })
+}
+
+export function useRestoreExcluded(roundId?: number) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (v: { key: string; reason: string }) =>
+      api.post(`/rounds/${roundId}/exclusions/${encodeURIComponent(v.key)}/restore`, {
+        reason: v.reason,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['round-exclusions'] })
+      void qc.invalidateQueries({ queryKey: ['judgements'] })
+      void qc.invalidateQueries({ queryKey: ['audit'] })
+    },
   })
 }

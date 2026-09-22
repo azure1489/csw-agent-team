@@ -18,6 +18,7 @@
 //! | 采集与覆盖 | 两个采集器、一条失败的 |
 //! | 待核结转 | 两条待核（一条是没读到实图） |
 //! | 指标 | 原判与生效档不一致的两条（捞回 / 压下） |
+//! | 判断框架 | 三条排除规则：生效的、没原话的、人工停用的 |
 //! | 运行与设置 | 留痕若干条 |
 //!
 //! **不造知识库那几页**：它们要真的向量库与检索客户端，造不出来，
@@ -258,12 +259,119 @@ fn main() -> Result<()> {
         &serde_json::json!({"mark": "like"}),
     )?;
 
+    // ── 硬性排除 ──
+    // 三条规则铺开三种状态：生效的、没原话所以不自动生效的、人工停用的。
+    // 这一页最要紧的就是**把没生效的也摆出来**——看不见的规则最危险。
+    use csw_collector_core::exclusion;
+    let rules = [
+        (
+            "41#snowpeak-plain",
+            "某品牌秋季新色帐篷",
+            "snow peak",
+            "这种只换个配色的普通上新没什么好说的",
+            "没有看点",
+        ),
+        // 没有原话：进表但 active=0，等人看过再开
+        (
+            "42#nanga-restock",
+            "某品牌睡袋补货",
+            "nanga",
+            "",
+            "重复报道",
+        ),
+        (
+            "43#coleman-store",
+            "某品牌门店活动",
+            "coleman",
+            "门店活动不是产品新闻",
+            "不是产品新闻",
+        ),
+    ];
+    for (r, title, brand, quote, reason) in rules {
+        exclusion::upsert(
+            &conn,
+            &exclusion::Exclusion {
+                id: 0,
+                decision_ref: r.into(),
+                item_key: r.split('#').nth(1).unwrap_or("").into(),
+                title: title.into(),
+                brand: brand.into(),
+                source_url: String::new(),
+                quote: quote.into(),
+                reason: reason.into(),
+                reason_code: "no_value".into(),
+                decided_at: "2026-09-15T02:00:00Z".into(),
+                actor_role: "Van".into(),
+                active: true,
+                inactive_reason: String::new(),
+                changed_by: String::new(),
+                changed_at: String::new(),
+            },
+        )?;
+    }
+    // 第三条人工停用：这个角度现在又想要了
+    let all = exclusion::all(&conn)?;
+    if let Some(e) = all.iter().find(|e| e.decision_ref == "43#coleman-store") {
+        exclusion::set_active(&conn, e.id, false, "门店活动现在也想报了", "主编")?;
+    }
+    // 这一轮挡下两条，其中一条主编捞回了。
+    //
+    // **被排除的条目照样在台账主表里**——真实流程里 `apply_exclusions` 会产出
+    // 一条 `excluded_judgement`（六维全「不明」、依据写「未送判断」）。
+    // 样例只造命中不造那一行的话，台账上那句「主表里那几行的六维是不明」
+    // 就指着两行不存在的东西。
+    if let Some(e) = all.iter().find(|e| e.decision_ref == "41#snowpeak-plain") {
+        for (key, text, fact, sub, restored) in [
+            (
+                "snowpeak-c1d2e3",
+                "秋季新色帐篷到店，配色三选一",
+                0.94,
+                0.06,
+                false,
+            ),
+            (
+                "snowpeak-f4a5b6",
+                "秋季新色帐篷 10 月 3 日发售，售价 68,000 日元",
+                0.89,
+                0.11,
+                true,
+            ),
+        ] {
+            let c = cand(key, "snow_peak", text, true);
+            ledger::upsert_candidate(&conn, &c)?;
+            ledger::attach_candidate(&conn, round.id, key, "csw-window", false)?;
+            media::put_prepared(
+                &conn,
+                key,
+                &c.media,
+                &[desc(&format!("{key}-b0"), 0), desc(&format!("{key}-b1"), 1)],
+            )?;
+            let why = format!(
+                "与 Van 否过的《某品牌秋季新色帐篷》是同一件事，且没有新料\
+                 （同一事实 {fact:.2}、新料 {sub:.2}）。原话：这种只换个配色的普通上新没什么好说的"
+            );
+            ledger::put_judgement(
+                &conn,
+                round.id,
+                &excluded(key, &why),
+                &[],
+                "规则排除（未经模型）",
+                "van-rubric/v1",
+            )?;
+            exclusion::record_hit(&conn, round.id, key, e.id, fact, sub)?;
+            if restored {
+                exclusion::restore(&conn, round.id, key, "主编", "这次带了发售日和价格，是新料")?;
+            }
+        }
+    }
+
     // 轮次收尾。不收的话总览页会一直显示「还在跑」，而且重启后的
     // `recover_interrupted` 会把它的步标成中断——样例数据不该看着像出了事
     rounds::finish_round(&conn, round.id, "done", "")?;
 
     println!(
-        "造好了：{} 条候选、{} 条判断、2 条改档、3 个勾选、1 件做完的活",
+        "造好了：{} 条候选、{} 条判断、2 条改档、3 个勾选、1 件做完的活、\
+         3 条排除规则（挡下 1、捞回 1，两条都在台账里）",
         rows.len(),
         rows.len()
     );
@@ -317,6 +425,49 @@ fn desc(hash: &str, ordinal: u16) -> MediaDescription {
         usable_as_figure: true,
         model: "gpt-6-astra".into(),
         prompt_version: "v1".into(),
+    }
+}
+
+/// 被规则挡下的那一行。**不是判断**——六维全「不明」，依据写「未送判断」。
+/// 与 `judge::exclude::excluded_judgement` 产出的形状一致。
+fn excluded(key: &str, why: &str) -> Judgement {
+    let basis = format!("未送判断：{why}");
+    Judgement {
+        candidate_key: key.into(),
+        tier: Tier::NotRecommend,
+        dims: Dim::ALL
+            .into_iter()
+            .map(|d| {
+                (
+                    d,
+                    DimJudgement {
+                        verdict: Verdict::Unclear,
+                        basis: basis.clone(),
+                    },
+                )
+            })
+            .collect(),
+        three_sentences: ThreeSentences {
+            what_changed: String::new(),
+            why_it_matters: String::new(),
+            how_different: String::new(),
+        },
+        unanswered: Unanswered::None,
+        comparison: Comparison {
+            verdict: ComparisonVerdict::SameFactNoGain,
+            against: "某品牌秋季新色帐篷".into(),
+            note: why.into(),
+        },
+        heat_note: String::new(),
+        look: String::new(),
+        image_seen: true,
+        gaps: vec![],
+        priority_hits: vec![],
+        lower_hits: vec![],
+        jev_disagreement: String::new(),
+        kb_refs: vec![],
+        memory_refs: vec![],
+        inputs_hash: format!("excluded:demo-{key}"),
     }
 }
 

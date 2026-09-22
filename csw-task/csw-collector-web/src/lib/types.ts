@@ -278,3 +278,45 @@ export interface KbStatus {
   待算向量: number
   embed_model: string
 }
+
+/**
+ * 一条硬性排除规则 = 一次 Van 的否决。
+ *
+ * `active` 为假有两种情形，页面上要分开说：没有原话（进表但不自动生效，等人确认）、
+ * 人工停用（`inactive_reason` 写着为什么）。
+ */
+export interface Exclusion {
+  id: number
+  decision_ref: string
+  item_key: string
+  title: string
+  brand: string
+  source_url: string
+  /** Van 的原话。**从本地库直读，没经过任何外部服务** */
+  quote: string
+  reason: string
+  reason_code: string
+  decided_at: string
+  actor_role: string
+  active: boolean
+  inactive_reason: string
+  changed_by: string
+  changed_at: string
+}
+
+/** 这一轮被规则挡下的那几条。 */
+export interface RoundExclusions {
+  挡下: number
+  捞回: number
+  明细: {
+    候选: string
+    规则: number
+    否过的条目: string
+    原话: string
+    同一事实: number
+    新料: number
+    已捞回: boolean
+    捞回人: string
+    捞回理由: string
+  }[]
+}

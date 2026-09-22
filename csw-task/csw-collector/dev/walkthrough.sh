@@ -11,6 +11,9 @@
 # 为什么要造样例数据：空库上走查等于没查——每页都是「还没有数据」，
 # 看不出表格对不对齐、四档配色分不分得开、长正文会不会撑破卡片。
 set -uo pipefail
+# 提醒：**变量后面紧跟中文标点时一定要写 ${VAR}**。裸 $VAR 后面跟「（」「，」这类
+# 全角字符时，bash 会把它们当成变量名的一部分，`set -u` 下直接崩在一句 echo 上。
+# 这坑在看门狗脚本里踩过一次，这里又踩了一次。
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
@@ -33,7 +36,7 @@ cleanup() {
   printf '\n\033[1;33m停掉后台进程…\033[0m\n'
   for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null; done
   wait 2>/dev/null
-  echo "都停了。临时数据还在 $DEMO，要清就 rm -rf $DEMO"
+  echo "都停了。临时数据还在 ${DEMO}，要清就 rm -rf ${DEMO}"
 }
 trap cleanup EXIT INT TERM
 
@@ -55,7 +58,7 @@ ADMINCTL="$REPO/csw-task/csw-task-svc/bin/adminctl"
 "$ADMINCTL" migrate up >/dev/null
 [ -n "$PASSWORD" ] || PASSWORD="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)"
 if "$ADMINCTL" user create "$USER" --role superadmin --password "$PASSWORD" >/dev/null 2>&1; then
-  echo "   建了后台账号 $USER（superadmin，看得到十页）"
+  echo "   建了后台账号 ${USER}（superadmin，看得到十页）"
 else
   # 已经建过了（这个临时库是留着的，重跑脚本不会重建）
   echo "   账号 $USER 已存在，口令用你上次那个"
@@ -64,7 +67,7 @@ fi
 # **Van 模式那一页要单独一个账号**：引擎里没有 van 这个角色，
 # 它是「配置里列出的 viewer 用户名」映射来的。不建这个就走查不到那一页。
 if "$ADMINCTL" user create "$VAN_USER" --role viewer --password "$PASSWORD" >/dev/null 2>&1; then
-  echo "   建了后台账号 $VAN_USER（viewer → 映射成 van，登录后直接进 Van 那一页）"
+  echo "   建了后台账号 ${VAN_USER}（viewer → 映射成 van，登录后直接进 Van 那一页）"
 fi
 CSW_JWT_SECRET=localdemo CSW_ADMIN_ADDR=127.0.0.1:18081 \
   "$REPO/csw-task/csw-task-svc/bin/adminsrv" > "$DEMO/adminsrv.log" 2>&1 &
