@@ -17,6 +17,7 @@
 pub mod config;
 pub mod jev;
 pub mod model;
+pub mod outbox;
 pub mod record;
 pub mod rounds;
 pub mod store;
