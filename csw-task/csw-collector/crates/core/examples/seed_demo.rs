@@ -74,18 +74,90 @@ fn main() -> Result<()> {
 
     // 十二条候选，四档铺开
     let rows: Vec<(&str, &str, Tier, bool, &str)> = vec![
-        ("and_wander", "and_wander", Tier::Recommend, true, "秋冬新色上架，配色与去年同款有明确区别"),
-        ("snowpeak", "snow_peak", Tier::Recommend, true, "折叠桌加了一个卡扣，收纳厚度少了两厘米"),
-        ("goldwin", "goldwin", Tier::Recommend, true, "与建筑事务所联名，门店陈列同步更新"),
-        ("nanga", "nanga_official", Tier::Recommend, true, "羽绒睡袋换了新的填充配比，标注温标下调"),
-        ("helinox", "helinox", Tier::Alternate, true, "椅子出了新色，结构没变"),
-        ("mystery", "mysteryranch", Tier::Alternate, true, "背包的肩带调节方式改了，细节图能看出来"),
-        ("karrimor", "karrimor", Tier::Alternate, true, "复刻了九十年代的配色"),
-        ("montbell", "montbell", Tier::NotRecommend, true, "只是门店活动预告，没有产品信息"),
-        ("patagonia", "patagonia", Tier::NotRecommend, true, "转发了一条旧内容，无新事实"),
-        ("chums", "chums", Tier::NotRecommend, true, "同一件事上周已经发过"),
-        ("norrona", "norrona", Tier::PendingCheck, true, "提到发售日期但没写清是哪个市场"),
-        ("yeti", "yeti", Tier::PendingCheck, false, "图全下失败，只有正文"),
+        (
+            "and_wander",
+            "and_wander",
+            Tier::Recommend,
+            true,
+            "秋冬新色上架，配色与去年同款有明确区别",
+        ),
+        (
+            "snowpeak",
+            "snow_peak",
+            Tier::Recommend,
+            true,
+            "折叠桌加了一个卡扣，收纳厚度少了两厘米",
+        ),
+        (
+            "goldwin",
+            "goldwin",
+            Tier::Recommend,
+            true,
+            "与建筑事务所联名，门店陈列同步更新",
+        ),
+        (
+            "nanga",
+            "nanga_official",
+            Tier::Recommend,
+            true,
+            "羽绒睡袋换了新的填充配比，标注温标下调",
+        ),
+        (
+            "helinox",
+            "helinox",
+            Tier::Alternate,
+            true,
+            "椅子出了新色，结构没变",
+        ),
+        (
+            "mystery",
+            "mysteryranch",
+            Tier::Alternate,
+            true,
+            "背包的肩带调节方式改了，细节图能看出来",
+        ),
+        (
+            "karrimor",
+            "karrimor",
+            Tier::Alternate,
+            true,
+            "复刻了九十年代的配色",
+        ),
+        (
+            "montbell",
+            "montbell",
+            Tier::NotRecommend,
+            true,
+            "只是门店活动预告，没有产品信息",
+        ),
+        (
+            "patagonia",
+            "patagonia",
+            Tier::NotRecommend,
+            true,
+            "转发了一条旧内容，无新事实",
+        ),
+        (
+            "chums",
+            "chums",
+            Tier::NotRecommend,
+            true,
+            "同一件事上周已经发过",
+        ),
+        (
+            "norrona",
+            "norrona",
+            Tier::PendingCheck,
+            true,
+            "提到发售日期但没写清是哪个市场",
+        ),
+        (
+            "yeti",
+            "yeti",
+            Tier::PendingCheck,
+            false,
+            "图全下失败，只有正文",
+        ),
     ];
 
     for (key, account, tier, image_seen, text) in &rows {
@@ -115,16 +187,41 @@ fn main() -> Result<()> {
     }
 
     // 主编改了两档：一条捞回、一条压下。指标页看的就是这两者的重合度
-    workbench::put_override(&conn, round.id, "chums", Tier::Alternate, "这条其实是新配色，上周那条是另一个系列", "editor")?;
-    workbench::put_override(&conn, round.id, "goldwin", Tier::Alternate, "联名信息还没官宣，先放备选", "editor")?;
+    workbench::put_override(
+        &conn,
+        round.id,
+        "chums",
+        Tier::Alternate,
+        "这条其实是新配色，上周那条是另一个系列",
+        "editor",
+    )?;
+    workbench::put_override(
+        &conn,
+        round.id,
+        "goldwin",
+        Tier::Alternate,
+        "联名信息还没官宣，先放备选",
+        "editor",
+    )?;
 
     // Van 的勾选：三种都来一个
     workbench::put_van_mark(&conn, round.id, "and_wander", "like", "", "editor")?;
     workbench::put_van_mark(&conn, round.id, "snowpeak", "doubt", "", "editor")?;
-    workbench::put_van_mark(&conn, round.id, "nanga", "note", "温标下调这点要在正文里说清楚", "editor")?;
+    workbench::put_van_mark(
+        &conn,
+        round.id,
+        "nanga",
+        "note",
+        "温标下调这点要在正文里说清楚",
+        "editor",
+    )?;
 
     // 首批深核
-    workbench::set_first_batch(&conn, round.id, &["and_wander".into(), "snowpeak".into(), "nanga".into()])?;
+    workbench::set_first_batch(
+        &conn,
+        round.id,
+        &["and_wander".into(), "snowpeak".into(), "nanga".into()],
+    )?;
 
     // 一件**已经做完**的活 + 几条留痕。
     //
@@ -132,11 +229,34 @@ fn main() -> Result<()> {
     // 后果是：服务一启动，主循环的 `run_queued` 就把它当真活取出来执行了——
     // 开了第二轮、去打了真的 csw 接口（假密钥被 401 拒绝）。
     // **样例数据不能留任何「待执行」的东西**：它会被真的执行。
-    let work = workbench::enqueue(&conn, "manual_round", None, &serde_json::json!({"days": 2}), "editor")?;
+    let work = workbench::enqueue(
+        &conn,
+        "manual_round",
+        None,
+        &serde_json::json!({"days": 2}),
+        "editor",
+    )?;
     workbench::take_next(&conn)?; // 标 running
-    workbench::finish_work(&conn, work, true, "第 1 轮：取到 12 条，判了 12（推荐 4 备选 3 待核 2）")?;
-    workbench::audit(&conn, "editor", "first_batch", &format!("r{}", round.id), &serde_json::json!({"要的": 3, "标上的": 3}))?;
-    workbench::audit(&conn, "van", "van_mark", &format!("r{}/and_wander", round.id), &serde_json::json!({"mark": "like"}))?;
+    workbench::finish_work(
+        &conn,
+        work,
+        true,
+        "第 1 轮：取到 12 条，判了 12（推荐 4 备选 3 待核 2）",
+    )?;
+    workbench::audit(
+        &conn,
+        "editor",
+        "first_batch",
+        &format!("r{}", round.id),
+        &serde_json::json!({"要的": 3, "标上的": 3}),
+    )?;
+    workbench::audit(
+        &conn,
+        "van",
+        "van_mark",
+        &format!("r{}/and_wander", round.id),
+        &serde_json::json!({"mark": "like"}),
+    )?;
 
     // 轮次收尾。不收的话总览页会一直显示「还在跑」，而且重启后的
     // `recover_interrupted` 会把它的步标成中断——样例数据不该看着像出了事
@@ -189,7 +309,11 @@ fn desc(hash: &str, ordinal: u16) -> MediaDescription {
         matches_text: "对应正文第一句说的新配色".into(),
         content: "深橄榄色的冲锋衣正面，左胸有织标，背景是白墙".into(),
         missing_from_text: "正文提到的内衬颜色，画面里看不到".into(),
-        kind: if ordinal == 0 { ImageKind::Product } else { ImageKind::Detail },
+        kind: if ordinal == 0 {
+            ImageKind::Product
+        } else {
+            ImageKind::Detail
+        },
         usable_as_figure: true,
         model: "gpt-6-astra".into(),
         prompt_version: "v1".into(),

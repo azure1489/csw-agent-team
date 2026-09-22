@@ -502,6 +502,31 @@ mod tests {
         }
     }
 
+    /// 取图函数返回 None 时，送进模型的图就是空的——**而这不该静默发生**。
+    ///
+    /// 线上第一次跑真数据时，`serve::round` 传的正是 `|_| None`：判断那一步
+    /// 只拿到图片的文字描述，从没看见过原图。76 条里 36 条报「未读到实图」，
+    /// 待核率 45%，而「没读到实图必落待核」是硬约束——规则没错，卡它们的原因是个 bug。
+    ///
+    /// 这条测试钉的就是这个契约：**给得出图就必须真送出去**。
+    #[test]
+    fn 取不到图时送出去的就是空的() {
+        let ds = vec![desc(0, true), desc(1, true), desc(2, false)];
+
+        // 取图函数总是 None —— 一张都送不出去
+        assert!(pick_images(&ds, |_| None).is_empty());
+
+        // 真能取到就必须真送出去，而且**保持原序**（「第 3 张图」那种依据要对得上）
+        let got = pick_images(&ds, |h| Some(format!("B64<{h}>")));
+        assert_eq!(got.len(), 3.min(IMAGES_PER_CANDIDATE));
+        assert_eq!(got[0], "B64<b0>");
+
+        // 只有一部分取得到时，取不到的那几张安静地少掉——
+        // 所以调用方拿到的条数少于描述数时，说明有图读不出来，不是「没有图」
+        let partial = pick_images(&ds, |h| (h == "b0").then(|| "B64<b0>".to_string()));
+        assert_eq!(partial, vec!["B64<b0>"]);
+    }
+
     fn desc(n: u16, usable: bool) -> MediaDescription {
         MediaDescription {
             blake3: format!("b{n}"),

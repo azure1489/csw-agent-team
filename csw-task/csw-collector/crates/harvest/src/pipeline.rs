@@ -284,7 +284,7 @@ pub async fn prepare(candidates: Vec<Candidate>, deps: &Deps<'_>) -> (Vec<Prepar
     let tasks = candidates.into_iter().map(|c| async move {
         let key = c.candidate_key.clone();
         let t = std::time::Instant::now();
-        let p = prepare_one(c, &by_url, &failed_urls, deps).await;
+        let p = prepare_one(c, by_url, failed_urls, deps).await;
         let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         tracing::info!(
             进度 = format!("{n}/{total}"),

@@ -351,7 +351,7 @@ async fn harvest_and_judge(
 
     // 三～五、合并、对照、逐条判断
     let step = rounds::begin_step(conn, round.id, StepCode::Judge, &round.instructions_hash)?;
-    let items = judge_items(conn, &prepared, svc).await?;
+    let items = judge_items(conn, &prepared, svc, cfg).await?;
     let cache = JudgeCache { conn };
     let outcome = csw_collector_judge::pipeline::run(
         &items,
@@ -609,6 +609,7 @@ async fn judge_items<'a>(
     conn: &Connection,
     prepared: &'a [Prepared],
     svc: &'a super::services::Services,
+    cfg: &Config,
 ) -> Result<Vec<csw_collector_judge::pipeline::Item<'a>>> {
     use csw_collector_kb::search::{Query, Retriever};
 
@@ -636,7 +637,21 @@ async fn judge_items<'a>(
         .unwrap_or_default();
 
         let materials = csw_collector_judge::materials::assemble(&retrieved, &[]);
-        let images_b64 = csw_collector_judge::verdict::pick_images(&p.descriptions, |_| None);
+        // **真的把图读出来送进判断。**
+        //
+        // 这里曾经传的是 `|_| None`，于是 `pick_images` 的 filter_map 把每一张都
+        // 滤掉了——判断那一步只拿到图片的**文字描述**，从没看见过原图。
+        // 线上第一次跑真数据时它就自己暴露了：76 条里 36 条的 gaps 第一句都是
+        // 「未读到实图」，待核率 45%。模型是如实回答的，图确实没给它。
+        //
+        // 「每张图都识别」这条口径因此只做了一半：识别成了文字，判断却看不见画面。
+        let blob_dir = cfg.blob_dir();
+        let images_b64 = csw_collector_judge::verdict::pick_images(&p.descriptions, |hash| {
+            let path = csw_collector_harvest::download::blob_path(&blob_dir, hash);
+            std::fs::read(&path)
+                .ok()
+                .map(|bytes| csw_collector_harvest::recognize::b64(&bytes))
+        });
         out.push(csw_collector_judge::pipeline::Item {
             candidate: &p.candidate,
             descriptions: &p.descriptions,
