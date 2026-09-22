@@ -54,6 +54,8 @@ reqwest = { version = "0.13", default-features = false, features = [
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 axum = "0.8"
 tower-http = { version = "0.7", features = ["trace", "fs", "compression-gzip"] }
+# 只给测试用：直接把请求喂进 Router，不真起监听
+tower = { version = "0.5", features = ["util"] }
 blake3 = "1"
 regex = "1"
 # 交付物打包。只开 deflate（纯 Rust），别把 zstd/bzip2 的 C 依赖拖进交叉编译

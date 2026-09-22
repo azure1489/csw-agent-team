@@ -8,6 +8,7 @@
 //! - `store`：本地 SQLite。**结构化数据全在这里，LanceDB 只放向量。**
 //! - `media`：采集产物（图与识别描述）落库。预取轮省下的四十分钟就存在这张表里。
 //! - `mirror`：引擎任务的本地镜像。预取轮没有派单，作业标准从这里取上一次的。
+//! - `workbench`：工作台写进来的东西（改档、首批、勾选、留痕、排队）。**人的动作不覆盖模型的原判。**
 //! - `record`：模型 / Jev / 向量 / 重排四个客户端的 record｜replay｜passthrough 开关。
 //! - `vector`：向量与重排服务的客户端。**放这一层是因为单卡要求全进程只有一条队列**——
 //!   `harvest` 要向量化、`kb` 要重排，各持一个客户端就等于又并发了（实测并发会让两边都慢 4 倍）。
@@ -28,6 +29,7 @@ pub mod rounds;
 pub mod store;
 pub mod types;
 pub mod vector;
+pub mod workbench;
 
 pub use config::{Config, Secrets};
 pub use record::{Mode as RecordMode, Recorder};

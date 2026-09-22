@@ -88,6 +88,27 @@ pub fn latest_work_standard(conn: &Connection, stage_code: &str) -> Result<Optio
     }))
 }
 
+/// 某一条任务当时下发的作业标准。
+///
+/// 重跑一轮要用**那一轮当时用的**标准，不是现在最新的：换一份标准重判，
+/// 等于把结论换了个依据，而台账上看不出来换过。
+pub fn work_standard_of(conn: &Connection, task_id: i64) -> Result<Option<String>> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT instructions_json FROM task_mirror WHERE task_id = ?1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(raw.and_then(|s| {
+        serde_json::from_str::<serde_json::Value>(&s)
+            .ok()?
+            .get("work_standard")?
+            .as_str()
+            .map(str::to_string)
+    }))
+}
+
 /// 这个阶段最近一次派单的任务号。给工作台与日志用。
 pub fn latest_task_id(conn: &Connection, stage_code: &str) -> Result<Option<i64>> {
     Ok(conn
@@ -142,6 +163,19 @@ mod tests {
             latest_work_standard(&c, "material").unwrap().as_deref(),
             Some("配图标准")
         );
+    }
+
+    #[test]
+    fn 重跑要用那一轮当时的标准() {
+        let c = crate::store::open_in_memory().unwrap();
+        put(&c, &snap(7, "intake", "那天的标准")).unwrap();
+        put(&c, &snap(19, "intake", "今天的标准")).unwrap();
+        // 换一份标准重判，等于把结论换了个依据，而台账上看不出来换过
+        assert_eq!(
+            work_standard_of(&c, 7).unwrap().as_deref(),
+            Some("那天的标准")
+        );
+        assert_eq!(work_standard_of(&c, 999).unwrap(), None);
     }
 
     #[test]

@@ -77,6 +77,7 @@ pub fn harvest_hash(window: (&str, &str), plan_version: i64, recognize_version: 
 }
 
 /// 第 2 步：取候选 → 下载 → 识别 → 向量化。四段连着做完才算这步完成。
+#[allow(clippy::too_many_arguments)]
 pub async fn harvest(
     conn: &Connection,
     round: &Round,
@@ -86,6 +87,7 @@ pub async fn harvest(
     model: &csw_collector_core::model::ModelClient,
     vector: &csw_collector_core::vector::VectorClient,
     van_links: &[String],
+    caches: Caches,
 ) -> Result<(Vec<Prepared>, Vec<SweepCount>)> {
     let hash = harvest_hash(
         (&round.window_start, &round.window_end),
@@ -135,7 +137,9 @@ pub async fn harvest(
             image_only: true,
             concurrency: cfg.model.concurrency,
             // 预取轮识别过的直接拿来用。识别是这一步里最大的一块开销。
-            cache: Some(&cache),
+            cache: caches
+                .descriptions
+                .then_some(&cache as &dyn pipeline::Descriptions),
         },
     )
     .await;
@@ -281,6 +285,41 @@ pub fn downloader(cfg: &Config) -> Result<Downloader> {
     })
 }
 
+/// 这一轮允许用哪些缓存。**重跑一步就是把对应的那个关掉**——
+/// 复用做在条这一级，没有「把某一步作废」这回事，关掉缓存才是真正的重算。
+#[derive(Debug, Clone, Copy)]
+pub struct Caches {
+    /// 用已有的图片描述（不重走识别）
+    pub descriptions: bool,
+    /// 用指纹一致的旧结论（不重问模型）
+    pub judgements: bool,
+}
+
+impl Default for Caches {
+    fn default() -> Self {
+        Self {
+            descriptions: true,
+            judgements: true,
+        }
+    }
+}
+
+impl Caches {
+    /// 从第几步起真的重算。`harvest` 连识别一起重来，`judge` 只重判。
+    pub fn from_step(step: &str) -> Self {
+        match step {
+            "harvest" => Self {
+                descriptions: false,
+                judgements: false,
+            },
+            _ => Self {
+                descriptions: true,
+                judgements: false,
+            },
+        }
+    }
+}
+
 /// 第 2–5 步：采集 → 合并 → 对照 → 逐条判断，结论落本地库。
 ///
 /// **预取轮与正式轮走的是同一段代码。** 两边算出来的 `inputs_hash` 必须
@@ -292,6 +331,7 @@ async fn harvest_and_judge(
     cfg: &Config,
     svc: &super::services::Services,
     standard: &str,
+    caches: Caches,
 ) -> Result<Judged> {
     // 二、采集媒体信息
     let (prepared, sweeps) = harvest(
@@ -303,6 +343,7 @@ async fn harvest_and_judge(
         &svc.model,
         &svc.vector,
         &[],
+        caches,
     )
     .await?;
 
@@ -319,7 +360,9 @@ async fn harvest_and_judge(
             batch_concurrency: cfg.model.concurrency,
             on_batch: None,
             // 预取轮判过、且输入一点没变的，直接拿
-            cached: Some(&cache),
+            cached: caches
+                .judgements
+                .then_some(&cache as &dyn csw_collector_judge::pipeline::Cached),
         },
     )
     .await;
@@ -393,7 +436,7 @@ pub async fn run_intake(
     svc: &super::services::Services,
 ) -> Result<(RoundCounts, Finished)> {
     let standard = work_standard(detail);
-    let j = harvest_and_judge(conn, round, cfg, svc, &standard).await?;
+    let j = harvest_and_judge(conn, round, cfg, svc, &standard, Caches::default()).await?;
     if j.reused_recognition > 0 || j.reused_judgements > 0 {
         tracing::info!(
             复用识别 = j.reused_recognition,
@@ -463,18 +506,53 @@ pub async fn run_prefetch(
     cfg: &Config,
     svc: &super::services::Services,
 ) -> Result<RoundCounts> {
-    let standard = mirror::latest_work_standard(conn, "intake")?.unwrap_or_default();
-    if standard.is_empty() {
-        tracing::warn!("还没接过 01 的单，这一轮用空作业标准跑——描述与向量能省，判断那一段省不了");
+    run_local(conn, round, cfg, svc, Caches::default(), "预取轮").await
+}
+
+/// 手动开的一轮，或重跑。与预取轮一样**只跑第 2–5 步、不写引擎**。
+///
+/// 重跑时 `caches` 把对应的缓存关掉——那才是真正的重算。**登记与提交不动**：
+/// 引擎那边已经收到的台账要改，只能走补件，那是人的决定，不是重跑的副作用。
+pub async fn run_manual(
+    conn: &Connection,
+    round: &Round,
+    cfg: &Config,
+    svc: &super::services::Services,
+    caches: Caches,
+) -> Result<RoundCounts> {
+    run_local(conn, round, cfg, svc, caches, "手动轮").await
+}
+
+async fn run_local(
+    conn: &Connection,
+    round: &Round,
+    cfg: &Config,
+    svc: &super::services::Services,
+    caches: Caches,
+    label: &str,
+) -> Result<RoundCounts> {
+    // 作业标准从镜像取：手动轮与预取轮都没有派单，而标准要进指纹。
+    // **重跑一轮带任务号的，要用那一轮当时那份**——换一份标准重判等于换了依据，
+    // 而台账上看不出来换过。
+    let standard = match round.task_id {
+        Some(t) => mirror::work_standard_of(conn, t)?,
+        None => None,
     }
-    let j = harvest_and_judge(conn, round, cfg, svc, &standard).await?;
+    .or(mirror::latest_work_standard(conn, "intake")?)
+    .unwrap_or_default();
+    if standard.is_empty() {
+        tracing::warn!(
+            "{label}：还没接过 01 的单，用空作业标准跑——描述与向量能省，判断那一段省不了"
+        );
+    }
+    let j = harvest_and_judge(conn, round, cfg, svc, &standard, caches).await?;
     let counts = count_round(conn, round.id, &j.prepared)?;
     tracing::info!(
         候选 = counts.candidates,
         判了 = counts.judged,
         复用识别 = j.reused_recognition,
         复用结论 = j.reused_judgements,
-        "预取轮跑完，产物只在本地"
+        "{label}跑完，产物只在本地"
     );
     Ok(counts)
 }

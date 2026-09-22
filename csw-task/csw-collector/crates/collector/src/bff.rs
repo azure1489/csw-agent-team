@@ -262,6 +262,11 @@ impl ApiError {
     fn unauth_plain(msg: &str) -> Self {
         Self(StatusCode::UNAUTHORIZED, msg.to_string())
     }
+    /// 拆给工作台的错误类型用。登录层的错（401 / 403）要原样传到页面上——
+    /// 「会话已失效」与「CSRF 校验不通过」是两件要分开处理的事。
+    pub fn parts(self) -> (StatusCode, String) {
+        (self.0, self.1)
+    }
 }
 
 impl IntoResponse for ApiError {

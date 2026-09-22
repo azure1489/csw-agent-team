@@ -16,6 +16,9 @@
 - 错误统一 `{"error": "一句人话"}` + 恰当的 HTTP 码。引擎的原文错误只进日志，不透给浏览器。
 - 角色：`superadmin` > `operator` > `viewer`，另有 `van`（配置里列出的 viewer 映射而来，
   引擎侧仍是 viewer）。下表的「角色」是**最低**要求。
+  写接口按两档判：`superadmin` / `operator` 能改档、指定首批、开轮、重跑、代录勾选；
+  `van` 只能勾选；`viewer` 一个写都不行。**`van` 改不了档**——
+  进不进评选由主编在引擎上代录并附原话，不是工作台能替她做的。
 
 ## 登录
 
@@ -32,10 +35,18 @@
 | GET | `/api/rounds` | viewer | 列表。`?kind=&status=&since=&limit=` |
 | GET | `/api/rounds/:id` | viewer | 详情：窗口、方案版本、准则版本、知识库快照、十步状态与计数 |
 | GET | `/api/rounds/:id/steps` | viewer | 每步的全部 attempt，含 `input_hash` 与失败清单 |
-| POST | `/api/rounds` | operator | 手动开启一轮。`{stage_code, window_start, window_end, plan_version?}`。**不关联引擎任务**，只写本地 |
-| POST | `/api/rounds/:id/steps/:step/rerun` | operator | 重跑一步：新建 attempt，并把下游置 `stale` |
-| POST | `/api/rounds/:id/cancel` | operator | 停止本轮（打断深核、停心跳） |
+| POST | `/api/rounds` | operator | 手动开启一轮。`{days?}` 或 `{window_start, window_end}`（RFC3339，解析不了当场 400）。**不关联引擎任务、不写引擎**，只落本地。**只排队不当场跑**，返回 `{work_id, queued_ahead}` |
+| POST | `/api/rounds/:id/steps/:step/rerun` | operator | 重跑一步。`:step` 只认 `harvest`（连识别一起重来）与 `judge`（只重判）。同样只排队，返回 `{work_id, queued_ahead}` |
+| POST | `/api/rounds/:id/cancel` | operator | 停止本轮（打断深核、停心跳）。**未实现** |
 | GET | `/api/rounds/:id/outbox` | operator | 写引擎的队列。`conflict` 的要人核实，**不要换幂等键重试** |
+| GET | `/api/work` | viewer | 排队的活排到哪了、做成没有、没成是为什么。`?limit=` |
+
+**写接口只排队，干活的是常驻循环。** 一轮四十分钟，HTTP 请求等不了；
+排队的那一行就是页面上「排到哪了 / 为什么没成」的唯一来源。
+
+**重跑不碰登记与提交。** 引擎那边已经收到的台账要改，只能走补件——
+那是人的决定，不该是重跑的副作用。重跑一轮带任务号的，用**那一轮当时**
+下发的作业标准，不是现在最新的：换一份标准重判等于换了依据。
 
 ## 判断台账
 
@@ -43,9 +54,13 @@
 |---|---|---|---|
 | GET | `/api/rounds/:id/judgements` | viewer | 台账。`?tier=&has_gap=&brand=&q=&cursor=&limit=`。按档分组，六维带依据，含 Jev 核对标记 |
 | GET | `/api/rounds/:id/judgements/:key` | viewer | 单条：候选原文、每张图与其描述、五类对照材料、深核结论、模型调用记录 |
-| POST | `/api/rounds/:id/judgements/:key/override` | operator | 改档。`{to_tier, reason}`。**另存不覆盖**，台账上两者都看得见 |
-| POST | `/api/rounds/:id/judgements/:key/recover` | operator | 把被 03 决定硬性排除的条目捞回来 |
-| POST | `/api/rounds/:id/first-batch` | operator | 指定首批要深核的条目 |
+| POST | `/api/rounds/:id/judgements/:key/override` | operator | 改档。`{to_tier, reason}`，理由必填。**另存不覆盖**，台账上两者都看得见。返回 `{id, effective_tier}` |
+| POST | `/api/rounds/:id/judgements/:key/recover` | operator | 把被 03 决定硬性排除的条目捞回来。**未实现**：硬性排除本身还没做，现在「捞回」就是改档（`override` 到 `alternate`），做出来之后再加这个端点 |
+| POST | `/api/rounds/:id/first-batch` | operator | 指定首批要深核的条目。`{keys: []}`，传空数组＝清空指定、退回自动挑法。不在这一轮里的键忽略，返回 `{marked}` |
+
+台账每行同时给**原判**（`tier`）与**现在生效的那一档**（`effective_tier`）
+以及改档的理由与人。筛选与排序按生效档——主编把一条捞回成备选之后，
+台账还把它排在不推荐那一组里的话，那次捞回等于没发生。
 
 **接口里没有「分数」字段，也不会有。** 结论只有四档 + 六维成立与否 + 依据。
 Jev 初评的概率只在服务端决定「先判哪条」，不出现在任何响应里。
@@ -83,7 +98,8 @@ Jev 初评的概率只在服务端决定「先判哪条」，不出现在任何�
 | 方法 | 路径 | 角色 | 说明 |
 |---|---|---|---|
 | GET | `/api/van/today` | van | 手机优先的当期视图：推荐与备选，每条三句话 + 代表图 |
-| POST | `/api/van/marks` | van | 勾选。`{candidate_key, mark: like\|doubt\|note, note?}` |
+| POST | `/api/van/marks` | van | 勾选。`{candidate_key, mark: like\|doubt\|note, note?, round_id?, remove?}`。不给 `round_id` 就落到当期那一轮（最近开的**派单轮**，不含手动轮与预取轮）。`note` 这一种必须有内容 |
+| GET | `/api/rounds/:id/van-marks` | viewer | 这一轮的全部勾选 |
 
 **勾选只写本地，不回写引擎。** 进不进评选由主编在引擎上代录，并附 Van 原话。
 
@@ -104,7 +120,7 @@ Jev 初评的概率只在服务端决定「先判哪条」，不出现在任何�
 | POST | `/api/collectors/custom` | superadmin | 登记自定义采集器。**默认总开关关闭**，固定目录、不经 shell、清空环境变量 |
 | GET | `/api/replay/fixtures` | operator | 夹具清单 |
 | POST | `/api/replay` | operator | 用夹具回放一轮，不出网 |
-| GET | `/api/audit` | operator | 改档、改方案、手动开轮、登记采集器的留痕 |
+| GET | `/api/audit` | operator | 改档、改方案、手动开轮、登记采集器的留痕。`?limit=` |
 
 ## 运维
 

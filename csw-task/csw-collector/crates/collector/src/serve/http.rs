@@ -49,7 +49,10 @@ pub fn api_router(state: Arc<AppState>) -> Router {
         .route("/api/rounds/{id}/steps", get(round_steps))
         .route("/api/rounds/{id}/judgements", get(judgements))
         .route("/api/rounds/{id}/outbox", get(outbox))
+        .route("/api/rounds/{id}/van-marks", get(van_marks))
         .route("/api/pending-check", get(pending_check))
+        .route("/api/work", get(work_queue))
+        .route("/api/audit", get(audit_log))
         .route("/api/settings", get(settings))
         .with_state(state)
 }
@@ -328,7 +331,15 @@ struct JudgementsQuery {
 #[derive(Serialize)]
 struct JudgementRow {
     candidate_key: String,
+    /// 模型的原判。**人工改过档也不动它**
     tier: String,
+    /// 现在生效的那一档：改过就是改到的，没改过就是原判
+    effective_tier: String,
+    /// 改档的理由与人；没改过是空的
+    override_reason: String,
+    override_actor: String,
+    /// 主编指定进了深核首批
+    first_batch: bool,
     dims: serde_json::Value,
     three_sentences: serde_json::Value,
     comparison: serde_json::Value,
@@ -346,16 +357,27 @@ async fn judgements(
     Query(q): Query<JudgementsQuery>,
 ) -> Result<Json<Vec<JudgementRow>>, ApiError> {
     let conn = st.conn.lock().await;
+    // 生效档 = 最后一次改档改到的那一档，没改过就是原判。
+    // **筛选与排序都按生效档**：主编把一条捞回成备选之后，台账还把它排在
+    // 不推荐那一组里的话，那次捞回等于没发生。
     let mut sql = String::from(
         "SELECT j.candidate_key, j.tier, j.dims_json, j.three_json, j.comparison_json,
                 j.heat_note, j.image_seen, j.gaps_json, j.check_flags_json,
-                COALESCE(c.account,''), COALESCE(c.url,'')
-         FROM judgements j LEFT JOIN candidates c ON c.candidate_key = j.candidate_key
+                COALESCE(c.account,''), COALESCE(c.url,''),
+                COALESCE(o.to_tier, j.tier), COALESCE(o.reason,''), COALESCE(o.actor,''),
+                COALESCE(rc.first_batch, 0)
+         FROM judgements j
+         LEFT JOIN candidates c ON c.candidate_key = j.candidate_key
+         LEFT JOIN round_candidates rc
+                ON rc.round_id = j.round_id AND rc.candidate_key = j.candidate_key
+         LEFT JOIN judgement_overrides o
+                ON o.id = (SELECT MAX(id) FROM judgement_overrides
+                           WHERE round_id = j.round_id AND candidate_key = j.candidate_key)
          WHERE j.round_id = ?",
     );
     let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(id)];
     if let Some(t) = &q.tier {
-        sql.push_str(" AND j.tier = ?");
+        sql.push_str(" AND COALESCE(o.to_tier, j.tier) = ?");
         args.push(Box::new(t.clone()));
     }
     if q.has_gap {
@@ -363,8 +385,9 @@ async fn judgements(
     }
     // 排序由服务端定：**没有分数可排**，按档再按键
     sql.push_str(
-        " ORDER BY CASE j.tier WHEN 'recommend' THEN 0 WHEN 'alternate' THEN 1
-                               WHEN 'pending_check' THEN 2 ELSE 3 END, j.candidate_key LIMIT ?",
+        " ORDER BY CASE COALESCE(o.to_tier, j.tier)
+                     WHEN 'recommend' THEN 0 WHEN 'alternate' THEN 1
+                     WHEN 'pending_check' THEN 2 ELSE 3 END, j.candidate_key LIMIT ?",
     );
     args.push(Box::new(q.limit.clamp(1, 1000) as i64));
 
@@ -377,6 +400,10 @@ async fn judgements(
                 Ok(JudgementRow {
                     candidate_key: r.get(0)?,
                     tier: r.get(1)?,
+                    effective_tier: r.get(11)?,
+                    override_reason: r.get(12)?,
+                    override_actor: r.get(13)?,
+                    first_batch: r.get::<_, i64>(14)? == 1,
                     dims: j(r.get(2)?),
                     three_sentences: j(r.get(3)?),
                     comparison: j(r.get(4)?),
@@ -475,17 +502,69 @@ async fn settings(State(st): State<Arc<AppState>>) -> Result<Json<Settings>, Api
     }))
 }
 
+async fn van_marks(
+    State(st): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Result<Json<Vec<csw_collector_core::workbench::VanMark>>, ApiError> {
+    let conn = st.conn.lock().await;
+    Ok(Json(
+        csw_collector_core::workbench::van_marks(&conn, id).map_err(ApiError::any)?,
+    ))
+}
+
+/// 排队的活排到哪了、做成没有、没成是为什么。
+async fn work_queue(
+    State(st): State<Arc<AppState>>,
+    Query(q): Query<LimitQuery>,
+) -> Result<Json<Vec<csw_collector_core::workbench::WorkItem>>, ApiError> {
+    let conn = st.conn.lock().await;
+    Ok(Json(
+        csw_collector_core::workbench::recent_work(&conn, q.limit.clamp(1, 200))
+            .map_err(ApiError::any)?,
+    ))
+}
+
+/// 谁在什么时候改了什么。**台账被改过却追不到人，这份台账就不能拿去跟 Van 对质。**
+async fn audit_log(
+    State(st): State<Arc<AppState>>,
+    Query(q): Query<LimitQuery>,
+) -> Result<Json<Vec<csw_collector_core::workbench::AuditRow>>, ApiError> {
+    let conn = st.conn.lock().await;
+    Ok(Json(
+        csw_collector_core::workbench::recent_audit(&conn, q.limit.clamp(1, 500))
+            .map_err(ApiError::any)?,
+    ))
+}
+
+#[derive(Deserialize)]
+struct LimitQuery {
+    #[serde(default = "default_limit")]
+    limit: usize,
+}
+
 /// 给浏览器的是一句人话；原文只进日志。
-pub struct ApiError(StatusCode, String);
+pub struct ApiError(pub StatusCode, pub String);
 
 impl ApiError {
-    fn db(e: rusqlite::Error) -> Self {
+    pub fn db(e: rusqlite::Error) -> Self {
         tracing::warn!(error = %e, "查本地库失败");
         Self(StatusCode::INTERNAL_SERVER_ERROR, "查不到，稍后再试".into())
     }
-    fn any(e: anyhow::Error) -> Self {
+    pub fn any(e: anyhow::Error) -> Self {
         tracing::warn!(error = %format!("{e:#}"), "接口出错");
         Self(StatusCode::INTERNAL_SERVER_ERROR, "查不到，稍后再试".into())
+    }
+    /// 参数不合规矩：**原话给浏览器**。
+    ///
+    /// 与上面两个不同——「改档必须写理由」「没有这一档」这种话，
+    /// 页面照着显示就是对的；藏起来只会让人不知道该改什么。
+    pub fn bad_request(e: anyhow::Error) -> Self {
+        Self(StatusCode::BAD_REQUEST, format!("{e:#}"))
+    }
+    /// 登录层给的错原样传下去（401 / 403）
+    pub fn from_bff(e: crate::bff::ApiError) -> Self {
+        let (code, msg) = e.parts();
+        Self(code, msg)
     }
 }
 

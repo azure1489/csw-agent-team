@@ -42,3 +42,5 @@ utoipa.workspace = true
 
 [dev-dependencies]
 tempdir.workspace = true
+tower.workspace = true
+http-body-util = "0.1"

@@ -29,22 +29,34 @@ use csw_collector_engineapi::client::EngineClient;
 use csw_collector_engineapi::types::{IntakeCheckResult, SubmitInput};
 use csw_collector_harvest::pipeline::{Prepared, SweepCount};
 
-/// 深核首批挑哪些：**推荐档优先，其次待核**。
+/// 深核首批挑哪些：**主编指定的优先，然后推荐档，再然后待核**。
 ///
 /// 待核也进，是因为深核正是为了把它的缺口补上；
 /// 不推荐的不进——已经判过不做了，再核一遍没有意义。
-pub fn first_batch(judgements: &[Judgement], n: usize) -> Vec<&Judgement> {
+///
+/// 主编指定的那几条**不看档也不受 `n` 之外的条件限制**：他看完台账说要核这条，
+/// 就核这条。只有总数仍受 `n` 约束——深核一条要十分钟，首批要在 20 分钟内交出去。
+pub fn first_batch<'a>(
+    judgements: &'a [Judgement],
+    pinned: &[String],
+    n: usize,
+) -> Vec<&'a Judgement> {
     let mut picked: Vec<&Judgement> = judgements
         .iter()
-        .filter(|j| j.tier == Tier::Recommend)
+        .filter(|j| pinned.contains(&j.candidate_key))
         .collect();
-    if picked.len() < n {
-        picked.extend(
-            judgements
-                .iter()
-                .filter(|j| j.tier == Tier::PendingCheck)
-                .take(n - picked.len()),
-        );
+    let taken = |picked: &Vec<&Judgement>, j: &Judgement| {
+        picked.iter().any(|p| p.candidate_key == j.candidate_key)
+    };
+    for tier in [Tier::Recommend, Tier::PendingCheck] {
+        for j in judgements.iter().filter(|j| j.tier == tier) {
+            if picked.len() >= n {
+                break;
+            }
+            if !taken(&picked, j) {
+                picked.push(j);
+            }
+        }
     }
     picked.truncate(n);
     picked
@@ -72,7 +84,19 @@ pub async fn deepcheck(
             return vec![];
         }
     };
-    let picked = first_batch(judgements, cfg.codex.first_batch.max(1));
+    // 主编在工作台上指定过就按他指定的来；没指定就按档自动挑
+    let pinned = csw_collector_core::workbench::first_batch(conn, round.id).unwrap_or_else(|e| {
+        tracing::warn!(原因 = %format!("{e:#}"), "读指定首批失败，按自动挑法来");
+        Vec::new()
+    });
+    let picked = first_batch(judgements, &pinned, cfg.codex.first_batch.max(1));
+    if !pinned.is_empty() {
+        tracing::info!(
+            指定 = pinned.len(),
+            实际 = picked.len(),
+            "首批按主编指定的挑"
+        );
+    }
     if picked.is_empty() {
         let _ = rounds::end_step(
             conn,
@@ -512,6 +536,39 @@ mod tests {
     }
 
     #[test]
+    fn 主编指定的首批排在自动挑法前面() {
+        let js = [
+            j("n1", Tier::NotRecommend),
+            j("r1", Tier::Recommend),
+            j("r2", Tier::Recommend),
+        ];
+        // 他看完台账说要核不推荐那条，就核那条——不看档
+        let picked: Vec<&str> = first_batch(&js, &["n1".into()], 2)
+            .iter()
+            .map(|x| x.candidate_key.as_str())
+            .collect();
+        assert_eq!(picked, ["n1", "r1"]);
+
+        // 指定的已经在推荐里，不该出现两遍
+        let picked: Vec<&str> = first_batch(&js, &["r2".into()], 3)
+            .iter()
+            .map(|x| x.candidate_key.as_str())
+            .collect();
+        assert_eq!(picked, ["r2", "r1"]);
+
+        // 指定得比上限还多时，上限说了算：深核一条十分钟，首批要 20 分钟内交出去
+        let picked = first_batch(&js, &["n1".into(), "r1".into(), "r2".into()], 2);
+        assert_eq!(picked.len(), 2);
+
+        // 指定了一条这一轮没有的，忽略它，别把自动挑法也带崩
+        let picked: Vec<&str> = first_batch(&js, &["翻篇了".into()], 1)
+            .iter()
+            .map(|x| x.candidate_key.as_str())
+            .collect();
+        assert_eq!(picked, ["r1"]);
+    }
+
+    #[test]
     fn 首批先推荐再待核不要不推荐的() {
         let js = [
             j("n1", Tier::NotRecommend),
@@ -520,7 +577,7 @@ mod tests {
             j("r2", Tier::Recommend),
             j("a1", Tier::Alternate),
         ];
-        let picked: Vec<&str> = first_batch(&js, 3)
+        let picked: Vec<&str> = first_batch(&js, &[], 3)
             .iter()
             .map(|x| x.candidate_key.as_str())
             .collect();
@@ -534,9 +591,9 @@ mod tests {
             j("r2", Tier::Recommend),
             j("p1", Tier::PendingCheck),
         ];
-        assert_eq!(first_batch(&js2, 2).len(), 2);
+        assert_eq!(first_batch(&js2, &[], 2).len(), 2);
         assert!(
-            first_batch(&js2, 2)
+            first_batch(&js2, &[], 2)
                 .iter()
                 .all(|x| x.tier == Tier::Recommend)
         );

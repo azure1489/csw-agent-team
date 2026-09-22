@@ -12,10 +12,13 @@ use rusqlite::Connection;
 
 /// 迁移按顺序 apply，版本记在 `PRAGMA user_version`。
 /// 加新迁移就在这里追一行，**不要改已发布的那几条**。
-const MIGRATIONS: &[(u32, &str)] = &[(1, include_str!("../migrations/0001_init.sql"))];
+const MIGRATIONS: &[(u32, &str)] = &[
+    (1, include_str!("../migrations/0001_init.sql")),
+    (2, include_str!("../migrations/0002_workbench.sql")),
+];
 
 /// 当前 schema 版本。与 `MIGRATIONS` 最后一项对齐。
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 pub fn open(path: &Path) -> Result<Connection> {
     if let Some(dir) = path.parent() {
@@ -107,6 +110,7 @@ mod tests {
             "kb_cursors",
             "memory_rules",
             "memory_cases",
+            "work_queue",
         ] {
             assert!(t.iter().any(|x| x == want), "缺表 {want}；实有 {t:?}");
         }

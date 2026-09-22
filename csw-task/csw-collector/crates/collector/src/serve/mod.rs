@@ -21,6 +21,7 @@ pub mod round;
 pub mod schedule;
 pub mod services;
 pub mod tasks;
+pub mod write;
 
 use std::time::Duration;
 
@@ -49,7 +50,14 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
     // 探网络，任何一样卡住都会让「上次崩在哪」一直没人标记。
     let n = rounds::recover_interrupted(&conn)?;
     let running = rounds::running_rounds(&conn)?;
-    tracing::info!(中断的步 = n, 还在跑的轮 = running.len(), "启动自检");
+    // 手动的活不自动重排：它多半有副作用，悄悄再做一遍比不做更糟
+    let dropped = csw_collector_core::workbench::recover_running(&conn)?;
+    tracing::info!(
+        中断的步 = n,
+        还在跑的轮 = running.len(),
+        没做完的手动活 = dropped,
+        "启动自检"
+    );
 
     // 客户端一次建好整个进程复用：闸门藏在里面，每处各建一个等于把闸门复制几份
     let svc = services::Services::build(cfg, secrets, &conn).await?;
@@ -83,7 +91,8 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
     });
     let app = axum::Router::new()
         .merge(http::ops_router(app_state.clone()))
-        .merge(http::api_router(app_state))
+        .merge(http::api_router(app_state.clone()))
+        .merge(write::write_router(app_state, auth.clone()))
         .merge(crate::bff::router(auth));
     let listener = tokio::net::TcpListener::bind(&cfg.listen)
         .await
@@ -114,9 +123,126 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
         for name in schedule::due(&jobs, prev_min, now_min) {
             run_job(name, cfg, &conn, &svc, now_min).await;
         }
+        // 工作台排进来的活。**一次只做一件**：这个循环是单线程的，
+        // 取两件也只能一件一件做，而多出来的那件会在 running 上挂着假装在跑。
+        if let Err(e) = run_queued(cfg, &conn, &svc).await {
+            tracing::warn!(原因 = %format!("{e:#}"), "排队的活没做成");
+        }
         prev_min = now_min;
         tokio::time::sleep(every).await;
     }
+}
+
+/// 做一件工作台排进来的活（手动开轮、重跑）。没有就立刻返回。
+///
+/// **失败写进 `work_queue.note`**，不只写日志：那一行就是页面上「为什么没成」
+/// 的唯一来源，写日志等于只有能 ssh 上去的人才看得见。
+async fn run_queued(
+    cfg: &Config,
+    conn: &rusqlite::Connection,
+    svc: &services::Services,
+) -> Result<()> {
+    use csw_collector_core::workbench;
+    let Some(item) = workbench::take_next(conn)? else {
+        return Ok(());
+    };
+    tracing::info!(活 = item.id, 类型 = %item.kind, 排队人 = %item.actor, "开始做排队的活");
+    let payload: serde_json::Value =
+        serde_json::from_str(&item.payload_json).unwrap_or(serde_json::json!({}));
+    let r = match item.kind.as_str() {
+        "manual_round" => manual_round(cfg, conn, svc, &payload).await,
+        "rerun" => rerun_round(cfg, conn, svc, item.round_id, &payload).await,
+        other => Err(anyhow::anyhow!("不认识的活：{other}")),
+    };
+    match r {
+        Ok(note) => {
+            workbench::finish_work(conn, item.id, true, &note)?;
+            tracing::info!(活 = item.id, "{note}");
+        }
+        Err(e) => {
+            let why = format!("{e:#}");
+            workbench::finish_work(conn, item.id, false, &why)?;
+            tracing::warn!(活 = item.id, 原因 = %why, "这件活没做成");
+        }
+    }
+    Ok(())
+}
+
+/// 手动开一轮：只跑第 2–5 步，**不写引擎**。它是拿来看的，不是拿来交的。
+async fn manual_round(
+    cfg: &Config,
+    conn: &rusqlite::Connection,
+    svc: &services::Services,
+    payload: &serde_json::Value,
+) -> Result<String> {
+    let (start, end) = match (
+        payload.get("window_start").and_then(|v| v.as_str()),
+        payload.get("window_end").and_then(|v| v.as_str()),
+    ) {
+        (Some(a), Some(b)) => (a.to_string(), b.to_string()),
+        _ => {
+            let days = payload.get("days").and_then(|v| v.as_i64()).unwrap_or(1);
+            let now = jiff::Timestamp::now();
+            (
+                (now - jiff::Span::new().days(days)).to_string(),
+                now.to_string(),
+            )
+        }
+    };
+    let (r, _) = rounds::open_round(
+        conn,
+        &rounds::NewRound {
+            kind: csw_collector_core::types::RoundKind::Manual,
+            trigger: csw_collector_core::types::RoundTrigger::Manual,
+            run_id: None,
+            task_id: None,
+            stage_code: Some("intake".into()),
+            target_version: 0,
+            parent_round_id: None,
+            window_start: start,
+            window_end: end,
+            plan_version: 1,
+            rubric_version: csw_collector_judge::rubric::RUBRIC_VERSION.into(),
+            kb_snapshot: cfg.vector.embed_model.clone(),
+            instructions_hash: String::new(),
+        },
+    )?;
+    match round::run_manual(conn, &r, cfg, svc, round::Caches::default()).await {
+        Ok(c) => {
+            rounds::finish_round(conn, r.id, "done", "")?;
+            Ok(format!(
+                "第 {} 轮：取到 {} 条，判了 {}（推荐 {} 备选 {} 待核 {}）",
+                r.id, c.candidates, c.judged, c.recommend, c.alternate, c.pending_check
+            ))
+        }
+        Err(e) => {
+            rounds::finish_round(conn, r.id, "failed", &format!("{e:#}"))?;
+            Err(e)
+        }
+    }
+}
+
+/// 重跑一轮的第 2–5 步。**登记与提交不动**——引擎那边已经收到的台账要改，
+/// 只能走补件，那是人的决定，不该是重跑的副作用。
+async fn rerun_round(
+    cfg: &Config,
+    conn: &rusqlite::Connection,
+    svc: &services::Services,
+    round_id: Option<i64>,
+    payload: &serde_json::Value,
+) -> Result<String> {
+    let id = round_id.context("重跑要说重跑哪一轮")?;
+    let r = rounds::get(conn, id)?.context("没有这一轮")?;
+    let from = payload
+        .get("from_step")
+        .and_then(|v| v.as_str())
+        .unwrap_or("judge");
+    let caches = round::Caches::from_step(from);
+    let c = round::run_manual(conn, &r, cfg, svc, caches).await?;
+    Ok(format!(
+        "从 {from} 重跑第 {id} 轮：判了 {}（推荐 {} 备选 {} 待核 {}）。         登记与提交没动——要更新引擎请走补件",
+        c.judged, c.recommend, c.alternate, c.pending_check
+    ))
 }
 
 /// 跑一件定时的活。**一件出错不影响别的**，也不影响轮询。
