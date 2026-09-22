@@ -4,19 +4,18 @@ import { Shell } from '@/components/shell/Shell'
 import { useAuth } from '@/lib/auth'
 import type { Role } from '@/lib/auth'
 import { atLeast } from '@/lib/auth'
+import { Coverage } from '@/pages/Coverage'
+import { Item } from '@/pages/Item'
+import { Kb } from '@/pages/Kb'
+import { Ledger } from '@/pages/Ledger'
 import { Login } from '@/pages/Login'
-import {
-  Coverage,
-  Kb,
-  Ledger,
-  Memory,
-  Metrics,
-  Overview,
-  Pending,
-  Rubric,
-  Settings,
-  Van,
-} from '@/pages/placeholders'
+import { Memory } from '@/pages/Memory'
+import { Metrics } from '@/pages/Metrics'
+import { Overview } from '@/pages/Overview'
+import { Pending } from '@/pages/Pending'
+import { Rubric } from '@/pages/Rubric'
+import { Settings } from '@/pages/Settings'
+import { Van } from '@/pages/Van'
 
 /**
  * 守卫。
@@ -53,6 +52,8 @@ export const router = createBrowserRouter([
       { index: true, element: <Home /> },
       { path: 'van', element: <Van /> },
       { path: 'ledger', element: <Ledger /> },
+      // 事件详情。路径里带轮次：同一条在不同轮次里是不同的判断
+      { path: 'ledger/:round/:key', element: <Item /> },
       { path: 'coverage', element: <Coverage /> },
       { path: 'pending', element: <Pending /> },
       { path: 'kb', element: <Kb /> },
