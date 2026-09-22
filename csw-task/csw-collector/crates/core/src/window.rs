@@ -51,6 +51,19 @@ impl Window {
 ///
 /// `last_end` 是上一轮的终点。**它是水位，不是「昨天这个点」**：
 /// 上一轮晚开了两小时，这一轮就该多覆盖两小时，不然中间那段没人看过。
+/// `n` 天，换算成小时。
+///
+/// **`Timestamp` 上不能加减日历单位**——jiff 的规定是那要先挂上时区，
+/// 直接 `Span::new().days(n)` 会 **panic**（不是返回 Err）。
+/// 我们内部一律 UTC，一天就是 24 小时。
+///
+/// 这个陷阱踩过两次：`harvest::collector` 那处躲过了，
+/// `serve::manual_round` 那处没躲过——工作台上点一次「开始一轮」就能把服务打挂。
+/// 所以把它放在这里，让两边引同一个。
+pub fn days(n: i64) -> Span {
+    Span::new().hours(n * 24)
+}
+
 pub fn for_round(now: Timestamp, last_end: Option<Timestamp>) -> Window {
     let floor = now - Span::new().hours(MAX_LOOKBACK_HOURS);
     let (start, truncated) = match last_end {
@@ -91,6 +104,23 @@ fn is_monday_in_beijing(t: Timestamp) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// `Timestamp` 上加减日历单位会 **panic**，不是返回 Err。
+    ///
+    /// 这条钉的是一个真 bug：`serve::manual_round` 曾经直接写
+    /// `now - Span::new().days(days)`，而那正是工作台「开始一轮」走的路——
+    /// 在页面上点一下就能把常驻服务打挂（panic 不是 Err，`run_queued` 的
+    /// `match r` 接不住它）。
+    #[test]
+    fn 按天回溯不能用日历单位() {
+        let now: Timestamp = "2026-09-22T05:30:00Z".parse().unwrap();
+        // 我们的换算：一天 = 24 小时
+        let a = now - days(3);
+        assert_eq!(a.to_string(), "2026-09-19T05:30:00Z");
+        // 而直接用日历单位会 panic——钉住这个事实，免得有人"顺手改回去"
+        let boom = std::panic::catch_unwind(|| now - Span::new().days(3));
+        assert!(boom.is_err(), "jiff 不再 panic 了？那就该回来简化 days()");
+    }
+
     use super::*;
 
     fn ts(s: &str) -> Timestamp {

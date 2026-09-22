@@ -140,6 +140,7 @@ pub async fn harvest(
             cache: caches
                 .descriptions
                 .then_some(&cache as &dyn pipeline::Descriptions),
+            image_vectors: cfg.features.image_vectors,
         },
     )
     .await;

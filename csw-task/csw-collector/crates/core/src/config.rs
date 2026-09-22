@@ -182,6 +182,15 @@ pub struct Features {
     pub mcp_for_hermes: bool,
     /// 深核白名单里加 fetch_page / xhs_search
     pub deepcheck_web_tools: bool,
+    /// **逐张**算图片向量。默认关。
+    ///
+    /// 一期 1871 张图对 358 条候选，逐图算占掉向量化 GPU 时间的八成五，
+    /// 而它现在没有任何读取路径：合并用融合向量（跨账号转载时平台会重新编码，
+    /// 图哈希对不上，所以合并本来就只能走融合向量 + Jev），知识库检索用的也是
+    /// 融合向量，`kb::vectors` 那张 `images` 表全仓没人写也没人查。
+    ///
+    /// 做以图搜图那天打开它，那一段代码不用再改。
+    pub image_vectors: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -344,6 +353,7 @@ impl Default for Config {
             features: Features {
                 xhs_collector: false,
                 web_collector: false,
+                image_vectors: false,
                 custom_collectors: false,
                 mcp_for_hermes: false,
                 deepcheck_web_tools: false,

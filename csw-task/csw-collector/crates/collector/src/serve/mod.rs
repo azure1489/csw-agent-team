@@ -192,8 +192,60 @@ async fn run_queued(
     Ok(())
 }
 
+/// 命令行跑一轮，跑完就退出。
+///
+/// 与工作台那个「开始一轮」的区别只有一个：**这里当场跑完**，
+/// 而 HTTP 那个只往队列里写一行（一轮四十分钟，请求等不了）。
+/// 不起 HTTP、不轮询派单、不写引擎——它是拿来看的，不是拿来交的。
+pub async fn run_once(cfg: &Config, secrets: &Secrets, days: i64) -> Result<()> {
+    // **先确认常驻服务没在跑。** 两个进程同时对着一个库干活会互相拆台：
+    // 下面那句 `recover_interrupted` 会把 serve 正在跑的步一把标成 interrupted，
+    // 而 SQLite 是单写者，两边还会互相等锁。探 healthz 是最省事的判据——
+    // 它正是那个进程在监听的地址。
+    //
+    // 它挡不住的：两边用了**不同的配置文件**却指着同一个 data_dir。
+    // 真要挡那个得上文件锁；现实里两边都读 `/opt/csw-collector/collector.toml`，
+    // 这一道够用。
+    if let Ok(resp) = reqwest::Client::new()
+        .get(format!("http://{}/healthz", local_addr(&cfg.listen)))
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await
+    {
+        anyhow::bail!(
+            "常驻服务正在跑（{} 上的 /healthz 回了 {}）。\n\
+             两个进程同时对着一个库干活会互相拆台：这边一启动就会把那边正在跑的步\n\
+             标成中断。要手动开一轮，用工作台的「开始一轮」——它排进队列，\n\
+             由常驻循环去做。",
+            cfg.listen,
+            resp.status()
+        );
+    }
+    let conn = csw_collector_core::store::open(&cfg.db_path())
+        .with_context(|| format!("打开本地库 {}", cfg.db_path().display()))?;
+    // 常驻服务可能刚崩在半路上。不先收拾，续跑逻辑会看到一堆挂着 running 的步
+    rounds::recover_interrupted(&conn)?;
+    if let Some(why) = disk_blocked(cfg) {
+        anyhow::bail!("{why}");
+    }
+    let svc = services::Services::build(cfg, secrets, &conn).await?;
+    let note = manual_round(cfg, &conn, &svc, &serde_json::json!({ "days": days })).await?;
+    println!("{note}");
+    Ok(())
+}
+
+/// 把监听地址换成本机能连上的那个。
+///
+/// `0.0.0.0` 与 `[::]` 是「监听所有网卡」，不是能连的目标地址。
+fn local_addr(listen: &str) -> String {
+    match listen.rsplit_once(':') {
+        Some(("0.0.0.0" | "" | "[::]" | "::", port)) => format!("127.0.0.1:{port}"),
+        _ => listen.to_string(),
+    }
+}
+
 /// 手动开一轮：只跑第 2–5 步，**不写引擎**。它是拿来看的，不是拿来交的。
-async fn manual_round(
+pub(crate) async fn manual_round(
     cfg: &Config,
     conn: &rusqlite::Connection,
     svc: &services::Services,
@@ -207,8 +259,10 @@ async fn manual_round(
         _ => {
             let days = payload.get("days").and_then(|v| v.as_i64()).unwrap_or(1);
             let now = jiff::Timestamp::now();
+            // 必须走 window::days：`Timestamp - Span::new().days(n)` 会 panic，
+            // 而这条路是工作台「开始一轮」走的——在这里 panic 等于点一下就把服务打挂
             (
-                (now - jiff::Span::new().days(days)).to_string(),
+                (now - csw_collector_core::window::days(days)).to_string(),
                 now.to_string(),
             )
         }
@@ -697,4 +751,21 @@ fn outbox_conflicts(conn: &rusqlite::Connection) -> Result<Vec<i64>> {
         .query_map([], |r| r.get(0))?
         .filter_map(Result::ok)
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 监听所有网卡时探的是回环() {
+        // 生产配置就是 0.0.0.0（nginx 在容器里，经 172.17.0.1 访问宿主）。
+        // 不换算的话，CLI 会去连 http://0.0.0.0:8090，探不到就以为服务没跑，
+        // 于是两个进程一起对着同一个库干活。
+        assert_eq!(local_addr("0.0.0.0:8090"), "127.0.0.1:8090");
+        assert_eq!(local_addr("[::]:8090"), "127.0.0.1:8090");
+        // 已经是具体地址的原样不动
+        assert_eq!(local_addr("127.0.0.1:18090"), "127.0.0.1:18090");
+        assert_eq!(local_addr("192.168.1.9:8090"), "192.168.1.9:8090");
+    }
 }

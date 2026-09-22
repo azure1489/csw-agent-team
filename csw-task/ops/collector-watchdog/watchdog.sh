@@ -114,17 +114,47 @@ rollback() {
   fi
   local mark="$STATE_DIR/$(date +%F).rolled_back"
   [ -f "$mark" ] && { say "今天已经回退过，不再重复"; return 0; }
+  # **标记先落**：万一下面做到一半这个进程被杀，下次跑不会再回退一遍。
+  # 那种情况下 csw-collector 已经停了，第三节的 svc_down 会把它喊出来。
   : > "$mark"
-  alert_once rollback_done "**已自动回退**：$why
+  say "开始回退：$why"
 
-做了两件事：停 csw-collector、起 hermes-gateway-collector。
-引擎那边不用动——02 / 03 读不到台账会自己退回 intake-trace。
-要切回来：systemctl --user disable --now hermes-gateway-collector && systemctl start csw-collector"
   systemctl stop csw-collector
   # Hermes 的网关是 root 的**用户级**单元
   systemctl --user enable --now hermes-gateway-collector.service 2>/dev/null ||
-    XDG_RUNTIME_DIR=/run/user/0 systemctl --user enable --now hermes-gateway-collector.service
-  say "回退执行完毕：csw-collector=$(systemctl is-active csw-collector)"
+    XDG_RUNTIME_DIR=/run/user/0 systemctl --user enable --now hermes-gateway-collector.service 2>/dev/null
+
+  # 做完再报，而且报的是**真实状态**。
+  # 先报「已回退」再去执行，万一 stop 或 start 失败，那条告警就是假的。
+  # `systemctl is-active` 对 inactive / failed **是有输出的非零退出**，
+  # 所以不能写 `$(cmd || echo unknown)`——那样两个都会进变量，
+  # 状态串里就夹着换行和 unknown，而这正是要人一眼看清状态的地方。
+  # 取输出，空了才兜底。
+  local gone hermes
+  gone=$(systemctl is-active csw-collector 2>/dev/null)
+  gone=${gone:-unknown}
+  hermes=$(systemctl --user is-active hermes-gateway-collector.service 2>/dev/null)
+  [ -z "$hermes" ] &&
+    hermes=$(XDG_RUNTIME_DIR=/run/user/0 systemctl --user is-active hermes-gateway-collector.service 2>/dev/null)
+  hermes=${hermes:-unknown}
+  say "回退执行完毕：csw-collector=${gone} hermes-gateway-collector=${hermes}"
+
+  if [ "$hermes" = "active" ]; then
+    alert_once rollback_done "**已自动回退**：$why
+
+csw-collector 已停（${gone}），Hermes 收集员已起。
+引擎那边不用动——02 / 03 读不到台账会自己退回 intake-trace。
+要切回来：systemctl --user disable --now hermes-gateway-collector && systemctl start csw-collector"
+  else
+    # **两边都没有收集员**了，这是回退路径上最该喊的一种，
+    # 用独立的键，不跟成功那条挤同一个去重标记
+    alert_once rollback_half "⚠️ **回退只做了一半，现在两边都没有收集员** — $why
+
+csw-collector=${gone}，但 hermes-gateway-collector=${hermes}（起不来）。
+这一期没人做 01，要人立刻处理：
+  systemctl --user --machine=root@ status hermes-gateway-collector.service
+  # 起不来就先把工作台开回去：systemctl start csw-collector"
+  fi
 }
 
 # ── 盘点 ──────────────────────────────────────────────────────────

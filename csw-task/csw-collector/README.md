@@ -35,6 +35,16 @@ make build-linux  # 交叉编译生产二进制（x86_64 glibc 2.34）
 交叉编译需要 `cargo-zigbuild` + `zig`，构建 LanceDB 需要 `protoc`。工具链由
 `rust-toolchain.toml` 钉死——换版本会换 codegen，交付前必须与验证时一致。
 
+## 跑一轮看看（不写引擎）
+
+```bash
+csw-collector run --manual --days 1     # 当场跑完就退出，结果只写本地库
+```
+
+**常驻服务在跑的时候它会拒绝**：两个进程同时对着一个库干活会互相拆台
+（CLI 一启动就会把 serve 正在跑的步标成中断，而 SQLite 是单写者）。
+那时候用工作台的「开始一轮」——它排进队列，由常驻循环去做。
+
 ## 配置
 
 优先级 **env > 配置文件 > 内置默认**（与 `csw-task-svc` 同口径）。

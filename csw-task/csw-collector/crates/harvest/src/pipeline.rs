@@ -154,6 +154,16 @@ pub struct Deps<'a> {
     pub concurrency: usize,
     /// 已经识别过的描述从哪儿来。传 None 就是每张图都重新识别一遍。
     pub cache: Option<&'a dyn Descriptions>,
+    /// 要不要**逐张**算图片向量。默认不要。
+    ///
+    /// 一期 1871 张图对 358 条候选，逐图算占掉向量化 GPU 时间的八成五，
+    /// 而它现在**没有任何读取路径**：合并用的是融合向量（跨账号转载时平台会
+    /// 重新编码，图哈希对不上，所以合并本来就只能走融合向量 + Jev），
+    /// 知识库检索用的也是融合向量，`kb::vectors` 那张 `images` 表全仓没人写也没人查。
+    ///
+    /// 开关留着不是为了以后「可能有用」——是为了做以图搜图那天，
+    /// 打开它就有数据，不用再改这一段。
+    pub image_vectors: bool,
 }
 
 /// 已经识别过的图从哪儿取。预取轮把描述写进库，正式轮靠它把识别整段跳过。
@@ -365,7 +375,8 @@ async fn prepare_one(
 
         // 向量化：图文融合一条 + 每张图一条
         let t_emb = std::time::Instant::now();
-        let (fused, image_vectors) = embed_for(&c, &refs, &descriptions, deps.vector, true).await;
+        let (fused, image_vectors) =
+            embed_for(&c, &refs, &descriptions, deps.vector, deps.image_vectors).await;
         Prepared {
             candidate: c,
             descriptions,
@@ -924,6 +935,7 @@ mod tests {
                 image_only: true,
                 concurrency: 2,
                 cache: Some(&cache),
+                image_vectors: false,
             },
         )
         .await;
@@ -941,6 +953,125 @@ mod tests {
         assert_eq!(*seen.lock().unwrap(), vec![1]);
         assert!(p.fused.is_some());
         assert!(p.image_vectors.is_empty());
+    }
+
+    /// 没命中缓存、开关关着时，**也只算融合那一条**。
+    ///
+    /// 逐图向量占向量化 GPU 时间的八成五，而它现在没有任何读取路径
+    /// （合并与检索用的都是融合向量）。开关开着才逐图算，
+    /// 这条把「默认不算」钉死——它是一期省下十几分钟 GPU 的地方。
+    #[tokio::test]
+    async fn 没命中缓存时逐图向量也要看开关() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let imgs = MockServer::start().await;
+        for (p, body) in [("/a.jpg", b"IMG-A".to_vec()), ("/b.jpg", b"IMG-B".to_vec())] {
+            Mock::given(method("GET"))
+                .and(path(p))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+                .mount(&imgs)
+                .await;
+        }
+        // 识别照常走（没有缓存），回一份两条描述的结果
+        let model_srv = MockServer::start().await;
+        Mock::given(method("POST"))
+            // Responses 接口的形状：output[].content[].output_text
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "output": [{"content": [{"type": "output_text", "text":
+                    serde_json::to_string(&serde_json::json!({
+                        "images": [
+                            {"index": 1, "kind": "product", "content": "图一",
+                             "matches_text": "对得上", "missing_from_text": "",
+                             "usable_as_figure": true},
+                            {"index": 2, "kind": "detail", "content": "图二",
+                             "matches_text": "对得上", "missing_from_text": "",
+                             "usable_as_figure": true}
+                        ]
+                    })).unwrap()
+                }]}],
+                "usage": {"input_tokens": 10, "output_tokens": 20}
+            })))
+            .mount(&model_srv)
+            .await;
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let vec_srv = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(CountEcho(seen.clone()))
+            .mount(&vec_srv)
+            .await;
+
+        let dir = std::env::temp_dir().join(format!("csw-iv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let downloader = crate::download::Downloader::new(crate::download::DownloadConfig {
+            dir,
+            width: 768,
+            concurrency: 2,
+            timeout: std::time::Duration::from_secs(5),
+            max_attempts: 1,
+            max_bytes: crate::download::DEFAULT_MAX_BYTES,
+        })
+        .unwrap();
+        let model = ModelClient::new(csw_collector_core::model::ModelConfig {
+            base_url: model_srv.uri(),
+            api_key: "k".into(),
+            model: "m".into(),
+            fallback_model: String::new(),
+            concurrency: 1,
+            timeout: std::time::Duration::from_secs(5),
+            max_attempts: 1,
+        })
+        .unwrap();
+        let vector = VectorClient::new(csw_collector_core::vector::VectorConfig {
+            base_url: vec_srv.uri(),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let mut c = cand("p1", Some("2026-09-18T01:00:00Z"), &[]);
+        c.media = vec![
+            MediaRef {
+                source_hash: "s0".into(),
+                kind: MediaKind::Photo,
+                url: format!("{}/a.jpg", imgs.uri()),
+                blake3: None,
+                ordinal: 0,
+            },
+            MediaRef {
+                source_hash: "s1".into(),
+                kind: MediaKind::Photo,
+                url: format!("{}/b.jpg", imgs.uri()),
+                blake3: None,
+                ordinal: 1,
+            },
+        ];
+
+        let deps = |image_vectors| Deps {
+            downloader: &downloader,
+            model: &model,
+            vector: &vector,
+            image_only: true,
+            concurrency: 2,
+            cache: None,
+            image_vectors,
+        };
+
+        // 数的是**总条数**不是批次数：客户端会按 batch_weight 自己分批，
+        // 钉批次数等于把它的分批策略也钉死了，那不是这条测试要管的事
+        let total = || -> usize { seen.lock().unwrap().iter().sum() };
+
+        // 关着：只送融合那一条
+        let (prepared, _) = prepare(vec![c.clone()], &deps(false)).await;
+        assert_eq!(prepared[0].descriptions.len(), 2, "识别照常走");
+        assert!(prepared[0].image_vectors.is_empty());
+        assert_eq!(total(), 1, "只该送融合那一条");
+
+        // 开着：融合 + 两张图 = 3 条
+        seen.lock().unwrap().clear();
+        let (prepared, _) = prepare(vec![c], &deps(true)).await;
+        assert_eq!(prepared[0].image_vectors.len(), 2);
+        assert_eq!(total(), 3, "融合一条 + 每图一条");
     }
 
     #[test]

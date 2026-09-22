@@ -177,10 +177,9 @@ fn date_of(t: Timestamp) -> String {
     t.strftime("%Y-%m-%d").to_string()
 }
 
-/// `Timestamp` 上不能加减日历单位（jiff 的规定：那要先挂上时区）。
-/// 我们内部一律 UTC，一天就是 24 小时，换成小时即可。
+/// 见 [`csw_collector_core::window::days`]——`Timestamp` 上加减日历单位会 panic。
 fn days(n: i64) -> jiff::Span {
-    jiff::Span::new().hours(n * 24)
+    csw_collector_core::window::days(n)
 }
 
 /// 解析结果里的日期，供测试与日志用

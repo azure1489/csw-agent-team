@@ -167,6 +167,8 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
             concurrency: cfg.model.concurrency,
             // M1 量的是从零跑一遍要多久，用上缓存量出来的数就不是底数了
             cache: None,
+            // M1 要量的是**真实一轮**的耗时，所以这里也跟着配置走
+            image_vectors: cfg.features.image_vectors,
         },
     )
     .await;

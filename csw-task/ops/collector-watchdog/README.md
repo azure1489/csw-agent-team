@@ -56,8 +56,37 @@ ssh -p 9318 root@8.138.23.218 '/opt/csw-collector/bin/watchdog.sh'
 systemctl disable --now csw-collector-watchdog.timer
 ```
 
+## 回退只做了一半的时候
+
+`stop csw-collector` 成了、`start hermes-gateway-collector` 没成——
+那一刻**两边都没有收集员**，这一期没人做 01。这是回退路径上最该喊的一种，
+所以它有独立的告警键（`rollback_half`），不跟成功那条挤同一个去重标记。
+
+报告在**执行之后**发，内容是 `systemctl is-active` 的真实回答：
+先报「已回退」再去执行，万一 stop 或 start 失败，那条告警就是假的。
+
+回退标记（`<日期>.rolled_back`）在执行**之前**落——万一做到一半进程被杀，
+下次跑不会再回退一遍；那种情况下 csw-collector 已经停了，
+盘点第三节的 `svc_down` 会把它喊出来。
+
+## 本地验过什么
+
+拿一个假 `/metrics` 端点 + 伪造北京时钟（`WATCHDOG_FAKE_HM`）+ 假 `systemctl`
+跑过十一种情形：磁盘 93 / 89、outbox conflict、05:36 没接到单、
+05:41 识别 60% / 98%、05:51 首批没交、06:06 十步没走完、06:21 判断 80%、
+06:21 一切按点该安静、连跑三次的告警去重，以及自动回退开着时
+Hermes 起得来 / 起不来两条路径。
+
+抓到过两个 bash 的真 bug，都只在**要报警的那条路径上**才发作：
+
+1. 告警文案里裸 `$MEDIA` 后面紧跟中文全角括号，bash 把那几个字节当成变量名，
+   `set -u` 让脚本当场死掉。
+2. `systemctl is-active` 对 inactive / failed 是**有输出的非零退出**，
+   于是 `$(cmd || echo unknown)` 把两个都拼进了状态串，
+   告警里的状态夹着换行和 unknown——而那正是要人一眼看清状态的地方。
+
 ## 没验证过的
 
-〔**整份都没在真机上跑过**〕——包括告警能不能发出去、`systemctl --user` 在
-timer 的环境里能不能操作 root 的用户级单元（脚本里备了 `XDG_RUNTIME_DIR=/run/user/0`
+〔**真机上一次都没跑过**〕——告警能不能发出去、`systemctl --user` 在 timer
+的环境里能不能操作 root 的用户级单元（脚本备了 `XDG_RUNTIME_DIR=/run/user/0`
 这条退路，但没验证）。装上之后**先手动跑一次**，再等它自己跑。

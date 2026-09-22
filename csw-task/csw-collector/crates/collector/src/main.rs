@@ -42,11 +42,15 @@ struct Cli {
 enum Command {
     /// 常驻服务：任务驱动 + 工作台 + 定时
     Serve,
-    /// 手动开启一轮
+    /// 手动跑一轮，跑完就退出（只写本地，不写引擎）
     Run {
-        /// 不关联引擎任务，只写本地
+        /// 必须显式给。CLI 只开手动轮——派单轮由 `serve` 接单开，
+        /// 那条路上还有 ack 心跳、登记与提交，不是命令行能代劳的。
         #[arg(long)]
         manual: bool,
+        /// 往回取几天
+        #[arg(long, default_value_t = 1)]
+        days: i64,
     },
     /// 回放一轮（不出网）
     Replay {
@@ -182,8 +186,36 @@ async fn main() -> anyhow::Result<()> {
             anyhow::ensure!(missing.is_empty(), "缺环境变量：{}", missing.join("、"));
             serve::run(&cfg, &secrets).await
         }
-        Command::Run { .. } => todo!("阶段 6：手动开启一轮"),
-        Command::Replay { .. } => todo!("阶段 1.3：录制回放层"),
+        Command::Run { manual, days } => {
+            anyhow::ensure!(
+                manual,
+                "CLI 只能开手动轮，请加 --manual。\n\
+                 派单轮由 `serve` 接单开——那条路上还有 ack 心跳、登记与提交，\n\
+                 命令行代劳的话引擎那边会看到一个没人接的单。"
+            );
+            let cfg =
+                csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
+            let secrets = csw_collector_core::Secrets::from_env();
+            let missing = secrets.missing(cfg.jev.enabled);
+            anyhow::ensure!(missing.is_empty(), "缺环境变量：{}", missing.join("、"));
+            serve::run_once(&cfg, &secrets, days).await
+        }
+        Command::Replay { fixtures } => {
+            // 回放层（`core::record`）挂在模型、向量、Jev 三个客户端上，**csw 不在其中**。
+            // 所以现在没法做到这个子命令承诺的「不出网」：取候选那一步照样要打 csw。
+            // 与其给一个名不副实的命令，不如说清差什么。
+            anyhow::bail!(
+                "回放还差一截，先别用这个子命令。\n\
+                 \n\
+                 录制回放层挂在模型、向量、Jev 上（`CSW_COLLECTOR_RECORD_MODE=record|replay`\n\
+                 + `CSW_COLLECTOR_FIXTURES=<目录>`，对 `run --manual` 与 `serve` 都生效），\n\
+                 但 csw 客户端没挂——取候选那一步照样出网，「不出网」做不到。\n\
+                 \n\
+                 要真回放，还缺两样之一：给 csw 客户端也挂上回放层，\n\
+                 或者让回放从本地已有轮次的候选出发、跳过取数那一步。\n\
+                 夹具目录 {fixtures} 里的东西是好的，缺的是这一段。"
+            )
+        }
         Command::Kb(sub) => {
             let cfg =
                 csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
@@ -215,7 +247,12 @@ async fn main() -> anyhow::Result<()> {
                 csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
             mcp::run(&cfg).await
         }
-        Command::P5 => todo!("阶段 8：历史反馈回收"),
+        Command::P5 => anyhow::bail!(
+            "历史反馈回收（P5）还没实现，它排在阶段 8。\n\
+             \n\
+             注意它读的是九个 Hermes 会话库——**每次运行都要单独取得同意**，\n\
+             不是实现完就能随手跑的东西。"
+        ),
         Command::M1 {
             from,
             to,
