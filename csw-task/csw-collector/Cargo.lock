@@ -1066,6 +1066,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "csw-collector-core",
+ "futures",
  "serde",
  "serde_json",
  "tokio",

@@ -228,6 +228,20 @@ impl Codex {
     ///
     /// 超时就发 `turn/interrupt` 再返回——留着一个跑飞的回合会一直烧 token。
     pub async fn run_turn(&self, thread_id: &str, input: &[Input]) -> Result<TurnOutcome> {
+        self.run_turn_with_schema(thread_id, input, None).await
+    }
+
+    /// 带结构化输出的回合。
+    ///
+    /// **同一线程上一个回合没结束时，起一个带不同 `outputSchema` 的新回合会被拒**
+    /// （`ActiveTurnOutputSchemaMismatch`）。所以深核是一条线程一个回合，
+    /// 不复用线程。
+    pub async fn run_turn_with_schema(
+        &self,
+        thread_id: &str,
+        input: &[Input],
+        schema: Option<&Value>,
+    ) -> Result<TurnOutcome> {
         let tx = self.sender();
         let (done_tx, done_rx) = oneshot::channel();
         self.turn_waiters
@@ -239,16 +253,15 @@ impl Codex {
             .await
             .insert(thread_id.to_string(), vec![]);
 
+        let mut params = json!({
+            "threadId": thread_id,
+            "input": input.iter().map(Input::to_json).collect::<Vec<_>>(),
+        });
+        if let Some(s) = schema {
+            params["outputSchema"] = s.clone();
+        }
         let started = self
-            .request_via(
-                &tx,
-                "turn/start",
-                json!({
-                    "threadId": thread_id,
-                    "input": input.iter().map(Input::to_json).collect::<Vec<_>>(),
-                }),
-                Duration::from_secs(60),
-            )
+            .request_via(&tx, "turn/start", params, Duration::from_secs(60))
             .await
             .context("turn/start")?;
         // 响应里就有 turnId；打断要用它
