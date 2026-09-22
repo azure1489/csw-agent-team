@@ -165,6 +165,15 @@ impl BrandIndex {
         out
     }
 
+    /// 在册品牌与全部别名的品牌键。对账「在不在册」用。
+    pub fn keys(&self) -> std::collections::HashSet<String> {
+        self.aliases
+            .iter()
+            .flat_map(|a| [brand_key(&a.brand), brand_key(&a.alias)])
+            .filter(|k| !k.is_empty())
+            .collect()
+    }
+
     /// 能进 jieba 用户词典的那些别名（不含空白）。
     pub fn dict_words(&self) -> Vec<&str> {
         self.aliases

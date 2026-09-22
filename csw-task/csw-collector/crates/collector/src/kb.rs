@@ -128,6 +128,44 @@ pub async fn sync(cfg: &Config, secrets: &Secrets, o: SyncOpts) -> Result<()> {
     Ok(())
 }
 
+/// 待补录清单打到终端。只读。
+pub fn backfill(cfg: &Config, limit: usize) -> Result<()> {
+    let conn = csw_collector_core::store::open(&cfg.db_path())?;
+    let index = BrandIndex::load(&conn)?;
+    let rows = csw_collector_kb::coverage::backfill_list(&conn, &index)?;
+    println!(
+        "在册别名 {} 条；待补录品牌 {} 个\n",
+        index.len(),
+        rows.len()
+    );
+    println!(
+        "{:<28}{:>6}{:>6}  {:<10}  依据",
+        "品牌", "选中", "出现", "最近"
+    );
+    let n = if limit == 0 { rows.len() } else { limit };
+    for r in rows.iter().take(n) {
+        let ev = r
+            .evidence
+            .iter()
+            .take(2)
+            .map(|e| e.title.chars().take(24).collect::<String>())
+            .collect::<Vec<_>>()
+            .join(" / ");
+        println!(
+            "{:<28}{:>6}{:>6}  {:<10}  {}",
+            r.brand,
+            r.adopted,
+            r.mentions,
+            r.latest
+                .as_deref()
+                .map(|d| &d[..10.min(d.len())])
+                .unwrap_or("——"),
+            ev
+        );
+    }
+    Ok(())
+}
+
 pub fn import(cfg: &Config, path: &str) -> Result<()> {
     let conn = csw_collector_core::store::open(&cfg.db_path())?;
     let index = BrandIndex::load(&conn)?;

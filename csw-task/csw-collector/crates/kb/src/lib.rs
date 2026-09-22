@@ -13,6 +13,7 @@
 //! 「上一轮台账」刻意不进参考库——否则系统自己的判断会被当成 Van 的口味证据。
 
 pub mod brands;
+pub mod coverage;
 pub mod docs;
 pub mod fts;
 pub mod search;

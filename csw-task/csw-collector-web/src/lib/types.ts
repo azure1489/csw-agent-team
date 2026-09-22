@@ -167,6 +167,29 @@ export interface Coverage {
   harvest: Record<string, number>
 }
 
+/** 待补录清单：出现在选题里、却不在 csw 在册名单里的品牌 */
+export interface BackfillEvidence {
+  kind: string
+  title: string
+  date: string | null
+  url: string
+  /** 决定的结论码；已发条目与范例是空 */
+  conclusion: string
+}
+
+export interface BackfillRow {
+  brand: string
+  adopted: number
+  mentions: number
+  latest: string | null
+  evidence: BackfillEvidence[]
+}
+
+export interface Backfill {
+  registered_brands: number
+  rows: BackfillRow[]
+}
+
 export interface VanItem {
   candidate_key: string
   tier: Tier

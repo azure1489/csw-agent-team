@@ -7,9 +7,11 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
-import { Empty, ErrorBox, H2, Head, Loading, Stat, Table, bj } from '@/components/Bits'
-import { Td, Th } from '@/components/ui'
-import { useCoverage, useRoundMedia, useRounds } from '@/lib/queries'
+import { Empty, ErrorBox, H2, Head, Loading, Stat, Table, bj, bjDate } from '@/components/Bits'
+import { I } from '@/components/icons'
+import { Btn, Td, Th } from '@/components/ui'
+import { useBackfill, useCoverage, useRoundMedia, useRounds } from '@/lib/queries'
+import type { BackfillRow } from '@/lib/types'
 
 export function Coverage() {
   const [sp, setSp] = useSearchParams()
@@ -173,8 +175,129 @@ export function Coverage() {
           ))}
         </Table>
       )}
+
+      <BackfillSection />
     </section>
   )
+}
+
+const KIND_LABEL: Record<string, string> = {
+  decision: '决定',
+  published_item: '已发',
+  example: '范例',
+}
+
+const CONCLUSION_LABEL: Record<string, string> = {
+  written: '已写',
+  approved_write: '批准写',
+  published: '已发',
+  dropped: '淘汰',
+  rejected: '否决',
+  pending_check: '待核',
+}
+
+/**
+ * 待补录清单：**出现在选题里、却不在 csw 在册名单里的品牌。**
+ * 不跟轮次走——它对的是整个知识库。补录由人去 csw 后台做，这里只列、只给依据。
+ */
+function BackfillSection() {
+  const q = useBackfill()
+  const rows = q.data?.rows ?? []
+  return (
+    <>
+      <div className="mb-2 mt-5 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-[14px] font-semibold">待补录品牌</h2>
+        {rows.length > 0 && (
+          <Btn size="sm" icon={I.download} onClick={() => downloadCsv(rows)}>
+            导出 CSV
+          </Btn>
+        )}
+      </div>
+      <p className="mb-2 text-[12.5px] text-muted">
+        进过选题（决定、已发、范例）却对不上 csw 在册账号的品牌。
+        「被选中」= 写过、批准写、已发或范例；只被淘汰过的也列出来，排在后面。
+        {q.data && ` 对照的在册别名 ${q.data.registered_brands} 条。`}
+      </p>
+      {q.isLoading && <Loading what="待补录清单" />}
+      {q.error && <ErrorBox error={q.error} />}
+      {q.data && rows.length === 0 && <Empty>进过选题的品牌都在册。</Empty>}
+      {rows.length > 0 && (
+        <Table
+          head={
+            <tr>
+              <Th>品牌</Th>
+              <Th right>被选中</Th>
+              <Th right>出现</Th>
+              <Th>最近</Th>
+              <Th>依据</Th>
+            </tr>
+          }
+        >
+          {rows.map((r) => (
+            <tr key={r.brand} className="border-t border-rule align-top">
+              <Td className="font-medium">{r.brand}</Td>
+              <Td right className="tnum" style={{ color: r.adopted > 0 ? 'var(--accent)' : undefined }}>
+                {r.adopted}
+              </Td>
+              <Td right className="tnum">
+                {r.mentions}
+              </Td>
+              <Td className="tnum whitespace-nowrap">{bjDate(r.latest)}</Td>
+              <Td>
+                <ul className="space-y-0.5 text-[12.5px]">
+                  {r.evidence.map((e, i) => (
+                    <li key={i}>
+                      <span className="text-muted">
+                        {KIND_LABEL[e.kind] ?? e.kind}
+                        {e.conclusion && `·${CONCLUSION_LABEL[e.conclusion] ?? e.conclusion}`}
+                      </span>{' '}
+                      {e.url ? (
+                        <a href={e.url} target="_blank" rel="noreferrer" className="text-accent no-underline">
+                          {e.title || e.url}
+                        </a>
+                      ) : (
+                        e.title
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </Td>
+            </tr>
+          ))}
+        </Table>
+      )}
+    </>
+  )
+}
+
+/** 前端拼 CSV：带 BOM，Excel 打开中文不乱码。 */
+function downloadCsv(rows: BackfillRow[]) {
+  const cell = (v: string | number | null) => {
+    const s = v == null ? '' : String(v)
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+  }
+  const lines = [
+    ['品牌', '被选中', '出现', '最近', '依据标题', '依据链接'].join(','),
+    ...rows.map((r) =>
+      [
+        r.brand,
+        r.adopted,
+        r.mentions,
+        r.latest?.slice(0, 10) ?? '',
+        r.evidence.map((e) => e.title).join(' / '),
+        r.evidence.map((e) => e.url).join(' '),
+      ]
+        .map(cell)
+        .join(','),
+    ),
+  ]
+  const blob = new Blob(['\ufeff' + lines.join('\n')], { type: 'text/csv;charset=utf-8' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `待补录品牌_${new Date().toISOString().slice(0, 10)}.csv`
+  a.click()
+  // 立刻回收有的浏览器会把下载掐掉
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000)
 }
 
 function num(v: unknown): string {

@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api } from './api'
 import type {
+  Backfill,
   AuditRow,
   Coverage,
   Exclusion,
@@ -65,6 +66,9 @@ export const useCoverage = (id?: number) =>
     queryFn: () => get<Coverage>(`/rounds/${id}/coverage`),
     enabled: !!id,
   })
+
+export const useBackfill = () =>
+  useQuery({ queryKey: ['backfill'], queryFn: () => get<Backfill>('/kb/backfill') })
 
 export const useRoundMedia = (id?: number, state?: string) =>
   useQuery({

@@ -217,6 +217,12 @@ enum KbCommand {
         #[arg(long)]
         path: String,
     },
+    /// 待补录清单：进过选题却不在 csw 在册名单里的品牌（只读）
+    Backfill {
+        /// 只列前几行。0 = 全部
+        #[arg(long, default_value_t = 30)]
+        limit: usize,
+    },
 }
 
 #[tokio::main]
@@ -301,6 +307,7 @@ async fn main() -> anyhow::Result<()> {
                     .await
                 }
                 KbCommand::Import { path } => kb::import(&cfg, &path),
+                KbCommand::Backfill { limit } => kb::backfill(&cfg, limit),
             }
         }
         Command::Mcp => {

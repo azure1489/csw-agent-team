@@ -81,6 +81,7 @@ pub fn api_router(state: Arc<AppState>, auth: Arc<AuthState>) -> Router {
         .route("/api/kb/search", get(kb_search))
         .route("/api/kb/similar-selected", get(kb_similar))
         .route("/api/kb/brands/{brand}", get(kb_brand))
+        .route("/api/kb/backfill", get(kb_backfill))
         .route("/api/pending-check", get(pending_check))
         .route("/api/work", get(work_queue))
         .route("/api/audit", get(audit_log))
@@ -1324,6 +1325,19 @@ async fn kb_brand(
     })))
 }
 
+/// 待补录清单：出现在选题里、却不在 csw 在册名单里的品牌。
+/// 别名表每次现读——它会被 `kb sync --refresh-brands` 与人工加别名改掉，
+/// 用常驻那份就对不上刚补录的账号。九百来行，读一次是毫秒级。
+async fn kb_backfill(State(st): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, ApiError> {
+    let conn = st.conn.lock().await;
+    let brands = csw_collector_kb::brands::BrandIndex::load(&conn).map_err(ApiError::any)?;
+    let rows = csw_collector_kb::coverage::backfill_list(&conn, &brands).map_err(ApiError::any)?;
+    Ok(Json(serde_json::json!({
+        "registered_brands": brands.len(),
+        "rows": rows,
+    })))
+}
+
 async fn embed_query(svc: &super::services::Services, text: &str) -> Option<Vec<f32>> {
     let inputs = [csw_collector_core::vector::EmbedInput::Text(
         text.chars().take(2000).collect(),
@@ -2036,6 +2050,30 @@ mod tests {
             "{}",
             snippet.chars().count()
         );
+    }
+
+    #[tokio::test]
+    async fn 待补录清单只列不在册的() {
+        let (app, st) = app();
+        {
+            let conn = st.conn.lock().await;
+            conn.execute(
+                "INSERT INTO kb_docs(kind, ref_id, brand, title, body, url, content_hash,
+                                     created_at, published_at)
+                 VALUES ('decision','d1','futurefox','FUTURE FOX炉顶附件',
+                         '结论：written'||char(10)||'原话：不外露','https://www.instagram.com/p/X/',
+                         'h','now','2026-09-15')",
+                [],
+            )
+            .unwrap();
+        }
+        let (code, v) = get(&app, "/api/kb/backfill").await;
+        assert_eq!(code, StatusCode::OK);
+        let rows = v["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["brand"], "futurefox");
+        assert_eq!(rows[0]["adopted"], 1);
+        assert!(!v.to_string().contains("不外露"));
     }
 
     #[tokio::test]
