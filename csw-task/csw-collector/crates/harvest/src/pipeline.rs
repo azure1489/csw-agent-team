@@ -292,7 +292,7 @@ async fn prepare_one(
                     match std::fs::read(&d.path) {
                         Ok(bytes) => refs.push(recognize::ImageRef {
                             blake3: d.blake3.clone(),
-                            b64: b64(&bytes),
+                            b64: recognize::b64(&bytes),
                             ordinal: m.ordinal,
                         }),
                         Err(e) => failed_media.push(format!("{}：读盘失败 {e}", m.url)),
@@ -465,37 +465,6 @@ fn fused_text(c: &Candidate, descriptions: &[MediaDescription]) -> String {
         s.push_str(&d.content);
     }
     s.chars().take(1500).collect()
-}
-
-fn b64(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
-        let _ = write!(
-            out,
-            "{}{}",
-            T[(n >> 18) as usize & 63] as char,
-            T[(n >> 12) as usize & 63] as char
-        );
-        out.push(if chunk.len() > 1 {
-            T[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            T[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    out
 }
 
 fn in_window(c: &Candidate, from: Timestamp, to: Timestamp) -> bool {
@@ -992,13 +961,5 @@ mod tests {
             t.contains("正文") && t.contains("轻量化帐篷"),
             "正文只有一句话时信息全在图里：{t}"
         );
-    }
-
-    #[test]
-    fn base64编码对得上() {
-        assert_eq!(b64(b"a"), "YQ==");
-        assert_eq!(b64(b"ab"), "YWI=");
-        assert_eq!(b64(b"abc"), "YWJj");
-        assert_eq!(b64(b"hello world"), "aGVsbG8gd29ybGQ=");
     }
 }

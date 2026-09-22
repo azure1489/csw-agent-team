@@ -23,6 +23,9 @@ use csw_collector_kb::vectors::VectorStore;
 
 pub struct Services {
     pub csw: Arc<CswClient>,
+    /// 开发群告警。没配地址就是 None——**只发这个服务自己的毛病**，
+    /// 流程上的事一律由引擎播报到编辑部群。
+    pub alert: Option<csw_collector_core::alert::Alerter>,
     pub downloader: Downloader,
     pub model: ModelClient,
     pub vector: VectorClient,
@@ -110,6 +113,7 @@ impl Services {
             .context("打开向量库")?;
 
         Ok(Self {
+            alert: csw_collector_core::alert::Alerter::new(&cfg.alert.webhook_url),
             csw,
             downloader: super::round::downloader(cfg)?,
             model,

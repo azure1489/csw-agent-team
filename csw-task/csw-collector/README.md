@@ -41,3 +41,8 @@ make build-linux  # 交叉编译生产二进制（x86_64 glibc 2.34）
 `collector.env` 已在 `.gitignore` 里。
 
 模型网关只用 `csw-subapi.833233.xyz`。
+
+`CSW_COLLECTOR_ALERT_WEBHOOK` 也只从 env 走：它是一个**谁拿到都能往群里发消息**
+的地址。不填＝告警关着，只进日志。这个群是给运维看的，不是编辑部群——
+流程上的事由引擎播报，这里只发这个服务自己的毛病（磁盘、outbox 冲突、
+定时的活没跑成）。

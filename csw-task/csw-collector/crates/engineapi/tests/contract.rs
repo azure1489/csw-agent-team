@@ -166,6 +166,42 @@ async fn 幂等键从内容派生所以重试必然同键() {
     assert_eq!(a, "submit-7-abcdef0123456789");
 }
 
+#[tokio::test]
+async fn 条目清单只认批准可写的那几条() {
+    let srv = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/runs/48/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "items": [
+                {"item_key": "and-wander-a1b2c3", "title": "40L 背包", "status": "approved_write",
+                 "source_url": "https://www.instagram.com/p/ABC123/"},
+                {"item_key": "yamatomichi-d4e5f6", "title": "THREE", "status": "shortlisted",
+                 "rank": "alt"},
+                {"item_key": "x-999999", "title": "被否的", "status": "rejected"}
+            ],
+            "target_count": 8, "written": 1, "gap": 7
+        })))
+        .mount(&srv)
+        .await;
+
+    let got = client(&srv.uri()).run_items(48).await.unwrap();
+    assert_eq!(got.items.len(), 3);
+    assert_eq!(got.target_count, 8);
+    // 11 选图包只给「Van 批准可写」的配图。把「研究员建议」当成批准，
+    // 会多做一批没人要的图
+    let approved: Vec<&str> = got
+        .items
+        .iter()
+        .filter(|i| i.approved())
+        .map(|i| i.item_key.as_str())
+        .collect();
+    assert_eq!(approved, ["and-wander-a1b2c3"]);
+    assert_eq!(
+        got.items[0].source_url,
+        "https://www.instagram.com/p/ABC123/"
+    );
+}
+
 fn judgement(key: &str) -> csw_collector_engineapi::JudgementInput {
     csw_collector_engineapi::JudgementInput {
         candidate_key: key.into(),

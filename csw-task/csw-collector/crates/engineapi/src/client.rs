@@ -214,6 +214,11 @@ impl EngineClient {
         self.get(&path).await
     }
 
+    /// 这一期的条目与整期目标。11 选图包按它挑「Van 批准可写」的那几条。
+    pub async fn run_items(&self, run_id: i64) -> Result<RunItems, EngineError> {
+        self.get(&format!("/runs/{run_id}/items")).await
+    }
+
     pub async fn memory_feedback(&self, limit: u32) -> Result<serde_json::Value, EngineError> {
         self.get(&format!("/memory/feedback?limit={limit}")).await
     }

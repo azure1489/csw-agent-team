@@ -318,6 +318,51 @@ pub struct LedgerPosts {
     pub note: String,
 }
 
+/// `GET /runs/:id/items` 里的一条。
+///
+/// **`status` 是引擎的条目状态，不是我们的四档**：`approved_write` 才是
+/// 「Van 批准可写」，11 选图包只给这些条目配图。把 `shortlisted`（研究员建议）
+/// 当成批准会多做一批没人要的图。
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct RunItem {
+    #[serde(default)]
+    pub item_key: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub brand: String,
+    #[serde(default)]
+    pub product: String,
+    #[serde(default)]
+    pub source_url: String,
+    #[serde(default)]
+    pub published_at: String,
+    #[serde(default)]
+    pub status: String,
+    /// primary 主选 / alt 备选（只对 shortlisted 有意义）
+    #[serde(default)]
+    pub rank: String,
+}
+
+impl RunItem {
+    /// Van 批准可写的那几条。
+    pub fn approved(&self) -> bool {
+        self.status == "approved_write"
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct RunItems {
+    #[serde(default)]
+    pub items: Vec<RunItem>,
+    #[serde(default)]
+    pub target_count: i64,
+    #[serde(default)]
+    pub written: i64,
+    #[serde(default)]
+    pub gap: i64,
+}
+
 /// 交付物提交的入参。zip **只构建一次**，字节先落盘，重试只发已落盘的那一份。
 #[derive(Debug, Clone)]
 pub struct SubmitInput {

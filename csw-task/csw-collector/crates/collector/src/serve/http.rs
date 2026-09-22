@@ -95,11 +95,32 @@ async fn healthz(State(st): State<Arc<AppState>>) -> Response {
         // 本地库读不了才是真不健康：那时候什么都做不了
         ok: db_ok,
         uptime_secs: st.started.elapsed().as_secs(),
-        deps: vec![DepStatus {
-            name: "sqlite".into(),
-            ok: db_ok,
-            note: st.cfg.db_path().display().to_string(),
-        }],
+        deps: vec![
+            DepStatus {
+                name: "sqlite".into(),
+                ok: db_ok,
+                note: st.cfg.db_path().display().to_string(),
+            },
+            {
+                use csw_collector_core::disk;
+                let pct = disk::used_pct(&st.cfg.data_dir);
+                let lv = disk::level(
+                    pct,
+                    st.cfg.limits.disk_warn_pct,
+                    st.cfg.limits.disk_block_pct,
+                );
+                DepStatus {
+                    name: "disk".into(),
+                    // 到告警线就标不 ok：看板上要能一眼看见，别等它到拒开新轮那条线
+                    ok: lv == disk::Level::Ok,
+                    note: disk::note(
+                        pct,
+                        st.cfg.limits.disk_warn_pct,
+                        st.cfg.limits.disk_block_pct,
+                    ),
+                }
+            },
+        ],
         outbox_conflicts: conflicts as usize,
     };
     let code = if h.ok {
@@ -132,13 +153,23 @@ async fn metrics(State(st): State<Arc<AppState>>) -> Response {
          csw_collector_outbox_conflict {}\n\
          # HELP csw_collector_uptime_seconds 进程活了多久\n\
          # TYPE csw_collector_uptime_seconds gauge\n\
-         csw_collector_uptime_seconds {}\n",
+         csw_collector_uptime_seconds {}\n\
+         # HELP csw_collector_disk_used_pct 数据盘用掉了百分之几（-1 = 问不出来）\n\
+         # TYPE csw_collector_disk_used_pct gauge\n\
+         csw_collector_disk_used_pct {}\n\
+         # HELP csw_collector_work_queued 还排着队的手动活\n\
+         # TYPE csw_collector_work_queued gauge\n\
+         csw_collector_work_queued {}\n",
         one("SELECT COUNT(*) FROM rounds"),
         one("SELECT COUNT(*) FROM rounds WHERE status='running'"),
         one("SELECT COUNT(*) FROM judgements"),
         one("SELECT COUNT(DISTINCT candidate_key) FROM judgements WHERE tier='pending_check'"),
         one("SELECT COUNT(*) FROM engine_outbox WHERE status='conflict'"),
         st.started.elapsed().as_secs(),
+        csw_collector_core::disk::used_pct(&st.cfg.data_dir)
+            .map(i64::from)
+            .unwrap_or(-1),
+        one("SELECT COUNT(*) FROM work_queue WHERE status IN ('queued','running')"),
     );
     ([("content-type", "text/plain; version=0.0.4")], body).into_response()
 }
@@ -498,6 +529,12 @@ async fn settings(State(st): State<Arc<AppState>>) -> Result<Json<Settings>, Api
             ("SUB2API_API_KEY".into(), !s.sub2api_key.is_empty()),
             ("TYPESAFE_API_KEY".into(), !s.typesafe_key.is_empty()),
             ("CSW_ENGINE_TOKEN".into(), !s.engine_token.is_empty()),
+            // 告警地址同样只回「已配置 / 缺」：它是一个谁拿到都能往群里发消息的地址。
+            // 但「有没有配」要让人看得见——没配的话，磁盘满了也没人会知道
+            (
+                "CSW_COLLECTOR_ALERT_WEBHOOK".into(),
+                !c.alert.webhook_url.is_empty(),
+            ),
         ],
     }))
 }

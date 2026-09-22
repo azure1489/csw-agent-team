@@ -3,6 +3,9 @@
 //! 形态：`index.md`（YAML 元信息头 + 正文内联）+ `images/`（每条一张预览）
 //! + `trace/`（`sweeps.jsonl`、`items.jsonl`），打包成同名 zip 一步式提交。
 //!
+//! 三种正文：`intake` 是 01 的判断台账，`material` 是 05 的图位与素材核，
+//! 11 的选图包也在 `material` 里——它与 05 做的是同一件事的两半。
+//!
 //! **zip 只构建一次。** 字节、sha、幂等键、表单字段先落 `deliverables_local` 与 outbox 再发，
 //! 重试只发已落盘的那一份。遇 `idempotency_in_progress_or_uncertain` 不换键，先查任务状态对账。
 //!
@@ -12,5 +15,6 @@
 
 pub mod index;
 pub mod intake;
+pub mod material;
 pub mod pack;
 pub mod trace;

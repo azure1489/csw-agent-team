@@ -31,6 +31,7 @@ pub struct Config {
     pub limits: Limits,
     pub features: Features,
     pub web: Web,
+    pub alert: Alert,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +139,19 @@ pub struct Schedule {
     pub gpu_quiet_to_utc: String,
     /// 图片保留天数
     pub media_retention_days: u32,
+    /// 向量库备份的时刻（UTC）
+    pub backup_at_utc: String,
+    /// 隔几天备一次。到点了但离上一份没这么久，就跳过
+    pub backup_every_days: u32,
+}
+
+/// 开发群告警。**默认关着**：地址填进来才发。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Alert {
+    /// 飞书自定义机器人的 webhook。空＝关。
+    /// **这是给运维看的群，不是编辑部群**——流程上的事由引擎播报。
+    pub webhook_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -312,6 +326,8 @@ impl Default for Config {
                 gpu_quiet_from_utc: "21:25".into(), // 北京 05:25
                 gpu_quiet_to_utc: "22:30".into(),   // 北京 06:30
                 media_retention_days: 120,
+                backup_at_utc: "03:30".into(),
+                backup_every_days: 7,
             },
             limits: Limits {
                 download_concurrency: 8,
@@ -327,6 +343,7 @@ impl Default for Config {
                 mcp_for_hermes: false,
                 deepcheck_web_tools: false,
             },
+            alert: Alert::default(),
             web: Web {
                 secure_cookie: true,
                 van_usernames: vec![],
@@ -376,6 +393,10 @@ impl Config {
         if let Some(v) = s("CSW_VECTOR_URL") {
             self.vector.base_url = v;
         }
+        // 告警地址像密钥一样只从 env 走：它是一个谁拿到都能往群里发消息的地址
+        if let Some(v) = s("CSW_COLLECTOR_ALERT_WEBHOOK") {
+            self.alert.webhook_url = v;
+        }
         if let Some(v) = s("JEV_ENABLED") {
             self.jev.enabled = matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes");
         }
@@ -403,6 +424,11 @@ impl Config {
     }
     pub fn fixtures_dir(&self) -> PathBuf {
         self.data_dir.join("fixtures")
+    }
+    /// 向量库的备份放哪。**与库本身同一块盘**——它防的是「库被写坏了」，
+    /// 不是「盘坏了」；后者要靠别的机器，那不是这个服务该管的事。
+    pub fn backup_dir(&self) -> PathBuf {
+        self.data_dir.join("backup")
     }
 }
 

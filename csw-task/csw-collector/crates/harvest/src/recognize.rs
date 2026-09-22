@@ -303,3 +303,51 @@ mod tests {
         assert!(format!("{err:#}").contains("一批最多"), "{err:#}");
     }
 }
+
+/// 图片转 base64。**不引 base64 crate**：这一段十几行，而多一个依赖就多一份
+/// 「开发机编得过、交叉编译过不去」的风险。
+///
+/// 05／11 也要用它（识别的入参是同一套），所以放在这里公开，不各写一份。
+pub fn b64(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        let _ = write!(
+            out,
+            "{}{}",
+            T[(n >> 18) as usize & 63] as char,
+            T[(n >> 12) as usize & 63] as char
+        );
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+#[cfg(test)]
+mod b64_tests {
+    use super::b64;
+
+    #[test]
+    fn base64编码对得上() {
+        assert_eq!(b64(b"a"), "YQ==");
+        assert_eq!(b64(b"ab"), "YWI=");
+        assert_eq!(b64(b"abc"), "YWJj");
+        assert_eq!(b64(b"hello world"), "aGVsbG8gd29ybGQ=");
+    }
+}

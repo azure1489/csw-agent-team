@@ -15,6 +15,7 @@
 
 pub mod finish;
 pub mod http;
+pub mod item;
 pub mod outbox_sender;
 pub mod register;
 pub mod round;
@@ -56,6 +57,11 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
         中断的步 = n,
         还在跑的轮 = running.len(),
         没做完的手动活 = dropped,
+        磁盘 = %csw_collector_core::disk::note(
+            csw_collector_core::disk::used_pct(&cfg.data_dir),
+            cfg.limits.disk_warn_pct,
+            cfg.limits.disk_block_pct
+        ),
         "启动自检"
     );
 
@@ -70,9 +76,19 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
         Ok(_) => {}
         Err(e) => tracing::warn!(原因 = %format!("{e:#}"), "启动时排空 outbox 失败，稍后再试"),
     }
-    if !outbox_conflicts(&conn)?.is_empty() {
+    let stuck = outbox_conflicts(&conn)?;
+    if !stuck.is_empty() {
         // 冲突要人核实，不该被下一轮盖过去
         tracing::error!("有 outbox 条目处在冲突状态，**先查任务状态对账**，不要换幂等键重试");
+        csw_collector_core::alert::notify(
+            svc.alert.as_ref(),
+            &format!(
+                "有 {} 条写引擎的记录卡在冲突上（seq {:?}）。先查任务状态对账，不要换幂等键重试",
+                stuck.len(),
+                stuck
+            ),
+        )
+        .await;
     }
 
     // 三、把工作台挂起来。HTTP 与轮询各跑各的：
@@ -146,6 +162,11 @@ async fn run_queued(
     let Some(item) = workbench::take_next(conn)? else {
         return Ok(());
     };
+    if let Some(why) = disk_blocked(cfg) {
+        workbench::finish_work(conn, item.id, false, &why)?;
+        tracing::error!(活 = item.id, "{why}");
+        return Ok(());
+    }
     tracing::info!(活 = item.id, 类型 = %item.kind, 排队人 = %item.actor, "开始做排队的活");
     let payload: serde_json::Value =
         serde_json::from_str(&item.payload_json).unwrap_or(serde_json::json!({}));
@@ -266,12 +287,22 @@ async fn run_job(
     tracing::info!(活 = name, "定时的活开始");
     let r = match name {
         "kb_sync_1" | "kb_sync_2" => kb_sync_job(cfg, conn, svc).await,
+        "lance_backup" => backup_job(cfg).await,
         "prefetch" => prefetch_job(cfg, conn, svc).await,
         other => Err(anyhow::anyhow!("不认识的定时活：{other}")),
     };
     match r {
         Ok(note) => tracing::info!(活 = name, "{note}"),
-        Err(e) => tracing::warn!(活 = name, 原因 = %format!("{e:#}"), "这件活没跑成，下一次再来"),
+        Err(e) => {
+            let why = format!("{e:#}");
+            tracing::warn!(活 = name, 原因 = %why, "这件活没跑成，下一次再来");
+            // 预取轮没跑成意味着明早那一轮要从零跑、会迟到。**这件事必须有人知道**
+            csw_collector_core::alert::notify(
+                svc.alert.as_ref(),
+                &format!("定时的活 {name} 没跑成：{why}"),
+            )
+            .await;
+        }
     }
 
     // 顺带把过期的图清掉。只删图不删记录——
@@ -292,6 +323,10 @@ async fn prefetch_job(
     conn: &rusqlite::Connection,
     svc: &services::Services,
 ) -> Result<String> {
+    if let Some(why) = disk_blocked(cfg) {
+        // 预取轮是缓存，盘紧的时候第一个该让路的就是它
+        anyhow::bail!("{why}");
+    }
     let (window_start, window_end) = window_for(cfg);
     let (r, _) = rounds::open_round(
         conn,
@@ -332,6 +367,21 @@ async fn prefetch_job(
             Err(e.context("预取轮没跑成，正式轮要从零跑，会慢四十分钟"))
         }
     }
+}
+
+/// 向量库备份。**到点检查、隔够天数才真备**——按周几判的话，
+/// 进程哪天没在跑，那一整周就没有备份。
+async fn backup_job(cfg: &Config) -> Result<String> {
+    let root = cfg.backup_dir();
+    if !schedule::needs_backup(&root, cfg.schedule.backup_every_days) {
+        return Ok("离上一份还不够久，这次跳过".into());
+    }
+    // 备份要占一份库那么大的盘。盘紧的时候别雪上加霜
+    if let Some(why) = disk_blocked(cfg) {
+        anyhow::bail!("{why}");
+    }
+    let dest = schedule::backup_lance(&cfg.lance_path(), &root)?;
+    Ok(format!("备到了 {}", dest.display()))
 }
 
 async fn kb_sync_job(
@@ -413,13 +463,32 @@ async fn start_round(
     t: &csw_collector_engineapi::types::MyTask,
     action: Action,
 ) -> Result<()> {
-    // 05 配图与 11 选图包也是我们的活，但还**没实现**。在这里岔开：
-    // 不岔开的话它们会走 01 的十步，交出一份文不对题的台账——
-    // 那种错在群播报里看不出来，要等主编打开交付物才发现。
-    if t.task.stage_code != STAGE_INTAKE {
+    // 盘满时的表现极难看懂：下载一半失败、SQLite 写不进去、zip 打到一半断掉，
+    // 每一处报的都是别的错。**到线就不开新轮**，并如实告诉引擎为什么。
+    if let Some(why) = disk_blocked(cfg) {
+        tracing::error!(任务 = t.task.id, "{why}");
+        // 这一条只有我们自己发现得了：引擎不知道我们的盘满了
+        csw_collector_core::alert::notify(
+            svc.alert.as_ref(),
+            &format!("任务 {} 没接：{why}", t.task.id),
+        )
+        .await;
+        let idem = format!("fail-{}-disk", t.task.id);
+        engine
+            .fail(t.task.id, &why, &idem)
+            .await
+            .context("报告磁盘满")?;
+        return Ok(());
+    }
+
+    // 阶段在这里岔开。**不岔开的话 05／11 会走 01 的十步**，交出一份文不对题的
+    // 台账——那种错在群播报里看不出来，要等主编打开交付物才发现。
+    let known = [STAGE_INTAKE, item::STAGE_MATERIAL, item::STAGE_XHS_PICK];
+    if !known.contains(&t.task.stage_code.as_str()) {
         let why = format!(
-            "{} 阶段本服务尚未实现（只做 {STAGE_INTAKE}），请主编改派人工或等版本上线",
-            t.task.stage_code
+            "{} 阶段本服务做不了（只做 {}），请主编改派人工",
+            t.task.stage_code,
+            known.join(" / ")
         );
         tracing::error!(任务 = t.task.id, 阶段 = %t.task.stage_code, "{why}");
         let idem = format!("fail-{}-unsupported", t.task.id);
@@ -488,6 +557,33 @@ async fn start_round(
     );
     tracing::info!(任务 = t.task.id, 轮次 = r.id, 窗口 = %format!("{} ~ {}", r.window_start, r.window_end), "开工");
 
+    // 05／11 走的是另一条短得多的路：条目取单条 → 原图 → 识别 → 交付（0 闸）。
+    // **不走合并、对照、判断、深核**——那件事 01 已经做过，而且是 Van 拍的板。
+    if t.task.stage_code != STAGE_INTAKE {
+        let r2 = r.clone();
+        let out = if t.task.stage_code == item::STAGE_MATERIAL {
+            item::run_material(conn, &r2, &detail, cfg, svc).await
+        } else {
+            item::run_xhs_pick(conn, &r2, &detail, cfg, svc, engine).await
+        };
+        return match out {
+            Ok(built) => {
+                finish::submit(conn, &r, engine, t.task.id, &built).await?;
+                rounds::finish_round(conn, r.id, "awaiting_review", "")?;
+                Ok(())
+            }
+            Err(e) => {
+                let why = format!("{e:#}");
+                rounds::finish_round(conn, r.id, "failed", &why)?;
+                let idem = format!("fail-{}-r{}", t.task.id, r.id);
+                if let Err(e2) = engine.fail(t.task.id, &why, &idem).await {
+                    tracing::error!(任务 = t.task.id, 原因 = %format!("{e2:#}"), "连失败都没报出去");
+                }
+                Err(e)
+            }
+        };
+    }
+
     match round::run_intake(conn, &r, &detail, cfg, svc).await {
         Ok((counts, fin)) => {
             tracing::info!(轮次 = r.id, ?counts, "这一轮的账");
@@ -528,6 +624,11 @@ async fn start_round(
         Err(e) => {
             let why = format!("{e:#}");
             rounds::finish_round(conn, r.id, "failed", &why)?;
+            csw_collector_core::alert::notify(
+                svc.alert.as_ref(),
+                &format!("r{} 任务 {} 这一轮失败：{why}", t.task.run_id, t.task.id),
+            )
+            .await;
             // 报失败不是可选的：不报的话主编在群里看到的一直是「还在做」
             // 幂等键从任务与轮次派生，重试不会重复报
             let idem = format!("fail-{}-r{}", t.task.id, r.id);
@@ -547,6 +648,25 @@ fn window_for(_cfg: &Config) -> (String, String) {
     let now = jiff::Timestamp::now();
     let from = now - jiff::Span::new().hours(24);
     (from.to_string(), now.to_string())
+}
+
+/// 磁盘到了拒开新轮的水位吗。到了就给一句能直接发给主编的话。
+fn disk_blocked(cfg: &Config) -> Option<String> {
+    let pct = csw_collector_core::disk::used_pct(&cfg.data_dir);
+    let lv =
+        csw_collector_core::disk::level(pct, cfg.limits.disk_warn_pct, cfg.limits.disk_block_pct);
+    let note =
+        csw_collector_core::disk::note(pct, cfg.limits.disk_warn_pct, cfg.limits.disk_block_pct);
+    match lv {
+        csw_collector_core::disk::Level::Block => {
+            Some(format!("{note}，这一轮不开。先清理磁盘再让主编重开任务"))
+        }
+        csw_collector_core::disk::Level::Warn => {
+            tracing::warn!("{note}");
+            None
+        }
+        csw_collector_core::disk::Level::Ok => None,
+    }
 }
 
 fn outbox_conflicts(conn: &rusqlite::Connection) -> Result<Vec<i64>> {

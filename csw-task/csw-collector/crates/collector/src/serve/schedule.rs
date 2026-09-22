@@ -16,6 +16,8 @@
 //! **但它只是缓存。** 没有缓存整轮也能从零跑完，只是慢——而且要
 //! **如实告诉主编会迟到**，不能假装一切正常。
 
+use std::path::{Path, PathBuf};
+
 use anyhow::Result;
 
 /// 一件定时的活。
@@ -87,6 +89,10 @@ pub fn jobs_from(cfg: &csw_collector_core::Config) -> Vec<Job> {
         name: "prefetch",
         at: cfg.schedule.prefetch_at_utc.clone(),
     }];
+    v.push(Job {
+        name: "lance_backup",
+        at: cfg.schedule.backup_at_utc.clone(),
+    });
     for (i, at) in cfg.schedule.kb_sync_at_utc.iter().enumerate() {
         // 名字带序号，好在日志里分清是哪一次
         v.push(Job {
@@ -95,6 +101,94 @@ pub fn jobs_from(cfg: &csw_collector_core::Config) -> Vec<Job> {
         });
     }
     v
+}
+
+/// 向量库周备份：整目录复制一份，**只留最近一份**。
+///
+/// # 为什么值得备
+///
+/// 向量本身能按 `embeddings_log` 重建——但那要两个多小时的 GPU，
+/// 而且要在「已经出事了」的时候去占那两个小时。复制一份大约两百兆，
+/// 恢复是一条 `mv`。
+///
+/// # 为什么只留一份
+///
+/// 两份就是四百兆，而本地盘还堆着十二万张图。留一份的取舍是：
+/// 它能救「库被写坏了」，救不了「三周前那一版」——后者本来也该重建。
+pub fn backup_lance(lance_dir: &Path, backup_root: &Path) -> Result<PathBuf> {
+    anyhow::ensure!(lance_dir.is_dir(), "{} 不在", lance_dir.display());
+    let stamp = jiff::Zoned::now().strftime("%Y%m%d").to_string();
+    let dest = backup_root.join(format!("lance-{stamp}"));
+    if dest.exists() {
+        // 同一天跑第二次：直接算成功，不重复复制两百兆
+        return Ok(dest);
+    }
+    std::fs::create_dir_all(backup_root)?;
+    // 先复制到临时名再改名：复制到一半崩掉时，留下的不该是一个
+    // 看起来完好、其实缺文件的备份
+    let tmp = backup_root.join(format!(".lance-{stamp}.partial"));
+    let _ = std::fs::remove_dir_all(&tmp);
+    copy_dir(lance_dir, &tmp)?;
+    let _ = std::fs::remove_dir_all(&dest);
+    std::fs::rename(&tmp, &dest)?;
+    prune_backups(backup_root, &dest)?;
+    Ok(dest)
+}
+
+/// 离上一份够久了吗。到点了但刚备过就跳过——
+/// 「每天到点检查、隔够天数才真备」比「周几备」稳：进程哪天没在跑，
+/// 按周几判就整周不备了。
+pub fn needs_backup(backup_root: &Path, every_days: u32) -> bool {
+    let Some(cutoff) = std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(
+        u64::from(every_days) * 86_400,
+    )) else {
+        return true;
+    };
+    let newest = std::fs::read_dir(backup_root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with("lance-"))
+        })
+        .filter_map(|e| e.metadata().and_then(|m| m.modified()).ok())
+        .max();
+    match newest {
+        Some(t) => t < cutoff,
+        // 一份都没有：当然要备
+        None => true,
+    }
+}
+
+/// 除了刚做好的这一份，其余的删掉。
+fn prune_backups(root: &Path, keep: &Path) -> Result<()> {
+    for e in std::fs::read_dir(root)?.flatten() {
+        let p = e.path();
+        let is_backup = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("lance-"));
+        if is_backup && p != keep {
+            let _ = std::fs::remove_dir_all(&p);
+        }
+    }
+    Ok(())
+}
+
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)?.flatten() {
+        let src = e.path();
+        let dst = to.join(e.file_name());
+        if src.is_dir() {
+            copy_dir(&src, &dst)?;
+        } else {
+            std::fs::copy(&src, &dst)?;
+        }
+    }
+    Ok(())
 }
 
 /// 图片保留期到了的，删掉。返回删了几个。
@@ -188,16 +282,61 @@ mod tests {
         let mut cfg = csw_collector_core::Config::default();
         cfg.schedule.prefetch_at_utc = "01:40".into();
         cfg.schedule.kb_sync_at_utc = vec!["02:30".into(), "14:30".into()];
+        cfg.schedule.backup_at_utc = "03:30".into();
         let jobs = jobs_from(&cfg);
-        assert_eq!(jobs.len(), 3);
+        assert_eq!(jobs.len(), 4);
         assert_eq!(jobs[0].name, "prefetch");
+        assert_eq!(jobs[1].name, "lance_backup");
         // 名字带序号，好在日志里分清是哪一次
-        assert_eq!(jobs[1].name, "kb_sync_1");
-        assert_eq!(jobs[2].name, "kb_sync_2");
+        assert_eq!(jobs[2].name, "kb_sync_1");
+        assert_eq!(jobs[3].name, "kb_sync_2");
 
         assert_eq!(due(&jobs, 99, 101), ["prefetch"]);
         assert_eq!(due(&jobs, 149, 151), ["kb_sync_1"]);
-        assert!(due(&jobs, 200, 210).is_empty());
+        assert_eq!(due(&jobs, 209, 211), ["lance_backup"]);
+        assert!(due(&jobs, 300, 310).is_empty());
+    }
+
+    #[test]
+    fn 备份复制整目录且只留一份() {
+        let src = tempdir::TempDir::new("lance").unwrap();
+        std::fs::create_dir_all(src.path().join("docs.lance/data")).unwrap();
+        std::fs::write(src.path().join("docs.lance/data/a.lance"), b"x").unwrap();
+        std::fs::write(src.path().join("EMBED_MODEL"), b"qwen3-vl").unwrap();
+
+        let root = tempdir::TempDir::new("backup").unwrap();
+        // 先放一份上周的，备完该被清掉
+        std::fs::create_dir_all(root.path().join("lance-20260901")).unwrap();
+
+        let dest = backup_lance(src.path(), root.path()).unwrap();
+        assert!(
+            dest.join("docs.lance/data/a.lance").exists(),
+            "子目录要一起复制"
+        );
+        assert!(dest.join("EMBED_MODEL").exists());
+        assert!(!root.path().join("lance-20260901").exists(), "旧的该清掉");
+        // 复制到一半崩掉时留下的半成品不该被当成备份
+        assert!(!root.path().join(".lance-partial").exists());
+
+        // 同一天跑第二次：直接算成功，不重复复制两百兆
+        assert_eq!(backup_lance(src.path(), root.path()).unwrap(), dest);
+
+        // 库不在就报错，别默默备出一个空目录
+        assert!(backup_lance(&src.path().join("没有这个"), root.path()).is_err());
+    }
+
+    #[test]
+    fn 刚备过就跳过一份都没有就备() {
+        let root = tempdir::TempDir::new("backup2").unwrap();
+        // 一份都没有：当然要备
+        assert!(needs_backup(root.path(), 7));
+        std::fs::create_dir_all(root.path().join("lance-20260922")).unwrap();
+        // 刚备的，隔七天才再备
+        assert!(!needs_backup(root.path(), 7));
+        // 间隔设成 0 就是每次都备
+        assert!(needs_backup(root.path(), 0));
+        // 目录不在也不炸
+        assert!(needs_backup(std::path::Path::new("/没有这个目录"), 7));
     }
 
     #[test]
