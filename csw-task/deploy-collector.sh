@@ -11,6 +11,9 @@
 #               用你自己的账号，工作台这边不存口令。
 #               走查页面用这个；确认没问题后去掉 --preview 再跑一次，就是正式部署。
 #
+#   --seed      （只在 --preview 下有效）把本地造的样例数据传上去，**仅当远端还没有库时**才放。
+#               默认不带：样例一旦进了之后要跑真数据的库，就会和真数据混在一起。
+#
 # ⚠️ **这是一次生产动作，跑之前要单独取得同意。**
 #    它会停掉并重启 agent 主机上的 csw-collector，改写那台机上的 nginx 站点配置。
 #    它**不碰** Hermes 的任何网关、profile、也不动 base-nginx 的其他站点。
@@ -33,10 +36,12 @@
 set -euo pipefail
 
 PREVIEW=0
+WITH_SEED=0
 ARGS=()
 for a in "$@"; do
   case "$a" in
     --preview) PREVIEW=1 ;;
+    --seed) WITH_SEED=1 ;;
     *) ARGS+=("$a") ;;
   esac
 done
@@ -91,10 +96,13 @@ log "3/6 上传"
 scp_ "$BIN" "$HOST":/opt/csw-collector/upload/csw-collector
 tar -C "$WEB/dist" -cf - . | "${SSH[@]}" 'mkdir -p /opt/docker/nginx/html/csw-collector-web && tar -xf - -C /opt/docker/nginx/html/csw-collector-web'
 
-# 预览模式：把本地造的样例数据一起传上去。
-# 空库上走查等于没查——每页都是「还没有数据」，看不出表格对不对齐、
-# 四档配色分不分得开、长正文会不会撑破卡片。
-if [ "$PREVIEW" = "1" ]; then
+# 样例数据：**只有显式加 `--seed` 才传**（且只在 `--preview` 下）。
+#
+# 空库上走查等于没查，所以当初预览模式默认就带样例。后果是 09-22 第一次部署时
+# 库还不存在，样例就放进了**之后要跑真数据的那个库**：一轮假的「派单轮」（r48 任务#311、
+# 12 条候选）混在真数据里，判断台账默认打开的就是它，看门狗也把它当成真的派单轮。
+# 09-23 备份后清掉了。以后要样例得自己说要。
+if [ "$PREVIEW" = "1" ] && [ "$WITH_SEED" = "1" ]; then
   SEED="${SEED_DB:-/tmp/csw-seed/collector.db}"
   if [ ! -f "$SEED" ]; then
     echo "   造样例数据（$SEED）"
