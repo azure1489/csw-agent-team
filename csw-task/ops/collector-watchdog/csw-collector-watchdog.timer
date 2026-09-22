@@ -1,0 +1,13 @@
+[Unit]
+Description=每 5 分钟叫一次看门狗
+
+[Timer]
+# 整点起每 5 分钟。看门狗内部按北京时间判断该不该管，所以这里不必限时段——
+# 白天那几次只会读一下指标就退出
+OnCalendar=*:0/5
+# 机器重启后补一次：重启正好错过 05:35 那个点是很可能的
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

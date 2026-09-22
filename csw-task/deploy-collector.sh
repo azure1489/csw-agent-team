@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+# 部署情报收集员工作台（csw-collector）到 agent 主机。幂等，可反复执行。
+#
+#   ./deploy-collector.sh [user@host] [domain] [ssh_port]
+#   默认：root@8.138.23.218  collector.aworld.ltd  9318
+#
+# ⚠️ **这是一次生产动作，跑之前要单独取得同意。**
+#    它会停掉并重启 agent 主机上的 csw-collector，改写那台机上的 nginx 站点配置。
+#    它**不碰** Hermes 的任何网关、profile、也不动 base-nginx 的其他站点。
+#
+# 做什么：
+#   1. 本机构建：cargo zigbuild 出 linux/amd64 二进制 + 前端 dist
+#   2. 上传：二进制 → /opt/csw-collector/upload（停服后再换，运行中的 ELF 不能原地覆盖）
+#            dist → base-nginx 容器挂的 html/csw-collector-web
+#   3. 远端配置（幂等）：目录、collector.env（**仅首次生成占位，绝不覆盖已有的**）、
+#      collector.toml（同上）、systemd 单元、nginx 站点
+#   4. 检查：healthz、前端、**8090 不能从公网打通**
+#
+# 不做什么：
+#   - 不装 codex，也不装 csw MCP。两者要在 /opt/csw-collector/ 下独立固定安装
+#     （不与 Hermes 共用，免得它那边一升级就把深核带崩）。脚本只检查在不在，
+#     不在就停下来告诉你怎么装——在生产机上跑 npm 是有副作用的事，不该藏在部署脚本里。
+#   - 不填密钥。首次会生成一份占位 collector.env（0600），填完再跑一次。
+#   - 不激活 daily_news v9，不停 Hermes 收集员网关。那两件是切换清单里的步骤，
+#     要在白天、无进行中 run、放行验证通过之后单独做。
+set -euo pipefail
+
+HOST="${1:-root@8.138.23.218}"
+DOMAIN="${2:-collector.aworld.ltd}"
+PORT="${3:-9318}"                     # agent 主机的 ssh 不是 22
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SVC="$SCRIPT_DIR/csw-collector"
+WEB="$SCRIPT_DIR/csw-collector-web"
+STAGE="$(mktemp -d /tmp/csw-collector-deploy.XXXX)"
+trap 'rm -rf "$STAGE"' EXIT
+
+SSH=(ssh -p "$PORT" "$HOST")
+scp_() { scp -q -P "$PORT" "$@"; }
+
+log() { printf '\n\033[1;36m── %s\033[0m\n' "$*"; }
+die() { printf '\n\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+
+log "1/6 本机构建（cargo zigbuild + 前端 dist）"
+# 编译不拿管道收尾巴：管道的退出码是最后一节的，编译失败会被报成成功（踩过）
+(cd "$SVC" && make build-linux) > "$STAGE/build.log" 2>&1 || { tail -30 "$STAGE/build.log"; die "构建失败，完整日志 $STAGE/build.log"; }
+BIN="$SVC/target/x86_64-unknown-linux-gnu/release/csw-collector"
+[ -f "$BIN" ] || die "没找到二进制 $BIN"
+printf '   二进制 %s\n' "$(ls -lh "$BIN" | awk '{print $5}')"
+(cd "$WEB" && pnpm build) > "$STAGE/web.log" 2>&1 || { tail -30 "$STAGE/web.log"; die "前端构建失败，完整日志 $STAGE/web.log"; }
+printf '   前端 dist 就绪\n'
+
+log "2/6 检查 codex 与 csw MCP（不装，只检查）"
+"${SSH[@]}" 'test -x /opt/csw-collector/codex/bin/codex' || die "agent 主机上没有 /opt/csw-collector/codex/bin/codex
+
+深核要它。独立装一份（不与 Hermes 共用）：
+  ssh -p $PORT $HOST
+  mkdir -p /opt/csw-collector/codex
+  npm i -g @openai/codex@0.155.1 --prefix /opt/csw-collector/codex
+  /opt/csw-collector/codex/bin/codex --version    # 应为 0.155.1
+
+装好后把 config.toml 放到 /opt/csw-collector/codex/home/（指向 csw-subapi + gpt-6-astra
++ csw MCP 只读白名单），再跑一次本脚本。"
+"${SSH[@]}" 'test -d /opt/csw-collector/csw-mcp' || die "agent 主机上没有 /opt/csw-collector/csw-mcp
+
+csw MCP 要固定安装，不走 npx 拉 GitHub（拉不到的那天深核就全废）。装好再跑一次。"
+printf '   codex %s\n' "$("${SSH[@]}" '/opt/csw-collector/codex/bin/codex --version 2>/dev/null || echo 未知')"
+
+log "3/6 上传"
+"${SSH[@]}" 'mkdir -p /opt/csw-collector/{bin,data,upload,codex,csw-mcp}'
+scp_ "$BIN" "$HOST":/opt/csw-collector/upload/csw-collector
+tar -C "$WEB/dist" -cf - . | "${SSH[@]}" 'mkdir -p /opt/docker/nginx/html/csw-collector-web && tar -xf - -C /opt/docker/nginx/html/csw-collector-web'
+
+log "4/6 远端配置（env / toml / systemd / nginx）"
+"${SSH[@]}" DOMAIN="$DOMAIN" 'bash -s' <<'REMOTE'
+set -euo pipefail
+cd /opt/csw-collector
+
+# 停服再换：运行中的 ELF 不能原地覆盖
+systemctl stop csw-collector 2>/dev/null || true
+mv -f upload/csw-collector bin/ && chmod +x bin/csw-collector
+
+# 密钥：仅首次生成占位，**已有的绝不覆盖**
+if [ ! -f collector.env ]; then
+  cat > collector.env <<'ENV'
+# 密钥只从 env 取，不写进 collector.toml、不进日志。
+# 填完 systemctl restart csw-collector。缺哪个启动时会直接报出来。
+CSW_API_KEY=
+SUB2API_API_KEY=
+CSW_ENGINE_TOKEN=
+# Jev 不填就是关着，判断退回生成模型
+TYPESAFE_API_KEY=
+# 运维告警群。谁拿到都能往群里发消息，所以它也算密钥。不填＝告警关着只进日志
+CSW_COLLECTOR_ALERT_WEBHOOK=
+# 不设就一行日志都没有（默认过滤全关）
+RUST_LOG=info
+ENV
+  chmod 600 collector.env
+  echo "   ★ 首次生成 /opt/csw-collector/collector.env（占位），**填完密钥再重启**"
+fi
+
+# 配置文件：同样仅首次生成。内置默认已经指向 /opt/csw-collector/*，
+# 这里只写需要与默认不同的那几项
+if [ ! -f collector.toml ]; then
+  cat > collector.toml <<'TOML'
+# env > 本文件 > 内置默认。密钥不在这里。
+# 完整字段见 crates/core/src/config.rs，这里只列与默认不同的。
+
+# nginx 在容器里，要经 172.17.0.1 访问宿主，所以不能只听回环。
+# 8090 必须挡在公网之外——部署脚本最后会检查一次。
+listen = "0.0.0.0:8090"
+
+[web]
+# **不配就没有 Van 模式**：引擎里没有 van 这个角色，她登录进来是个普通 viewer，
+# 看到的是总览页而不是她那一页。填她在引擎后台的用户名。
+van_usernames = []
+
+[features]
+# 小红书与网页采集器默认关。开之前 intake_sources 里对应来源要置 required=0，
+# 否则覆盖判据会判红
+xhs_collector = false
+web_collector = false
+TOML
+  chmod 600 collector.toml
+  echo "   首次生成 /opt/csw-collector/collector.toml"
+fi
+
+cat > /etc/systemd/system/csw-collector.service <<'UNIT'
+[Unit]
+Description=csw-collector 情报收集员工作台
+# codex 与 MCP 是子进程；向量服务在 docker 里，nginx 也是
+After=network.target docker.service
+
+[Service]
+WorkingDirectory=/opt/csw-collector
+Environment=CSW_COLLECTOR_CONFIG=/opt/csw-collector/collector.toml
+EnvironmentFile=/opt/csw-collector/collector.env
+ExecStart=/opt/csw-collector/bin/csw-collector serve
+Restart=always
+RestartSec=5
+# 一轮要下一千多张图、跑 codex 子进程与 MCP。4G 给主进程与子进程一起用；
+# 实测单进程 RSS 峰值约 90 MB，余量留给深核那几个 codex 线程
+MemoryMax=4G
+# 这台机器上还有向量服务和 Hermes 的几个网关，别把 CPU 抢光
+CPUWeight=30
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+cat > /opt/docker/nginx/conf.d/$DOMAIN.conf <<NG
+# csw-collector 工作台：/ 前端 SPA，/api/* → 8090。
+# **/healthz 与 /metrics 只给内网**：它们没有鉴权，会露出轮次数、失败数、磁盘百分比。
+server {
+    listen 80;
+    server_name $DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name $DOMAIN;
+
+    ssl_certificate     /data/www/nginx/cert/aworld.ltd/aworld.ltd.crt;
+    ssl_certificate_key /data/www/nginx/cert/aworld.ltd/aworld.ltd.key;
+    ssl_session_timeout 5m;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         ECDHE-RSA-AES128-GCM-SHA256:ECDHE:ECDH:AES:HIGH:!NULL:!aNULL:!MD5:!ADH:!RC4;
+    ssl_prefer_server_ciphers on;
+
+    client_max_body_size    64m;
+    # 一轮四十分钟，但 HTTP 这边不干活（写接口只排队），300 秒足够
+    proxy_connect_timeout   30s;
+    proxy_send_timeout      300s;
+    proxy_read_timeout      300s;
+
+    # 工作台接口。每一个都要服务端会话，读接口也不例外
+    location /api/ {
+        proxy_pass http://172.17.0.1:8090;
+        proxy_redirect off;
+        proxy_set_header Host              \$host;
+        proxy_set_header X-Real-IP         \$remote_addr;
+        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        # 会话 cookie 的 HttpOnly / Secure / SameSite 由服务端自己带，nginx 不改
+    }
+
+    # 运维两个：没有鉴权，只给内网
+    location = /healthz {
+        allow 127.0.0.1;
+        allow 172.16.0.0/12;
+        allow 10.0.0.0/8;
+        deny  all;
+        proxy_pass http://172.17.0.1:8090;
+        proxy_set_header Host \$host;
+    }
+    location = /metrics {
+        allow 127.0.0.1;
+        allow 172.16.0.0/12;
+        allow 10.0.0.0/8;
+        deny  all;
+        proxy_pass http://172.17.0.1:8090;
+        proxy_set_header Host \$host;
+    }
+
+    location / {
+        root /usr/share/nginx/html/csw-collector-web;
+        try_files \$uri /index.html;
+    }
+
+    access_log /data/www/nginx/log/$DOMAIN.log;
+}
+NG
+
+systemctl daemon-reload
+systemctl enable --now csw-collector >/dev/null 2>&1
+systemctl restart csw-collector
+docker exec base-nginx nginx -t >/dev/null && docker exec base-nginx nginx -s reload
+echo "   服务: csw-collector=$(systemctl is-active csw-collector) nginx=reloaded"
+
+# Hermes 那边一根头发都不该动，确认一下
+echo "   Hermes 主网关: $(systemctl --user is-active hermes-gateway.service 2>/dev/null || echo '读不到（不是 root 的用户级单元，正常）')"
+REMOTE
+
+log "5/6 检查"
+printf '   healthz（内网）: %s\n' "$("${SSH[@]}" 'curl -fsS --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8090/healthz' || echo '✗ 起不来，看 journalctl -u csw-collector')"
+printf '   前端:            HTTP %s\n' "$(curl -s -o /dev/null -w '%{http_code}' "https://$DOMAIN/")"
+printf '   接口未登录:      HTTP %s（401 即正常——读接口也要会话）\n' "$(curl -s -o /dev/null -w '%{http_code}' "https://$DOMAIN/api/rounds")"
+printf '   /metrics 公网:   HTTP %s（403 即正常）\n' "$(curl -s -o /dev/null -w '%{http_code}' "https://$DOMAIN/metrics")"
+
+# 8090 直连必须打不通。nginx 的 allow/deny 只管经过它的流量，
+# 端口本身若对公网开着，绕过 nginx 就什么都读得到
+HOSTIP="${HOST#*@}"
+RAW="$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://$HOSTIP:8090/metrics" || echo 000)"
+if [ "$RAW" = "200" ]; then
+  printf '\n\033[1;31m✗ 8090 从公网直接打通了（HTTP 200）。\n'
+  printf '  /metrics 与 /healthz 没有鉴权，现在等于公开。\n'
+  printf '  处置：给这台机的安全组或 firewalld 关掉 8090 的入站，只留 443。\033[0m\n'
+else
+  printf '   8090 公网直连:   %s（打不通即正常）\n' "$RAW"
+fi
+
+log "6/6 完成 → https://$DOMAIN"
+cat <<'NEXT'
+
+   接下来不在本脚本里的几步（都要单独取得同意）：
+   1. 填 /opt/csw-collector/collector.env 的密钥，systemctl restart csw-collector
+   2. 用**同一行 collector agent** 再签一枚运行面 token（新建 agent 接不到单：
+      任务在触发时就钉死到 ActiveAgentByRole 返回的那一行）
+   3. 夜间首次建知识库（约两小时）
+   4. 放行验证：影子轮跑一遍，结果写引擎副本，不碰生产引擎、不群播报
+   5. 切换清单：intake_sources 的 xhs/web 置 required=0 → wfctl activate daily_news@9
+      → 重跑 gen_stage_docs.py → 停 hermes-gateway-collector.service
+NEXT

@@ -1,0 +1,13 @@
+[Unit]
+Description=情报收集员工作台看门狗（盯早上那一轮）
+After=csw-collector.service
+
+[Service]
+Type=oneshot
+# 自动回退默认关。要开在 watchdog.env 里写 AUTO_ROLLBACK=1
+EnvironmentFile=-/opt/csw-collector/watchdog.env
+# 告警地址与服务共用一份
+EnvironmentFile=-/opt/csw-collector/collector.env
+ExecStart=/opt/csw-collector/bin/watchdog.sh
+# 看门狗自己挂了不该拖垮别的，也不该无限重试
+TimeoutStartSec=120

@@ -191,6 +191,22 @@ async fn healthz(State(st): State<Arc<AppState>>) -> Response {
 async fn metrics(State(st): State<Arc<AppState>>) -> Response {
     let conn = st.conn.lock().await;
     let one = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap_or(0) };
+    // 最近一个派单轮。查一次，七个指标共用——否则同一个子查询要写七遍，改漏一处就对不上
+    let last = one(
+        "SELECT COALESCE((SELECT id FROM rounds WHERE kind='task' ORDER BY id DESC LIMIT 1), 0)",
+    );
+    let of_last = |sql: &str| -> i64 {
+        if last == 0 {
+            return 0;
+        }
+        conn.query_row(sql, [last], |r| r.get(0)).unwrap_or(0)
+    };
+    // 开工时刻取 unix 秒：gauge 放不下 RFC3339，而看门狗要拿它算「都几点了还没动」
+    let started = if last == 0 {
+        0
+    } else {
+        of_last("SELECT CAST(strftime('%s', created_at) AS INTEGER) FROM rounds WHERE id=?1")
+    };
     let body = format!(
         "# HELP csw_collector_rounds_total 开过的轮次数\n\
          # TYPE csw_collector_rounds_total counter\n\
@@ -215,7 +231,28 @@ async fn metrics(State(st): State<Arc<AppState>>) -> Response {
          csw_collector_disk_used_pct {}\n\
          # HELP csw_collector_work_queued 还排着队的手动活\n\
          # TYPE csw_collector_work_queued gauge\n\
-         csw_collector_work_queued {}\n",
+         csw_collector_work_queued {}\n\
+         # HELP csw_collector_last_task_round_started_unix 最近一个派单轮的开工时刻（0 = 从来没开过）\n\
+         # TYPE csw_collector_last_task_round_started_unix gauge\n\
+         csw_collector_last_task_round_started_unix {}\n\
+         # HELP csw_collector_last_task_round_step 它做完了几步（满分 10）\n\
+         # TYPE csw_collector_last_task_round_step gauge\n\
+         csw_collector_last_task_round_step {}\n\
+         # HELP csw_collector_last_task_round_candidates 这一轮的候选数\n\
+         # TYPE csw_collector_last_task_round_candidates gauge\n\
+         csw_collector_last_task_round_candidates {}\n\
+         # HELP csw_collector_last_task_round_judged 其中判完的\n\
+         # TYPE csw_collector_last_task_round_judged gauge\n\
+         csw_collector_last_task_round_judged {}\n\
+         # HELP csw_collector_last_task_round_media 这一轮候选的图片总数\n\
+         # TYPE csw_collector_last_task_round_media gauge\n\
+         csw_collector_last_task_round_media {}\n\
+         # HELP csw_collector_last_task_round_media_described 其中识别出描述的\n\
+         # TYPE csw_collector_last_task_round_media_described gauge\n\
+         csw_collector_last_task_round_media_described {}\n\
+         # HELP csw_collector_last_task_round_delivered 这一轮已经交出去的件数\n\
+         # TYPE csw_collector_last_task_round_delivered gauge\n\
+         csw_collector_last_task_round_delivered {}\n",
         one("SELECT COUNT(*) FROM rounds"),
         one("SELECT COUNT(*) FROM rounds WHERE status='running'"),
         one("SELECT COUNT(*) FROM judgements"),
@@ -226,6 +263,27 @@ async fn metrics(State(st): State<Arc<AppState>>) -> Response {
             .map(i64::from)
             .unwrap_or(-1),
         one("SELECT COUNT(*) FROM work_queue WHERE status IN ('queued','running')"),
+        // 下面七个是给看门狗用的：只 curl 这一个接口就够判断今早那一轮走到哪了，
+        // 不必在生产机上装 sqlite3、也不必拿一枚会话。
+        // **只看派单轮**——手动轮与预取轮不算，看门狗盯的是真派下来的那一期。
+        started,
+        of_last(
+            "SELECT COUNT(DISTINCT step) FROM round_steps
+             WHERE round_id=?1 AND status IN ('succeeded','partial')",
+        ),
+        of_last("SELECT COUNT(*) FROM round_candidates WHERE round_id=?1"),
+        of_last("SELECT COUNT(*) FROM judgements WHERE round_id=?1"),
+        of_last(
+            "SELECT COUNT(*) FROM media m
+             JOIN round_candidates rc ON rc.candidate_key = m.candidate_key
+             WHERE rc.round_id=?1 AND m.kind='photo'",
+        ),
+        of_last(
+            "SELECT COUNT(DISTINCT d.blake3) FROM media_descriptions d
+             JOIN round_candidates rc ON rc.candidate_key = d.candidate_key
+             WHERE rc.round_id=?1",
+        ),
+        of_last("SELECT COUNT(*) FROM deliverables_local WHERE round_id=?1"),
     );
     ([("content-type", "text/plain; version=0.0.4")], body).into_response()
 }
@@ -1608,6 +1666,74 @@ mod tests {
         }
         let (code, _) = get(&as_van, "/api/van/today").await;
         assert_eq!(code, StatusCode::OK);
+    }
+
+    /// 看门狗只 curl `/metrics` 就要能判断今早那轮走到哪了，
+    /// 所以这七个指标缺一不可，名字也不能随手改——改了那边就静默地一直读到 0。
+    #[tokio::test]
+    async fn 指标里有看门狗要的那七个() {
+        // /metrics 在 ops_router 上，不在 api_router 上——它不要会话
+        let (_, st) = app();
+        let resp = ops_router(st)
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = http_body_util::BodyExt::collect(resp.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        let text = String::from_utf8_lossy(&bytes);
+        for m in [
+            "csw_collector_last_task_round_started_unix",
+            "csw_collector_last_task_round_step",
+            "csw_collector_last_task_round_candidates",
+            "csw_collector_last_task_round_judged",
+            "csw_collector_last_task_round_media",
+            "csw_collector_last_task_round_media_described",
+            "csw_collector_last_task_round_delivered",
+        ] {
+            assert!(text.contains(m), "指标里少了 {m}");
+        }
+        // 夹具那一轮：两条候选、两条判断、k1 两张图识别出一张
+        assert!(
+            text.contains("csw_collector_last_task_round_candidates 2"),
+            "{text}"
+        );
+        assert!(
+            text.contains("csw_collector_last_task_round_judged 2"),
+            "{text}"
+        );
+        assert!(
+            text.contains("csw_collector_last_task_round_media 2"),
+            "{text}"
+        );
+        assert!(
+            text.contains("csw_collector_last_task_round_media_described 1"),
+            "{text}"
+        );
+    }
+
+    /// `/metrics` 与 `/healthz` 不要会话（探活与抓取都没有 cookie），
+    /// 挡它们的是反代。这条测试钉住这个事实——哪天给它们加了守卫，
+    /// 看门狗与 Prometheus 会一起瞎掉，得先想清楚。
+    #[tokio::test]
+    async fn 运维两个接口不要会话() {
+        let (_, st) = app();
+        let ops = ops_router(st);
+        for uri in ["/healthz", "/metrics"] {
+            let resp = ops
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_ne!(resp.status(), StatusCode::UNAUTHORIZED, "{uri}");
+        }
     }
 
     async fn get(app: &Router, uri: &str) -> (StatusCode, serde_json::Value) {

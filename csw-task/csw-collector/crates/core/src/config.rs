@@ -189,10 +189,11 @@ pub struct Features {
 pub struct Web {
     /// 生产必须 true。本机 http 调试才关。
     pub secure_cookie: bool,
-    /// 这些 viewer 用户名在工作台里当 van
+    /// 这些 viewer 用户名在工作台里当 van。
+    ///
+    /// **不配就没有 Van 模式**：引擎里没有 van 这个角色，她登录进来是个普通 viewer，
+    /// 看到的是总览页而不是她那一页。
     pub van_usernames: Vec<String>,
-    /// 静态前端目录
-    pub static_dir: PathBuf,
 }
 
 /// 密钥。只从 env 读，`Debug` 里只露长度。
@@ -351,7 +352,6 @@ impl Default for Config {
             web: Web {
                 secure_cookie: true,
                 van_usernames: vec![],
-                static_dir: PathBuf::from("/opt/csw-collector/web"),
             },
         }
     }
