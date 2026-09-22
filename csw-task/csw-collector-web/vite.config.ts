@@ -15,6 +15,8 @@ export default defineConfig({
       // 开发时直连本地跑的采集服务。会话是 HttpOnly cookie，
       // 必须同源才带得上——所以走代理而不是填绝对地址。
       '/api': { target: 'http://127.0.0.1:8090', changeOrigin: false },
+      // healthz 不在 /api 下，但页面要读它
+      '/healthz': { target: 'http://127.0.0.1:8090', changeOrigin: false },
     },
   },
 })

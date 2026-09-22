@@ -322,7 +322,11 @@ impl Default for Config {
             },
             schedule: Schedule {
                 prefetch_at_utc: "17:40".into(), // 北京时间次日 01:40
-                kb_sync_at_utc: vec!["13:00".into(), "21:00".into()],
+                // 北京 21:00（接住当天发的）与 11:00（接住早上刚发的）。
+                // **不能排在 05:30 那一轮前后**：实测紧跟 kb sync 的那次 csw 取数
+                // 用了 1044 秒，前三次都是 7 秒。原先第二次排在 21:00 UTC
+                // （北京 05:00），离正式轮只有半小时——那正是踩过的坑。
+                kb_sync_at_utc: vec!["13:00".into(), "03:00".into()],
                 gpu_quiet_from_utc: "21:25".into(), // 北京 05:25
                 gpu_quiet_to_utc: "22:30".into(),   // 北京 06:30
                 media_retention_days: 120,
