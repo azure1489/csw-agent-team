@@ -288,23 +288,18 @@ server {
         # 会话 cookie 的 HttpOnly / Secure / SameSite 由服务端自己带，nginx 不改
     }
 
-    # 运维两个：没有鉴权，只给内网
-    location = /healthz {
-        allow 127.0.0.1;
-        allow 172.16.0.0/12;
-        allow 10.0.0.0/8;
-        deny  all;
-        proxy_pass http://172.17.0.1:8090;
-        proxy_set_header Host \$host;
-    }
-    location = /metrics {
-        allow 127.0.0.1;
-        allow 172.16.0.0/12;
-        allow 10.0.0.0/8;
-        deny  all;
-        proxy_pass http://172.17.0.1:8090;
-        proxy_set_header Host \$host;
-    }
+    # 运维两个：**根本不转发**。
+    #
+    # 一开始这里写的是 allow 127.0.0.1 / 172.16.0.0/12 / 10.0.0.0/8 + deny all，
+    # 实测**挡不住**：nginx 跑在 docker 里，公网请求经 docker-proxy 进来之后，
+    # 容器看到的 \$remote_addr 是网关 172.17.0.1 —— 正好落在 172.16.0.0/12 里，
+    # 于是每一个公网请求都被当成内网放行了。这是 docker NAT 的经典陷阱：
+    # **容器内的 IP 判断对外网毫无意义**。
+    #
+    # 这两个接口没有鉴权，会露出轮次数、失败数、磁盘百分比。要读就从机器内部读
+    # （看门狗读的也正是 127.0.0.1:8090），不从公网开口子。
+    location = /healthz { return 403; }
+    location = /metrics { return 403; }
 
     location / {
         root /usr/share/nginx/html/csw-collector-web;

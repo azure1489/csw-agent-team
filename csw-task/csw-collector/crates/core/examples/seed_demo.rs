@@ -126,13 +126,24 @@ fn main() -> Result<()> {
     // 首批深核
     workbench::set_first_batch(&conn, round.id, &["and_wander".into(), "snowpeak".into(), "nanga".into()])?;
 
-    // 一条排队的活 + 几条留痕
-    workbench::enqueue(&conn, "manual_round", None, &serde_json::json!({"days": 2}), "editor")?;
+    // 一件**已经做完**的活 + 几条留痕。
+    //
+    // 这里曾经留的是一件「排队中」的活，为的是让总览页有东西看。
+    // 后果是：服务一启动，主循环的 `run_queued` 就把它当真活取出来执行了——
+    // 开了第二轮、去打了真的 csw 接口（假密钥被 401 拒绝）。
+    // **样例数据不能留任何「待执行」的东西**：它会被真的执行。
+    let work = workbench::enqueue(&conn, "manual_round", None, &serde_json::json!({"days": 2}), "editor")?;
+    workbench::take_next(&conn)?; // 标 running
+    workbench::finish_work(&conn, work, true, "第 1 轮：取到 12 条，判了 12（推荐 4 备选 3 待核 2）")?;
     workbench::audit(&conn, "editor", "first_batch", &format!("r{}", round.id), &serde_json::json!({"要的": 3, "标上的": 3}))?;
     workbench::audit(&conn, "van", "van_mark", &format!("r{}/and_wander", round.id), &serde_json::json!({"mark": "like"}))?;
 
+    // 轮次收尾。不收的话总览页会一直显示「还在跑」，而且重启后的
+    // `recover_interrupted` 会把它的步标成中断——样例数据不该看着像出了事
+    rounds::finish_round(&conn, round.id, "done", "")?;
+
     println!(
-        "造好了：{} 条候选、{} 条判断、2 条改档、3 个勾选、1 件排队的活",
+        "造好了：{} 条候选、{} 条判断、2 条改档、3 个勾选、1 件做完的活",
         rows.len(),
         rows.len()
     );
