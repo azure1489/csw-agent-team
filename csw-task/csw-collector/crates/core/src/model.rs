@@ -115,6 +115,8 @@ pub struct ModelClient {
     http: reqwest::Client,
     /// 全进程的网关闸门。识别与判断共用。
     gate: Arc<Semaphore>,
+    /// 录制回放。`None` 等同直连。
+    rec: Option<Arc<crate::record::Recorder>>,
 }
 
 impl ModelClient {
@@ -123,7 +125,18 @@ impl ModelClient {
         anyhow::ensure!(!cfg.api_key.is_empty(), "缺 SUB2API_API_KEY");
         let http = reqwest::Client::builder().timeout(cfg.timeout).build()?;
         let gate = Arc::new(Semaphore::new(cfg.concurrency.max(1)));
-        Ok(Self { cfg, http, gate })
+        Ok(Self {
+            cfg,
+            http,
+            gate,
+            rec: None,
+        })
+    }
+
+    /// 挂上录制回放层。回放模式下**不出网**，未命中即失败。
+    pub fn with_recorder(mut self, rec: Arc<crate::record::Recorder>) -> Self {
+        self.rec = Some(rec);
+        self
     }
 
     /// 发一次带严格 schema 的调用。
@@ -172,6 +185,39 @@ impl ModelClient {
     }
 
     async fn send(&self, body: &serde_json::Value, model: &str) -> Result<ModelOutput> {
+        // 录制回放挂在**最外层**：回放时连 HTTP 客户端都不碰，
+        // 也就不会因为超时、退避、闸门这些东西让回放结果和录制时不一样。
+        if let Some(rec) = &self.rec {
+            let t0 = Instant::now();
+            let raw = rec
+                .wrap("model", body, || async { self.send_http(body).await })
+                .await?;
+            let parsed: RespBody = serde_json::from_value(raw).context("解析回放的响应")?;
+            let out = extract(&parsed).context("回放的响应里没有输出文本")?;
+            return Ok(ModelOutput {
+                text: out,
+                input_tokens: parsed.usage.input_tokens,
+                output_tokens: parsed.usage.output_tokens,
+                latency_ms: t0.elapsed().as_millis() as u64,
+                attempts: 1,
+                model: model.to_string(),
+            });
+        }
+        self.send_direct(body, model).await
+    }
+
+    /// 只负责把请求发出去、把 JSON 拿回来。录制层要的是这一层。
+    async fn send_http(&self, body: &serde_json::Value) -> Result<serde_json::Value> {
+        let out = self.send_direct(body, &self.cfg.model).await?;
+        // 录下来的是**原始响应**，不是我们解析后的结构——
+        // 解析逻辑以后会变，夹具不该跟着变
+        Ok(serde_json::json!({
+            "output": [{"content": [{"type": "output_text", "text": out.text}]}],
+            "usage": {"input_tokens": out.input_tokens, "output_tokens": out.output_tokens}
+        }))
+    }
+
+    async fn send_direct(&self, body: &serde_json::Value, model: &str) -> Result<ModelOutput> {
         let url = format!("{}/responses", self.cfg.base_url.trim_end_matches('/'));
         let t0 = Instant::now();
         let mut attempt = 0;

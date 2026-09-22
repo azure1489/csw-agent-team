@@ -112,6 +112,8 @@ pub struct RerankItem {
 pub struct VectorClient {
     cfg: VectorConfig,
     http: reqwest::Client,
+    /// 录制回放。`None` 等同直连。
+    rec: Option<Arc<crate::record::Recorder>>,
     /// 单卡串行的那把锁。**所有**出网调用都要先拿到它。
     gpu: Arc<Mutex<()>>,
 }
@@ -124,7 +126,14 @@ impl VectorClient {
             cfg,
             http,
             gpu: Arc::new(Mutex::new(())),
+            rec: None,
         })
+    }
+
+    /// 挂上录制回放层。回放模式下**不出网**，未命中即失败。
+    pub fn with_recorder(mut self, rec: Arc<crate::record::Recorder>) -> Self {
+        self.rec = Some(rec);
+        self
     }
 
     /// 向量化。按重量自动分批，OOM 自动对半降批。
@@ -210,6 +219,24 @@ impl VectorClient {
         path: &str,
         body: &serde_json::Value,
     ) -> Result<T> {
+        if let Some(rec) = &self.rec {
+            // 夹具按用途分目录：embed 与 rerank 的请求形状不一样，混在一起不好查
+            let client = if path.contains("rerank") {
+                "rerank"
+            } else {
+                "embed"
+            };
+            let raw = rec
+                .wrap(client, body, || async { self.post_http(path, body).await })
+                .await?;
+            return serde_json::from_value(raw).with_context(|| format!("解析回放的 {path}"));
+        }
+        self.post_http(path, body)
+            .await
+            .and_then(|v| serde_json::from_value(v).with_context(|| format!("解析 {path}")))
+    }
+
+    async fn post_http(&self, path: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
         let url = format!("{}{}", self.cfg.base_url.trim_end_matches('/'), path);
         let resp = self
             .http

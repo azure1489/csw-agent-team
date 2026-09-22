@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
@@ -173,6 +173,8 @@ pub struct JevClient {
     http: reqwest::Client,
     api_key: String,
     sem: Arc<Semaphore>,
+    /// 录制回放。`None` 等同直连。
+    rec: Option<Arc<crate::record::Recorder>>,
 }
 
 impl JevClient {
@@ -185,7 +187,14 @@ impl JevClient {
             cfg,
             api_key: api_key.to_string(),
             sem,
+            rec: None,
         })
+    }
+
+    /// 挂上录制回放层。回放模式下**不出网**，未命中即失败。
+    pub fn with_recorder(mut self, rec: Arc<crate::record::Recorder>) -> Self {
+        self.rec = Some(rec);
+        self
     }
 
     /// 问一组问题。
@@ -204,8 +213,32 @@ impl JevClient {
             "model": self.cfg.model,
             "questions": questions,
         });
-        let url = format!("{}/v1/systemone", self.cfg.base_url.trim_end_matches('/'));
+        if let Some(rec) = &self.rec {
+            let raw = rec
+                .wrap("jev", &body, || async { self.ask_http(&body).await })
+                .await?;
+            let answers = raw
+                .get("answers")
+                .and_then(Value::as_object)
+                .cloned()
+                .context("回放的 Jev 答案里没有 answers")?;
+            anyhow::ensure!(!answers.is_empty(), "回放的 Jev 答案是空的");
+            return Ok(Answers { raw: answers });
+        }
+        self.ask_http(&body).await.and_then(|v| {
+            let answers = v
+                .get("answers")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            anyhow::ensure!(!answers.is_empty(), "Jev 回了空答案");
+            Ok(Answers { raw: answers })
+        })
+    }
 
+    /// 只负责发请求拿 JSON。录制层要的是这一层。
+    async fn ask_http(&self, body: &Value) -> Result<Value> {
+        let url = format!("{}/v1/systemone", self.cfg.base_url.trim_end_matches('/'));
         let _permit = self.sem.acquire().await?;
         let mut last = String::new();
         for attempt in 0..self.cfg.max_attempts {
@@ -218,14 +251,7 @@ impl JevClient {
                 .await;
             match resp {
                 Ok(r) if r.status().is_success() => {
-                    #[derive(Deserialize)]
-                    struct Wrap {
-                        #[serde(default)]
-                        answers: serde_json::Map<String, Value>,
-                    }
-                    let w: Wrap = r.json().await.context("解析 Jev 回答")?;
-                    anyhow::ensure!(!w.answers.is_empty(), "Jev 回了空答案");
-                    return Ok(Answers { raw: w.answers });
+                    return r.json().await.context("解析 Jev 回答");
                 }
                 Ok(r) => {
                     let code = r.status();

@@ -260,3 +260,146 @@ mod tests {
         assert!(rec.inventory().is_empty());
     }
 }
+
+#[cfg(test)]
+mod wiring_tests {
+    use super::*;
+    use crate::model::{ModelClient, ModelConfig};
+    use std::sync::Arc;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn ok_body(text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "output": [{"content": [{"type": "output_text", "text": text}]}],
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        })
+    }
+
+    async fn client(uri: &str, rec: Arc<Recorder>) -> ModelClient {
+        ModelClient::new(ModelConfig {
+            base_url: uri.into(),
+            api_key: "k".into(),
+            model: "m".into(),
+            fallback_model: String::new(),
+            concurrency: 2,
+            timeout: std::time::Duration::from_secs(5),
+            max_attempts: 1,
+        })
+        .unwrap()
+        .with_recorder(rec)
+    }
+
+    fn parts() -> Vec<crate::model::Part> {
+        vec![crate::model::Part::Text("正文".into())]
+    }
+
+    fn schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+            "required": ["a"],
+            "additionalProperties": false
+        })
+    }
+
+    #[tokio::test]
+    async fn 录一次之后回放不再出网() {
+        let dir = tempdir::TempDir::new("rec").unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(r#"{"a":"甲"}"#)))
+            // 只该被调一次：回放那次不出网
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let rec = Arc::new(Recorder::new(Mode::Record, dir.path()));
+        let out = client(&server.uri(), rec)
+            .await
+            .structured(&parts(), "s", &schema(), 100)
+            .await
+            .unwrap();
+        assert_eq!(out.text, r#"{"a":"甲"}"#);
+
+        // 换成回放：同样的请求，同样的答案，但不碰网络
+        let rec = Arc::new(Recorder::new(Mode::Replay, dir.path()));
+        let out = client(&server.uri(), rec)
+            .await
+            .structured(&parts(), "s", &schema(), 100)
+            .await
+            .unwrap();
+        assert_eq!(out.text, r#"{"a":"甲"}"#);
+        assert_eq!(out.input_tokens, 10, "用量也要录下来");
+    }
+
+    #[tokio::test]
+    async fn 回放未命中要失败不许静默穿透() {
+        let dir = tempdir::TempDir::new("rec").unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_body("不该被调到")))
+            // 一次都不该被调：悄悄去调真接口的回放层等于没有回放层
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let rec = Arc::new(Recorder::new(Mode::Replay, dir.path()));
+        let e = client(&server.uri(), rec)
+            .await
+            .structured(&parts(), "s", &schema(), 100)
+            .await
+            .unwrap_err();
+        let msg = format!("{e:#}");
+        // 报错里要带键，好去对照是哪一条请求变了
+        assert!(msg.contains("未命中") || msg.contains("夹具"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn 请求变了就该未命中() {
+        let dir = tempdir::TempDir::new("rec").unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(r#"{"a":"甲"}"#)))
+            .mount(&server)
+            .await;
+        let rec = Arc::new(Recorder::new(Mode::Record, dir.path()));
+        client(&server.uri(), rec)
+            .await
+            .structured(&parts(), "s", &schema(), 100)
+            .await
+            .unwrap();
+
+        // 正文改了一个字 → 键变了 → 回放该拦住。
+        // 这正是回放要拦的东西：提示词悄悄改了而夹具没更新
+        let rec = Arc::new(Recorder::new(Mode::Replay, dir.path()));
+        let other = vec![crate::model::Part::Text("改过的正文".into())];
+        assert!(
+            client(&server.uri(), rec)
+                .await
+                .structured(&other, "s", &schema(), 100)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn 夹具清单看得见每类多少条() {
+        let dir = tempdir::TempDir::new("rec").unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_body("x")))
+            .mount(&server)
+            .await;
+        let rec = Arc::new(Recorder::new(Mode::Record, dir.path()));
+        for t in ["甲", "乙"] {
+            let p = vec![crate::model::Part::Text(t.into())];
+            let _ = client(&server.uri(), rec.clone())
+                .await
+                .structured(&p, "s", &schema(), 100)
+                .await;
+        }
+        // 跑回归前先看一眼，别拿空目录跑
+        assert_eq!(rec.inventory(), [("model".to_string(), 2)]);
+    }
+}

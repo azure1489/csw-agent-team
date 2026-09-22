@@ -23,5 +23,6 @@ tokio.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true
+tempdir.workspace = true
 # 录制回放层的测试要跑 async
 tokio = { workspace = true, features = ["rt", "macros"] }

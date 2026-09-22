@@ -39,6 +39,16 @@ impl Services {
         secrets: &Secrets,
         conn: &rusqlite::Connection,
     ) -> Result<Self> {
+        Self::build_with_recorder(cfg, secrets, conn, None).await
+    }
+
+    /// 带录制回放层地建。`rec` 为 `Some` 时三个出网客户端都挂上它。
+    pub async fn build_with_recorder(
+        cfg: &Config,
+        secrets: &Secrets,
+        conn: &rusqlite::Connection,
+        rec: Option<std::sync::Arc<csw_collector_core::record::Recorder>>,
+    ) -> Result<Self> {
         let csw = Arc::new(CswClient::new(CswConfig {
             base_url: cfg.csw.base_url.clone(),
             api_key: secrets.csw_api_key.clone(),
@@ -54,12 +64,20 @@ impl Services {
             timeout: Duration::from_secs(cfg.model.timeout_secs),
             max_attempts: 3,
         })?;
+        let model = match &rec {
+            Some(r) => model.with_recorder(r.clone()),
+            None => model,
+        };
         let vector = VectorClient::new(VectorConfig {
             base_url: cfg.vector.base_url.clone(),
             timeout: Duration::from_secs(cfg.vector.timeout_secs),
             batch_weight: cfg.vector.text_batch,
             ..Default::default()
         })?;
+        let vector = match &rec {
+            Some(r) => vector.with_recorder(r.clone()),
+            None => vector,
+        };
         // 密钥不在就自动关：初评跳过并在台账标注，比半开着强
         let jev = (cfg.jev.enabled && !secrets.typesafe_key.trim().is_empty())
             .then(|| {
@@ -74,6 +92,10 @@ impl Services {
                 )
             })
             .transpose()?;
+        let jev = jev.map(|j| match &rec {
+            Some(r) => j.with_recorder(r.clone()),
+            None => j,
+        });
         if jev.is_none() {
             tracing::warn!("Jev 没开：初评、合并与核对都会跳过，判断照跑");
         }
