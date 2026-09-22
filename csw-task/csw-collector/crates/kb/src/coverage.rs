@@ -54,7 +54,16 @@ const EVIDENCE_MAX: usize = 5;
 const ADOPTED: [&str; 3] = ["written", "approved_write", "published"];
 
 pub fn backfill_list(conn: &Connection, brands: &BrandIndex) -> Result<Vec<BackfillRow>> {
-    let known: HashSet<String> = brands.keys();
+    let mut known: HashSet<String> = brands.keys();
+    // 在册名的第一个词也算：决定里写 `altra`、`barebones`，在册的是
+    // `ALTRA RUNNING`、`Barebones Living`（线上首跑的误报）。只在清单这里放宽——
+    // 检索那边不做，`ho`（H&O）会吃掉 `houdini`；这里短于 3 个字符的不认。
+    known.extend(
+        brands
+            .first_word_keys()
+            .into_iter()
+            .filter(|k| k.chars().count() >= 3),
+    );
 
     let mut stmt = conn.prepare(
         "SELECT kind, brand, title, published_at, url,
@@ -172,10 +181,14 @@ mod tests {
     fn 在册的不列_没在册的按被选中排前() {
         let conn = csw_collector_core::store::open_in_memory().unwrap();
         let idx = BrandIndex::new(
-            [("SNOW PEAK", "snowpeak_official"), ("TRIPATH", "tripath")]
-                .into_iter()
-                .filter_map(|(b, a)| Alias::new(b, a))
-                .collect(),
+            [
+                ("SNOW PEAK", "snowpeak_official"),
+                ("TRIPATH", "tripath"),
+                ("ALTRA RUNNING", "altrarunning_japan"),
+            ]
+            .into_iter()
+            .filter_map(|(b, a)| Alias::new(b, a))
+            .collect(),
         );
         // 在册：键相同
         put(
@@ -219,6 +232,15 @@ mod tests {
             "e",
             "kaname",
             "KANAME东京出店",
+            "结论：dropped",
+        );
+        // 在册：在册名的第一个词
+        put(
+            &conn,
+            "decision",
+            "g",
+            "altra",
+            "altra｜77083",
             "结论：dropped",
         );
         // 已生成贴文不参与对账

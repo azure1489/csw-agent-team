@@ -174,6 +174,15 @@ impl BrandIndex {
             .collect()
     }
 
+    /// 在册品牌名第一个词的品牌键（`ALTRA RUNNING` → `altra`）。
+    pub fn first_word_keys(&self) -> std::collections::HashSet<String> {
+        self.aliases
+            .iter()
+            .filter_map(|a| a.brand.split_whitespace().next().map(brand_key))
+            .filter(|k| !k.is_empty())
+            .collect()
+    }
+
     /// 能进 jieba 用户词典的那些别名（不含空白）。
     pub fn dict_words(&self) -> Vec<&str> {
         self.aliases
