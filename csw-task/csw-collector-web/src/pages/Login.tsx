@@ -1,10 +1,11 @@
 import { useState } from 'react'
+import { Navigate } from 'react-router-dom'
 
 import { errText } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 
 export function Login() {
-  const { login } = useAuth()
+  const { login, me } = useAuth()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [err, setErr] = useState('')
@@ -22,6 +23,16 @@ export function Login() {
       setBusy(false)
     }
   }
+
+  // **登录成功后必须离开这一页。**
+  //
+  // `login()` 只把 me 放进 context，路由不会自己动——少了这一句，
+  // 点完登录接口返回 200、状态也对，但人还停在登录表单上，
+  // 看着就像「一闪就没了」，其实是从来没走。
+  //
+  // 用 Navigate 而不是在 submit 里 navigate：它同时管住「已经登录的人直接
+  // 打开 /login」那种情况，否则他们会对着一张永远进不去的表单反复试。
+  if (me) return <Navigate to="/" replace />
 
   return (
     <div className="flex min-h-screen items-center justify-center px-4">
