@@ -1120,6 +1120,7 @@ dependencies = [
  "csw-collector-kb",
  "futures",
  "jiff",
+ "regex",
  "reqwest 0.13.5",
  "rusqlite",
  "serde",

@@ -18,6 +18,7 @@ tokio.workspace = true
 rusqlite.workspace = true
 futures.workspace = true
 blake3.workspace = true
+regex.workspace = true
 jiff.workspace = true
 
 [dev-dependencies]
