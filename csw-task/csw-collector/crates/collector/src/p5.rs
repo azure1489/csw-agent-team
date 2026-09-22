@@ -295,20 +295,38 @@ fn since_ts(since: &str) -> String {
     }
 }
 
+/// 把一列时间归一成 ISO 文本（`2026-09-22T05:30:00Z`）的 SQL 表达式。
+///
+/// # 为什么要它
+///
+/// Hermes 的会话库把 `messages.timestamp` 存成 **`REAL`（Unix 秒）**。第一版直接拿它
+/// 和 `'2026-06-01T00:00:00Z'` 比——**SQLite 里数字永远小于文本**，于是条件对每一行
+/// 都是假，九个库一个人都数不出来，而且**没有任何报错**。单测没抓到，是因为夹具建的是
+/// `timestamp TEXT`：夹具和真库不是一个类型。
+///
+/// 归一之后比较与输出都用文本：ISO 串按字典序比就是按时间比，两种存法都认。
+fn iso(col: &str) -> String {
+    format!(
+        "(CASE WHEN typeof({col}) IN ('real','integer') \
+               THEN strftime('%Y-%m-%dT%H:%M:%SZ', {col}, 'unixepoch') ELSE {col} END)"
+    )
+}
+
 fn speakers_in(path: &Path, profile: &str, since: &str) -> Result<Vec<Speaker>> {
     let conn = open_ro(path)?;
     let since = since_ts(since);
-    let mut st = conn.prepare(
+    let t = iso("m.timestamp");
+    let mut st = conn.prepare(&format!(
         "SELECT s.user_id,
                 COALESCE(MAX(s.display_name), ''),
                 SUM(CASE WHEN COALESCE(s.chat_type,'') = 'group' THEN 0 ELSE 1 END),
                 SUM(CASE WHEN COALESCE(s.chat_type,'') = 'group' THEN 1 ELSE 0 END),
-                MIN(m.timestamp), MAX(m.timestamp)
+                MIN({t}), MAX({t})
            FROM messages m JOIN sessions s ON s.id = m.session_id
-          WHERE m.role = 'user' AND m.timestamp >= ?1
+          WHERE m.role = 'user' AND {t} >= ?1
             AND COALESCE(s.user_id,'') <> ''
-          GROUP BY s.user_id",
-    )?;
+          GROUP BY s.user_id"
+    ))?;
     let rows = st.query_map([&since], |r| {
         Ok(Speaker {
             profile: profile.to_string(),
@@ -320,7 +338,9 @@ fn speakers_in(path: &Path, profile: &str, since: &str) -> Result<Vec<Speaker>> 
             last_at: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
         })
     })?;
-    Ok(rows.flatten().collect())
+    // **不用 `.flatten()`**：它会把读取失败的行悄悄丢掉。类型对不上时第一版就是
+    // 这么「成功地」返回了一张空表——错要报出来，不能吞。
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 fn quotes_in(
@@ -336,35 +356,37 @@ fn quotes_in(
     let holes = std::iter::repeat_n("?", who.len())
         .collect::<Vec<_>>()
         .join(",");
+    let t = iso("m.timestamp");
     let sql = format!(
-        "SELECT m.id, m.session_id, COALESCE(s.chat_type,''), m.timestamp, m.content
+        "SELECT m.id, m.session_id, COALESCE(s.chat_type,''), {t}, m.content
            FROM messages m JOIN sessions s ON s.id = m.session_id
-          WHERE m.role = 'user' AND m.timestamp >= ?1
+          WHERE m.role = 'user' AND {t} >= ?1
             AND s.user_id IN ({holes})
             AND COALESCE(m.content,'') <> ''
-          ORDER BY m.timestamp"
+          ORDER BY m.timestamp, m.id"
     );
     let mut params: Vec<&dyn rusqlite::ToSql> = vec![&since];
     for w in who {
         params.push(w);
     }
     let mut st = conn.prepare(&sql)?;
-    let rows: Vec<(String, String, String, String, String)> = st
+    let rows: Vec<(i64, String, String, String, String)> = st
         .query_map(params.as_slice(), |r| {
             Ok((
-                r.get::<_, i64>(0)?.to_string(),
+                r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(3)?.unwrap_or_default(),
                 r.get::<_, String>(4)?,
             ))
         })?
-        .flatten()
-        .collect();
+        // 同上：不 flatten，读取出错要报出来
+        .collect::<rusqlite::Result<Vec<_>>>()?;
 
     let mut out = Vec::with_capacity(rows.len());
     for (id, session_id, chat_type, at, text) in rows {
-        let (before, after) = context_of(&conn, &session_id, &at, ctx)?;
+        let (before, after) = context_of(&conn, &session_id, id, ctx)?;
+        let id = id.to_string();
         out.push(Quote {
             profile: profile.to_string(),
             session_id,
@@ -385,32 +407,40 @@ fn quotes_in(
 }
 
 /// 取这句话前后各 `n` 条。上下文是用来认场景的，所以按长度截断。
+///
+/// **按消息 id 前后取，不按时间。** 同一会话里 id 随时间递增；按时间比就又要面对
+/// 「REAL 还是 TEXT」那个坑，而且同一秒里的两条会分不出先后。
 fn context_of(
     conn: &Connection,
     session_id: &str,
-    at: &str,
+    msg_id: i64,
     n: usize,
 ) -> Result<(Vec<ContextLine>, Vec<ContextLine>)> {
     if n == 0 {
         return Ok((vec![], vec![]));
     }
+    let t = iso("timestamp");
     let mut before = fetch_ctx(
         conn,
-        "SELECT role, timestamp, content FROM messages
-          WHERE session_id = ?1 AND timestamp < ?2 AND COALESCE(content,'') <> ''
-          ORDER BY timestamp DESC LIMIT ?3",
+        &format!(
+            "SELECT role, {t}, content FROM messages
+              WHERE session_id = ?1 AND id < ?2 AND COALESCE(content,'') <> ''
+              ORDER BY id DESC LIMIT ?3"
+        ),
         session_id,
-        at,
+        msg_id,
         n,
     )?;
     before.reverse(); // 查出来是倒序，还原成时间正序
     let after = fetch_ctx(
         conn,
-        "SELECT role, timestamp, content FROM messages
-          WHERE session_id = ?1 AND timestamp > ?2 AND COALESCE(content,'') <> ''
-          ORDER BY timestamp LIMIT ?3",
+        &format!(
+            "SELECT role, {t}, content FROM messages
+              WHERE session_id = ?1 AND id > ?2 AND COALESCE(content,'') <> ''
+              ORDER BY id LIMIT ?3"
+        ),
         session_id,
-        at,
+        msg_id,
         n,
     )?;
     Ok((before, after))
@@ -420,19 +450,21 @@ fn fetch_ctx(
     conn: &Connection,
     sql: &str,
     session_id: &str,
-    at: &str,
+    msg_id: i64,
     n: usize,
 ) -> Result<Vec<ContextLine>> {
     let mut st = conn.prepare(sql)?;
-    let rows = st.query_map(rusqlite::params![session_id, at, n as i64], |r| {
+    let rows = st.query_map(rusqlite::params![session_id, msg_id, n as i64], |r| {
         Ok(ContextLine {
             role: r.get::<_, String>(0)?,
-            at: r.get::<_, String>(1)?,
+            at: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
             text: r.get::<_, String>(2)?,
         })
     })?;
+    // 不 flatten：读取出错要报出来
     Ok(rows
-        .flatten()
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
         .map(|mut c| {
             if c.text.chars().count() > CONTEXT_CHARS {
                 c.text = c.text.chars().take(CONTEXT_CHARS).collect::<String>() + "…（截断）";
@@ -447,6 +479,67 @@ mod tests {
     use super::*;
 
     /// 造一个长得像 Hermes 会话库的临时库。
+    /// **照真实 Hermes 会话库建的夹具**：`timestamp REAL`（Unix 秒）。
+    ///
+    /// 旧夹具用的是 `TEXT`，于是第一版「时间拿 REAL 和文本比」的 bug 测不出来——
+    /// 上线扫九个真库，一个人都没数到，而且没有任何报错。两种存法都留着测。
+    ///
+    /// 2026-06-10T09:00:00Z = 1781082000；2026-05-01T09:00:00Z = 1777626000
+    fn fake_db_real(dir: &Path, profile: &str) -> PathBuf {
+        let d = dir.join(profile);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("state.db");
+        let c = Connection::open(&p).unwrap();
+        c.execute_batch(
+            "CREATE TABLE sessions(id TEXT PRIMARY KEY, user_id TEXT, chat_type TEXT, display_name TEXT, started_at REAL);
+             CREATE TABLE messages(id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT, timestamp REAL);
+             INSERT INTO sessions VALUES ('s1','ou_van','p2p','Van',1781082000.0),('s2','ou_other','group','别人',1781168400.0);
+             INSERT INTO messages(session_id,role,content,timestamp) VALUES
+               ('s1','assistant','今天这条推荐给你看',1781082000.0),
+               ('s1','user','这个不要，不是新品',1781082060.5),
+               ('s1','assistant','好的，我换一条',1781082120.0),
+               ('s1','user','五月那条也别发了',1777626000.0),
+               ('s2','user','别人说的话',1781168400.0);",
+        )
+        .unwrap();
+        p
+    }
+
+    #[test]
+    fn 时间存成unix秒的真实会话库也数得出人() {
+        let dir = tempdir::TempDir::new("p5real").unwrap();
+        fake_db_real(dir.path(), "chief");
+        let dbs = vec![("chief".to_string(), dir.path().join("chief/state.db"))];
+        let sp = speakers_in(&dbs[0].1, "chief", "2026-06-01").unwrap();
+        // 两个人都在窗口里说过话；五月那句被窗口卡掉，但 Van 六月还有一句
+        assert_eq!(sp.len(), 2, "REAL 时间也要数得出人：{sp:?}");
+        let van = sp.iter().find(|s| s.user_id == "ou_van").unwrap();
+        assert_eq!(van.direct, 1, "五月那句不在窗口里");
+        // 输出的时间要是可读的 ISO，不是一串浮点数
+        assert_eq!(van.first_at, "2026-06-10T09:01:00Z");
+    }
+
+    #[test]
+    fn 时间存成unix秒时抽话与上下文也对() {
+        let dir = tempdir::TempDir::new("p5real2").unwrap();
+        fake_db_real(dir.path(), "chief");
+        let q = quotes_in(
+            &dir.path().join("chief/state.db"),
+            "chief",
+            &["ou_van".to_string()],
+            "2026-06-01",
+            1,
+        )
+        .unwrap();
+        assert_eq!(q.len(), 1, "只有六月那一句：{q:?}");
+        assert_eq!(q[0].text, "这个不要，不是新品");
+        assert_eq!(q[0].said_at, "2026-06-10T09:01:00Z");
+        // 前后各一条，按消息 id 取
+        assert_eq!(q[0].context_before.len(), 1);
+        assert_eq!(q[0].context_before[0].text, "今天这条推荐给你看");
+        assert_eq!(q[0].context_after[0].text, "好的，我换一条");
+    }
+
     fn fake_db(dir: &Path, profile: &str) -> PathBuf {
         let d = dir.join(profile);
         std::fs::create_dir_all(&d).unwrap();
