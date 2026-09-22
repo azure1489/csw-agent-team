@@ -45,19 +45,27 @@ impl Services {
         Self::build_with_recorder(cfg, secrets, conn, None).await
     }
 
-    /// 带录制回放层地建。`rec` 为 `Some` 时三个出网客户端都挂上它。
+    /// 带录制回放层地建。`rec` 为 `Some` 时**五个**出网口子都挂上它：
+    /// 模型、Jev、向量、贴文库、图片下载。
+    ///
+    /// 贴文库那个曾经漏了，于是 `replay` 说的「不出网」其实只对判断那半段成立——
+    /// 采集那一段照样在调真接口。
     pub async fn build_with_recorder(
         cfg: &Config,
         secrets: &Secrets,
         conn: &rusqlite::Connection,
         rec: Option<std::sync::Arc<csw_collector_core::record::Recorder>>,
     ) -> Result<Self> {
-        let csw = Arc::new(CswClient::new(CswConfig {
+        let csw = CswClient::new(CswConfig {
             base_url: cfg.csw.base_url.clone(),
             api_key: secrets.csw_api_key.clone(),
             page_size: cfg.csw.window_page,
             timeout: Duration::from_secs(cfg.csw.timeout_secs),
-        })?);
+        })?;
+        let csw = Arc::new(match &rec {
+            Some(r) => csw.with_recorder(r.clone()),
+            None => csw,
+        });
         let model = ModelClient::new(ModelConfig {
             base_url: cfg.model.base_url.clone(),
             api_key: secrets.sub2api_key.clone(),
@@ -115,7 +123,13 @@ impl Services {
         Ok(Self {
             alert: csw_collector_core::alert::Alerter::new(&cfg.alert.webhook_url),
             csw,
-            downloader: super::round::downloader(cfg)?,
+            downloader: {
+                let d = super::round::downloader(cfg)?;
+                match &rec {
+                    Some(r) => d.with_recorder(r.clone()),
+                    None => d,
+                }
+            },
             model,
             vector,
             jev,

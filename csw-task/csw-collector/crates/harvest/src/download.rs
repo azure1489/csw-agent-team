@@ -96,6 +96,8 @@ pub struct Downloader {
     cfg: DownloadConfig,
     http: reqwest::Client,
     gate: Arc<Semaphore>,
+    /// 挂上之后回放模式下不再去拉图。见 [`Self::with_recorder`]。
+    rec: Option<Arc<csw_collector_core::record::Recorder>>,
 }
 
 impl Downloader {
@@ -103,7 +105,27 @@ impl Downloader {
         csw_collector_core::ensure_crypto_provider();
         let http = reqwest::Client::builder().timeout(cfg.timeout).build()?;
         let gate = Arc::new(Semaphore::new(cfg.concurrency.max(1)));
-        Ok(Self { cfg, http, gate })
+        Ok(Self {
+            cfg,
+            http,
+            gate,
+            rec: None,
+        })
+    }
+
+    /// 挂上录制回放层。
+    ///
+    /// # 夹具里只有 URL → 哈希，图片本身还在 blob 目录里
+    ///
+    /// 下载是**先取回字节才算得出哈希**的，所以 blob 缓存挡不住出网：
+    /// 不问一次就不知道该找哪个文件。夹具补上的正是这一跳。
+    ///
+    /// 这意味着**夹具和 blob 目录是一对**，blob 被清掉（图片有 120 天清理）
+    /// 回放就会失败，报错里会说清是哪张。这比静默去拉图强——
+    /// 那样回放就又出网了。
+    pub fn with_recorder(mut self, rec: Arc<csw_collector_core::record::Recorder>) -> Self {
+        self.rec = Some(rec);
+        self
     }
 
     /// 批量下载。**不会因为个别失败而整批失败**——失败的进 `failed`，成功的照常返回。
@@ -134,6 +156,12 @@ impl Downloader {
             .acquire()
             .await
             .map_err(|e| (url.clone(), e.to_string()))?;
+        if let Some(rec) = self.rec.clone() {
+            return self
+                .fetch_recorded(&rec, &url)
+                .await
+                .map_err(|e| (url.clone(), format!("{e:#}")));
+        }
         let target = sized_url(&url, self.cfg.width);
         let mut attempt = 0;
         loop {
@@ -147,6 +175,40 @@ impl Downloader {
                 Err(e) => return Err((url, format!("{e:#}"))),
             }
         }
+    }
+
+    /// 走夹具的那条路。录制时把 URL → 哈希记下来，回放时照着从 blob 读。
+    async fn fetch_recorded(
+        &self,
+        rec: &Arc<csw_collector_core::record::Recorder>,
+        url: &str,
+    ) -> Result<Downloaded> {
+        let req = serde_json::json!({"url": url, "width": self.cfg.width});
+        let v = rec
+            .wrap("image", &req, || async {
+                let target = sized_url(url, self.cfg.width);
+                let d = self.try_once(url, &target).await?;
+                Ok(serde_json::json!({"blake3": d.blake3, "bytes": d.bytes}))
+            })
+            .await?;
+        let hash = v
+            .get("blake3")
+            .and_then(|x| x.as_str())
+            .context("夹具里没有 blake3")?;
+        let path = blob_path(&self.cfg.dir, hash);
+        anyhow::ensure!(
+            path.exists(),
+            "回放要的图不在了：{}（{url}）。夹具与 blob 目录是一对，\
+             blob 被清理过就得重录——这里不会去拉图，那样回放就又出网了。",
+            path.display()
+        );
+        Ok(Downloaded {
+            url: url.to_string(),
+            blake3: hash.to_string(),
+            bytes: v.get("bytes").and_then(|x| x.as_u64()).unwrap_or(0),
+            path,
+            from_cache: true,
+        })
     }
 
     async fn try_once(&self, orig: &str, target: &str) -> Result<Downloaded> {
@@ -377,5 +439,72 @@ mod tests {
         assert_eq!(jpgs, 1, "同一份内容只该落一个文件");
         assert_eq!(parts, 0, "不该留下临时文件");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// 回放模式下**一次图也不该去拉**。
+    ///
+    /// 这条测试的做法：录一遍，然后把 mock 服务器关掉再回放。
+    /// 真去出网的话连接会被拒，测试就红——比断言「调了几次」结实。
+    #[tokio::test]
+    async fn 回放下不再去拉图() {
+        use csw_collector_core::record::{Mode, Recorder};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let base = std::env::temp_dir().join(format!("csw-replay-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (blob, fixtures) = (base.join("blob"), base.join("fixtures"));
+        std::fs::create_dir_all(&blob).unwrap();
+        std::fs::create_dir_all(&fixtures).unwrap();
+        let body = b"pretend-this-is-a-jpeg".to_vec();
+
+        let url = {
+            let srv = wiremock::MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/a.jpg"))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+                .mount(&srv)
+                .await;
+            let url = format!("{}/a.jpg", srv.uri());
+
+            let rec = Arc::new(Recorder::new(Mode::Record, &fixtures));
+            let d = dl(&blob).with_recorder(rec);
+            let rep = d.fetch_all(std::slice::from_ref(&url)).await;
+            assert_eq!(rep.failed.len(), 0, "{:?}", rep.failed);
+            assert_eq!(rep.ok[0].blake3, blake3::hash(&body).to_hex().to_string());
+            url
+            // srv 在这儿析构：下面再请求就是连不上
+        };
+
+        let rec = Arc::new(Recorder::new(Mode::Replay, &fixtures));
+        let d = dl(&blob).with_recorder(rec);
+        let rep = d.fetch_all(std::slice::from_ref(&url)).await;
+        assert_eq!(rep.failed.len(), 0, "服务器已关，还能成功才说明真没出网");
+        assert_eq!(rep.ok[0].blake3, blake3::hash(&body).to_hex().to_string());
+        assert!(rep.ok[0].from_cache);
+
+        // blob 被清掉就必须报错，不能偷偷去拉
+        std::fs::remove_file(&rep.ok[0].path).unwrap();
+        let rec2 = Arc::new(Recorder::new(Mode::Replay, &fixtures));
+        let d2 = dl(&blob).with_recorder(rec2);
+        let rep2 = d2.fetch_all(&[url]).await;
+        assert_eq!(rep2.ok.len(), 0);
+        assert!(
+            rep2.failed[0].error.contains("回放要的图不在了"),
+            "{}",
+            rep2.failed[0].error
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    fn dl(dir: &Path) -> Downloader {
+        Downloader::new(DownloadConfig {
+            dir: dir.to_path_buf(),
+            width: 0,
+            concurrency: 2,
+            timeout: Duration::from_secs(5),
+            max_attempts: 1,
+            max_bytes: DEFAULT_MAX_BYTES,
+        })
+        .unwrap()
     }
 }

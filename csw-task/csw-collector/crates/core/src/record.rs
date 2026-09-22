@@ -93,6 +93,24 @@ impl Recorder {
         Ok(response)
     }
 
+    /// 某个客户端录过的全部请求。回放时拿来认出录的是哪个窗口——
+    /// 人不该被要求记住上次录制用的是什么参数。
+    pub fn requests(&self, client: &str) -> Vec<Value> {
+        let mut out = Vec::new();
+        let Ok(rd) = std::fs::read_dir(self.dir.join(client)) else {
+            return out;
+        };
+        for e in rd.flatten() {
+            let Ok(text) = std::fs::read_to_string(e.path()) else {
+                continue;
+            };
+            if let Ok(fx) = serde_json::from_str::<Fixture>(&text) {
+                out.push(fx.request);
+            }
+        }
+        out
+    }
+
     fn path(&self, client: &str, key: &str) -> PathBuf {
         self.dir.join(client).join(format!("{key}.json"))
     }

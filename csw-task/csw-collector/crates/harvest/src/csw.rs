@@ -40,6 +40,8 @@ pub struct CswConfig {
 pub struct CswClient {
     cfg: CswConfig,
     http: reqwest::Client,
+    /// 挂上之后 `replay` 才真的不出网。见 [`Self::with_recorder`]。
+    rec: Option<std::sync::Arc<csw_collector_core::record::Recorder>>,
 }
 
 /// 外层信封 `{success, data}`。
@@ -156,7 +158,23 @@ impl CswClient {
         csw_collector_core::ensure_crypto_provider();
         anyhow::ensure!(!cfg.api_key.is_empty(), "缺 CSW_API_KEY");
         let http = reqwest::Client::builder().timeout(cfg.timeout).build()?;
-        Ok(Self { cfg, http })
+        Ok(Self {
+            cfg,
+            http,
+            rec: None,
+        })
+    }
+
+    /// 挂上录制回放层。
+    ///
+    /// 贴文库是第四个出网客户端，之前只有模型、Jev、向量三个挂了它——
+    /// 于是 `replay` 说的「这一轮不出网」其实做不到：采集那一段照样在调真接口。
+    pub fn with_recorder(
+        mut self,
+        rec: std::sync::Arc<csw_collector_core::record::Recorder>,
+    ) -> Self {
+        self.rec = Some(rec);
+        self
     }
 
     /// 窗口取数。
@@ -240,7 +258,25 @@ impl CswClient {
         Ok(out)
     }
 
+    /// 一次 GET。**全部四个取数方法都从这儿出网**，所以回放层只要包住它。
+    ///
+    /// 夹具键只认 `path`：`base_url` 与密钥换了不该让回放失效，
+    /// 那两样跟「这次请求要什么数据」无关。
+    ///
+    /// 录的是**解包信封之后的 `data`**，不是原始响应。回放是为了不出网跑回归，
+    /// 不是为了测信封解析（那有自己的单测），录 data 夹具也小得多、读得懂。
     async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let v = match self.rec.clone() {
+            Some(rec) => {
+                let req = serde_json::json!({"path": path});
+                rec.wrap("csw", &req, || self.get_raw(path)).await?
+            }
+            None => self.get_raw(path).await?,
+        };
+        serde_json::from_value(v).with_context(|| format!("解析 {path} 的 data"))
+    }
+
+    async fn get_raw(&self, path: &str) -> Result<serde_json::Value> {
         let url = format!("{}{}", self.cfg.base_url.trim_end_matches('/'), path);
         // 冷启动首个请求可达 40 秒，重试要留够耐心
         let mut attempt = 0;
@@ -257,9 +293,10 @@ impl CswClient {
                     let status = resp.status();
                     let text = resp.text().await.unwrap_or_default();
                     if status.is_success() {
-                        let env: Envelope<T> = serde_json::from_str(&text).with_context(|| {
-                            format!("解析 {path}；原文前 200 字：{}", head(&text))
-                        })?;
+                        let env: Envelope<serde_json::Value> = serde_json::from_str(&text)
+                            .with_context(|| {
+                                format!("解析 {path}；原文前 200 字：{}", head(&text))
+                            })?;
                         if let Some(d) = env.data {
                             return Ok(d);
                         }
@@ -505,5 +542,62 @@ mod tests {
         let c = to_candidate(&p, "csw_window");
         assert!(c.tags.is_empty() && c.hashtags.is_empty());
         assert_eq!(c.media.len(), 1);
+    }
+    /// 贴文库在回放下同样一次都不该出网。
+    ///
+    /// 同样的做法：录一遍、关掉服务器、再回放。连接被拒的话测试就红。
+    #[tokio::test]
+    async fn 回放下不再去调贴文库() {
+        use csw_collector_core::record::{Mode, Recorder};
+        use std::sync::Arc;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let dir = std::env::temp_dir().join(format!("csw-fx-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let page = serde_json::json!({
+            "success": true,
+            "data": {"items": [{"postId": "abc123", "account": "snowpeak_official",
+                                "description": "正文", "contentType": "Image"}],
+                     "total": 1, "hasMore": false}
+        });
+
+        let base = {
+            let srv = wiremock::MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/posts/window"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(page.clone()))
+                .mount(&srv)
+                .await;
+            let base = srv.uri();
+            let c = client(&base).with_recorder(Arc::new(Recorder::new(Mode::Record, &dir)));
+            let got = c.window("2026-09-17", "2026-09-18").await.unwrap();
+            assert_eq!(got.len(), 1);
+            base
+            // srv 析构
+        };
+
+        let c = client(&base).with_recorder(Arc::new(Recorder::new(Mode::Replay, &dir)));
+        let got = c.window("2026-09-17", "2026-09-18").await.unwrap();
+        assert_eq!(got.len(), 1, "服务器已关，还能取到才说明真没出网");
+        assert_eq!(got[0].post_id, "abc123");
+
+        // 换个窗口就是另一条请求，夹具里没有——必须报错，不能去调真接口
+        let e = c.window("2026-09-19", "2026-09-20").await.unwrap_err();
+        assert!(format!("{e:#}").contains("回放未命中"), "{e:#}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn client(base: &str) -> CswClient {
+        CswClient::new(CswConfig {
+            base_url: base.into(),
+            api_key: "k".into(),
+            page_size: 100,
+            timeout: Duration::from_secs(5),
+        })
+        .unwrap()
     }
 }
