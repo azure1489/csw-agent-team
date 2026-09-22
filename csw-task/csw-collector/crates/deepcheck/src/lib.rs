@@ -11,3 +11,5 @@
 //!   （`ActiveTurnOutputSchemaMismatch`）→ **一条线程一个回合**。
 //! - `turn/interrupt` 要 `threadId` **和** `turnId`，两个都必填。
 //! - 五个审批类服务端请求必须应答，拒绝值是 `{"decision":"decline"}`（不是 `denied`）。
+
+pub mod codex;

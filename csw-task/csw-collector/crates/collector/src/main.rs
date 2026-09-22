@@ -14,6 +14,7 @@
 
 mod authprobe;
 mod bff;
+mod codexprobe;
 mod kb;
 mod m1;
 mod schema;
@@ -95,6 +96,23 @@ enum Command {
         /// 把这个用户名当 van（验证角色映射）
         #[arg(long)]
         van: Option<String>,
+    },
+    /// 深核客户端自检：对真 codex app-server 跑通握手、建线程、一个回合
+    CodexProbe {
+        #[arg(long, default_value = "/opt/csw-collector/bin/codex")]
+        bin: String,
+        #[arg(long, default_value = "/opt/csw-collector/codex-home")]
+        home: String,
+        /// codex 要一个合法的 cwd。深核不写文件。
+        #[arg(long, default_value = "/tmp")]
+        cwd: String,
+        #[arg(long, default_value = "gpt-6-astra")]
+        model: String,
+        #[arg(long, default_value_t = 120)]
+        budget_secs: u64,
+        /// 附一张本地图片，验证 localImage 那条路
+        #[arg(long)]
+        image: Option<String>,
     },
     /// 依赖自检：SQLite、LanceDB、TLS、axum 各跑一遍
     Xcheck {
@@ -219,6 +237,24 @@ async fn main() -> anyhow::Result<()> {
             password,
             van,
         } => authprobe::run(&engine, &username, &password, van.as_deref()).await,
+        Command::CodexProbe {
+            bin,
+            home,
+            cwd,
+            model,
+            budget_secs,
+            image,
+        } => {
+            codexprobe::run(codexprobe::Opts {
+                bin: bin.into(),
+                home: home.into(),
+                cwd: cwd.into(),
+                model,
+                budget_secs,
+                image: image.map(Into::into),
+            })
+            .await
+        }
         Command::Xcheck {
             http_url,
             dim,
