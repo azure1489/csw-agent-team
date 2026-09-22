@@ -290,9 +290,10 @@ fn mark_downstream_stale(conn: &Connection, round_id: i64, step: StepCode) -> Re
 /// 是因为**它们多半做了一半**——续跑要按 `input_hash` 去补没做完的单元，
 /// 而不是当作从没跑过。
 pub fn recover_interrupted(conn: &Connection) -> Result<usize> {
+    let now = jiff::Timestamp::now().to_string();
     let n = conn.execute(
         "UPDATE round_steps SET status = 'interrupted', ended_at = ?1 WHERE status = 'running'",
-        [jiff::Timestamp::now().to_string()],
+        [&now],
     )?;
     if n > 0 {
         tracing::warn!(
@@ -300,7 +301,36 @@ pub fn recover_interrupted(conn: &Connection) -> Result<usize> {
             "上次进程没有正常退出，这些步标成 interrupted，按输入指纹续跑"
         );
     }
+    // **非派单轮没人会续跑**，把它们收尾，别让页面上永远「还在跑」。
+    //
+    // 派单轮留着 running：引擎那边任务还是 in_progress，`tick` 的 Continue 会找回它
+    // 接着跑（见 `serve::tasks::on_continue`）。手动轮、预取轮、回放轮没有这样一个
+    // 外部状态去触发续跑——09-22 线上就有一轮手动轮在服务重启后一直挂着 running。
+    let m = conn.execute(
+        "UPDATE rounds SET status = 'failed', ended_at = ?1,
+                note = CASE WHEN note = '' THEN '进程重启时这一轮还没跑完；非派单轮不会自动续跑，要的话重新开一轮'
+                            ELSE note END
+          WHERE status = 'running' AND kind <> 'task'",
+        [&now],
+    )?;
+    if m > 0 {
+        tracing::warn!(
+            轮数 = m,
+            "非派单轮在重启时没跑完，标成 failed（它们不会自动续跑）"
+        );
+    }
     Ok(n)
+}
+
+/// 某个任务在本地最近开的一轮。续跑时靠它判断：有没有、跑完没有、当初是哪种触发。
+pub fn latest_for_task(conn: &Connection, task_id: i64) -> Result<Option<Round>> {
+    Ok(conn
+        .query_row(
+            &format!("SELECT {COLS} FROM rounds WHERE task_id = ?1 ORDER BY id DESC LIMIT 1"),
+            [task_id],
+            row,
+        )
+        .optional()?)
 }
 
 /// 上一轮**派单轮**的窗口终点，就是这一轮的水位。
@@ -610,5 +640,48 @@ mod tests {
             })
             .unwrap();
         assert!(ended.is_some());
+    }
+
+    /// 重启时：**派单轮留着 running 等续跑，非派单轮收尾。**
+    ///
+    /// 09-22 线上有一轮手动轮在服务重启后一直挂着 running，总览页永远「还在跑」。
+    /// 派单轮不能一并收尾——引擎那边任务还是 in_progress，要靠它的 running 找回来接着跑。
+    #[test]
+    fn 重启时派单轮等续跑而手动轮收尾() {
+        let c = conn();
+        let (task, _) = open_round(&c, &task_round(7, 1, RoundTrigger::Dispatch)).unwrap();
+        let mut m = task_round(0, 0, RoundTrigger::Manual);
+        m.kind = RoundKind::Manual;
+        m.task_id = None;
+        m.run_id = None;
+        let (manual, _) = open_round(&c, &m).unwrap();
+        begin_step(&c, task.id, StepCode::Judge, "h").unwrap();
+
+        recover_interrupted(&c).unwrap();
+
+        assert_eq!(get(&c, task.id).unwrap().unwrap().status, "running");
+        let mr = get(&c, manual.id).unwrap().unwrap();
+        assert_eq!(mr.status, "failed");
+        assert!(mr.note.contains("不会自动续跑"), "{}", mr.note);
+        // 步照旧标 interrupted
+        assert_eq!(
+            latest(&c, task.id, StepCode::Judge)
+                .unwrap()
+                .unwrap()
+                .status,
+            "interrupted"
+        );
+    }
+
+    #[test]
+    fn 按任务取最近一轮() {
+        let c = conn();
+        assert!(latest_for_task(&c, 9).unwrap().is_none());
+        open_round(&c, &task_round(9, 1, RoundTrigger::Dispatch)).unwrap();
+        let (b, _) = open_round(&c, &task_round(9, 2, RoundTrigger::Returned)).unwrap();
+        let got = latest_for_task(&c, 9).unwrap().unwrap();
+        assert_eq!(got.id, b.id);
+        // 续跑要沿用这个——返工轮不能被当成新派单另开一轮
+        assert_eq!(got.trigger, "returned");
     }
 }

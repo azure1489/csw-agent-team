@@ -58,6 +58,50 @@ pub fn decide(t: &MyTask) -> Action {
     }
 }
 
+/// 引擎说「这单在做」（in_progress）时，本进程该干什么。
+///
+/// # 为什么要有它
+///
+/// `Continue` 原本只检查时限——注释写着「续跑并继续心跳」，实现里两样都没做。
+/// 进程在早上那一轮中途重启的话：步被标成 interrupted、轮次留在 running，
+/// 引擎那边任务还是 in_progress，`start_round` 又对同一任务返回「已经开过了」——
+/// **没有任何一处会把它接着跑完**，心跳也断了，一直烂到时限前 5 分钟主动报失败。
+///
+/// # 四种情形
+///
+/// | 本地这一任务的轮次 | 本进程接过这单 | 做什么 |
+/// |---|---|---|
+/// | 有，running | — | 续跑，沿用原轮次的触发方式 |
+/// | 没有 | 是 | 重试开轮：接了单、开轮前失败了（取详情偶发出错之类） |
+/// | 有，已收尾 | — | 等引擎状态跟上，什么都不做 |
+/// | 没有 | 否 | **不接手**：收集员的 agent 行与 Hermes 共用，多半是它接的 |
+///
+/// 第二行是「接单挪到 `tick` 第一段」之后才需要的：改之前开轮失败时任务还是
+/// dispatched，下一轮会当新单重试；改之后它已经是 in_progress 了。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnContinue {
+    /// 续跑。`true` = 原轮次是返工触发的
+    Resume { returned: bool },
+    /// 重新开轮（按新派单）
+    Retry,
+    /// 本地已收尾，等引擎
+    Wait,
+    /// 不是我们开的，不碰
+    NotOurs,
+}
+
+/// `local` = 本地最近一轮的（状态, 触发方式）；`acked_here` = 本进程这次运行里接过这单。
+pub fn on_continue(local: Option<(&str, &str)>, acked_here: bool) -> OnContinue {
+    match local {
+        Some(("running", trigger)) => OnContinue::Resume {
+            returned: trigger == "returned",
+        },
+        Some(_) => OnContinue::Wait,
+        None if acked_here => OnContinue::Retry,
+        None => OnContinue::NotOurs,
+    }
+}
+
 /// 心跳器：接单后每隔一会儿重复 ack 一次。
 ///
 /// 停下的方式是丢掉返回的 `Beat`——它一被 drop，后台那个循环就退出。
@@ -230,5 +274,27 @@ mod tests {
         drop(beat);
         // 不崩、不卡住就算过；心跳失败只 warn 不影响这一轮
         tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+
+    #[test]
+    fn 引擎说在做时本进程该干什么() {
+        // 进程中途重启过：本地那一轮还 running，接着跑
+        assert_eq!(
+            on_continue(Some(("running", "dispatch")), false),
+            OnContinue::Resume { returned: false }
+        );
+        // 返工轮续跑时要沿用「返工」，否则会按新派单另开一轮、原来那轮永远挂着
+        assert_eq!(
+            on_continue(Some(("running", "returned")), false),
+            OnContinue::Resume { returned: true }
+        );
+        // 接了单、开轮前出错：本地没有轮次，但确实是我们接的——重试
+        assert_eq!(on_continue(None, true), OnContinue::Retry);
+        // 本地已收尾（交了、等闸、报过失败）：等引擎状态跟上
+        for st in ["awaiting_review", "done", "failed"] {
+            assert_eq!(on_continue(Some((st, "dispatch")), false), OnContinue::Wait);
+        }
+        // 本地没有、也不是本进程接的：agent 行与 Hermes 共用，多半是它接的——不碰
+        assert_eq!(on_continue(None, false), OnContinue::NotOurs);
     }
 }

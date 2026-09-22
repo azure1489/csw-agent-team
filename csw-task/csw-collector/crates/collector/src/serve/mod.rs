@@ -522,12 +522,44 @@ async fn tick(
                 if !beats.contains_key(&t.task.id) {
                     continue; // 上面没接下来
                 }
-                // 一个任务出错不该让别的任务也不跑
-                if let Err(e) = start_round(conn, engine, cfg, svc, t, action).await {
-                    tracing::error!(任务 = t.task.id, 原因 = %format!("{e:#}"), "这一轮没跑起来");
+                drive(conn, engine, cfg, svc, t, action, beats).await;
+            }
+            Action::Continue
+                if !tasks::should_fail_early(&t.task.due_at, jiff::Timestamp::now()) =>
+            {
+                let local = rounds::latest_for_task(conn, t.task.id)?;
+                let decision = tasks::on_continue(
+                    local
+                        .as_ref()
+                        .map(|r| (r.status.as_str(), r.trigger.as_str())),
+                    beats.contains_key(&t.task.id),
+                );
+                let act = match decision {
+                    tasks::OnContinue::Resume { returned: true } => Some(Action::Rework),
+                    tasks::OnContinue::Resume { returned: false } | tasks::OnContinue::Retry => {
+                        Some(Action::Start)
+                    }
+                    tasks::OnContinue::Wait => None,
+                    tasks::OnContinue::NotOurs => {
+                        tracing::debug!(
+                            任务 = t.task.id,
+                            "引擎说在做，但本地没有这一轮、本进程也没接过——多半是 Hermes 接的，不接手"
+                        );
+                        None
+                    }
+                };
+                if let Some(act) = act {
+                    // 重启后心跳表是空的：续跑前先把心跳挂回去，
+                    // 否则引擎 10 分钟后报「接单后无活动」
+                    beats.entry(t.task.id).or_insert_with(|| {
+                        tasks::start_heartbeat(
+                            engine.clone(),
+                            t.task.id,
+                            Duration::from_secs(cfg.engine.ack_secs.max(30)),
+                        )
+                    });
+                    drive(conn, engine, cfg, svc, t, act, beats).await;
                 }
-                // 做完了（成或败都算），心跳可以停了
-                beats.remove(&t.task.id);
             }
             Action::Continue => {
                 // 时限快到了就主动报失败，不挂着等超时——
@@ -555,6 +587,34 @@ async fn tick(
         tracing::info!(发出 = sent, 冲突 = conflicts, "发了几条");
     }
     Ok(())
+}
+
+/// 跑一个任务的一轮，并决定心跳的去留。
+///
+/// **开轮失败、本地又没有轮次时，心跳留着**：那是「接了单、开轮前出错」，下一轮
+/// `tick` 要靠心跳表里还有它，才知道这单是我们接的、该重试（见 `tasks::on_continue`）。
+/// 其余情况（跑完、报过失败、本地已有收尾的轮次）心跳都可以停了。
+async fn drive(
+    conn: &rusqlite::Connection,
+    engine: &EngineClient,
+    cfg: &Config,
+    svc: &services::Services,
+    t: &csw_collector_engineapi::types::MyTask,
+    action: Action,
+    beats: &mut std::collections::HashMap<i64, tasks::Beat>,
+) {
+    // 一个任务出错不该让别的任务也不跑
+    let res = start_round(conn, engine, cfg, svc, t, action).await;
+    if let Err(e) = &res {
+        tracing::error!(任务 = t.task.id, 原因 = %format!("{e:#}"), "这一轮没跑起来");
+    }
+    let opened = rounds::latest_for_task(conn, t.task.id)
+        .ok()
+        .flatten()
+        .is_some();
+    if res.is_ok() || opened {
+        beats.remove(&t.task.id);
+    }
 }
 
 /// 接单 → 建轮 → 跑。
@@ -650,9 +710,18 @@ async fn start_round(
         },
     )?;
     if !is_new {
-        // 轮询把同一条派单读到两次是常态，不是错误
-        tracing::debug!(任务 = t.task.id, 轮次 = r.id, "这一轮已经开过了");
-        return Ok(());
+        if r.status != "running" {
+            // 本地已收尾（交了、等闸、报过失败），等引擎状态跟上
+            tracing::debug!(任务 = t.task.id, 轮次 = r.id, 状态 = %r.status, "这一轮已经开过了");
+            return Ok(());
+        }
+        // 开过、还 running，而本进程此刻没在跑它——只能是中途重启过。接着跑：
+        // 各步按输入指纹复用已完成的部分，写引擎靠幂等键不会重复
+        tracing::warn!(
+            任务 = t.task.id,
+            轮次 = r.id,
+            "上次这一轮没跑完（进程中途重启过），接着跑"
+        );
     }
 
     // 接单与心跳在 `tick` 里已经做了——见那儿的模块注释，
@@ -902,5 +971,99 @@ mod tests {
             "三个都该在开跑前接下来，实际只接了 {acked:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 引擎说「在做」时：本地有 running 的轮次就续跑，没有就不碰。
+    ///
+    /// 这条钉的是 `Continue` 原来的 bug：注释说续跑，实现只看时限。进程在早上那一轮
+    /// 中途重启，这一期就烂到时限。测法：派一条 in_progress 的任务，详情一律 400，
+    /// **看它有没有去取详情**——取了就是走进了续跑。
+    async fn continue_touches_task(local_running: bool, tag: &str) -> bool {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let srv = wiremock::MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/me/tasks"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"tasks": [
+                {"task": {"id": 5, "run_id": 48, "stage_code": "intake", "status": "in_progress",
+                          "cur_version": 1, "due_at": "2099-01-01T00:00:00Z"}}
+            ]})))
+            .mount(&srv)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "code": "bad_request", "message": "测试里不给详情"
+            })))
+            .mount(&srv)
+            .await;
+
+        let engine = EngineClient::new(
+            &format!("{}/api/v1", srv.uri()),
+            "t",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let conn = csw_collector_core::store::open_in_memory().unwrap();
+        if local_running {
+            rounds::open_round(
+                &conn,
+                &rounds::NewRound {
+                    kind: csw_collector_core::types::RoundKind::Task,
+                    trigger: csw_collector_core::types::RoundTrigger::Dispatch,
+                    run_id: Some(48),
+                    task_id: Some(5),
+                    stage_code: Some("intake".into()),
+                    target_version: 1,
+                    parent_round_id: None,
+                    window_start: "A".into(),
+                    window_end: "B".into(),
+                    plan_version: 1,
+                    rubric_version: "v".into(),
+                    kb_snapshot: "k".into(),
+                    instructions_hash: String::new(),
+                },
+            )
+            .unwrap();
+        }
+        let dir = std::env::temp_dir().join(format!("csw-cont-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = Config {
+            data_dir: dir.clone(),
+            ..Config::default()
+        };
+        let secrets = Secrets {
+            csw_api_key: "k".into(),
+            sub2api_key: "k".into(),
+            ..Default::default()
+        };
+        let svc = services::Services::build(&cfg, &secrets, &conn)
+            .await
+            .unwrap();
+        let mut beats = std::collections::HashMap::new();
+        let _ = tick(&conn, &engine, &cfg, &svc, &mut beats).await;
+        let touched = srv
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.method.as_str() == "GET" && r.url.path() == "/api/v1/tasks/5");
+        let _ = std::fs::remove_dir_all(&dir);
+        touched
+    }
+
+    #[tokio::test]
+    async fn 重启后本地还running的派单轮会接着跑() {
+        assert!(
+            continue_touches_task(true, "resume").await,
+            "本地那一轮还 running，引擎说在做——该接着跑，却什么都没做"
+        );
+    }
+
+    #[tokio::test]
+    async fn 本地没有的在做任务不接手() {
+        // agent 行与 Hermes 共用：引擎说在做、本地没有、本进程也没接过，多半是它接的
+        assert!(!continue_touches_task(false, "notours").await);
     }
 }
