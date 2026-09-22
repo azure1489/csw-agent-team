@@ -17,6 +17,7 @@ mod bff;
 mod codexprobe;
 mod kb;
 mod m1;
+mod mcp;
 mod schema;
 mod xcheck;
 
@@ -198,7 +199,11 @@ async fn main() -> anyhow::Result<()> {
                 KbCommand::Import { path } => kb::import(&cfg, &path),
             }
         }
-        Command::Mcp => todo!("阶段 5：本地 MCP 服务"),
+        Command::Mcp => {
+            let cfg =
+                csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
+            mcp::run(&cfg).await
+        }
         Command::P5 => todo!("阶段 8：历史反馈回收"),
         Command::M1 {
             from,
