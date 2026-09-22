@@ -254,6 +254,7 @@ fn decision_cases(conn: &Connection, since: &str) -> Result<Vec<Case>> {
         "SELECT id, url, brand, title FROM kb_docs
           WHERE kind = 'decision' AND url LIKE '%instagram.com/%'
             AND COALESCE(published_at, '') >= ?1
+            AND published_at GLOB '[0-9][0-9][0-9][0-9]-*'
           ORDER BY id",
     )?;
     let rows = stmt

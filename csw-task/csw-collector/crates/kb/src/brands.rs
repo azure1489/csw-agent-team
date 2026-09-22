@@ -76,6 +76,19 @@ pub fn normalize(s: &str) -> String {
         .collect()
 }
 
+/// 品牌键：小写、只留字母数字（含中日韩文字）。
+///
+/// 同一个品牌在库里有两种写法：别名表与已生成贴文用展示名（`SNOW PEAK`、
+/// `GORDON MILLER`），引擎的决定与台账用条目键里的小写短横写法（`snowpeak`、
+/// `gordon-miller`）。按原样比，品牌路就只认得前一种——线上跑 M2 时
+/// 394 条决定只有 30 条能从品牌路捞到。比之前先都折成这个键。
+pub fn brand_key(s: &str) -> String {
+    normalize(s)
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect()
+}
+
 /// 别名表。建一次，整轮复用。
 pub struct BrandIndex {
     aliases: Vec<Alias>,
@@ -281,5 +294,14 @@ mod tests {
         let back = BrandIndex::load(&conn).unwrap();
         assert_eq!(back.len(), 5);
         assert!(back.hits("Yamatomichi 的新包").contains_key("山と道"));
+    }
+
+    #[test]
+    fn 展示名与条目键折成同一个品牌键() {
+        assert_eq!(brand_key("SNOW PEAK"), brand_key("snowpeak"));
+        assert_eq!(brand_key("GORDON MILLER"), brand_key("gordon-miller"));
+        assert_eq!(brand_key("tech_country"), brand_key("tech-country"));
+        assert_eq!(brand_key("山と道"), "山と道");
+        assert_ne!(brand_key("NEMO Equipment Japan"), brand_key("nemo"));
     }
 }

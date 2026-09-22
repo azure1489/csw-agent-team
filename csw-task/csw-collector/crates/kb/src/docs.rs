@@ -260,13 +260,42 @@ pub fn get_many(conn: &Connection, ids: &[i64]) -> Result<Vec<KbDoc>> {
 ///
 /// 按发布时间倒序，**没有发布时间的排在最后**——`published_at` 为空的多是范例
 /// 与决定，它们本来就不该挤掉近期的已发条目。
+///
+/// 品牌按 [`crate::brands::brand_key`] 比：`SNOW PEAK` 与 `snowpeak` 算同一个。
+/// 键在 Rust 里算（SQLite 里去不干净 Unicode 标点），所以先捞出库里所有写法、
+/// 挑出键相同的那几种再查。去重后的品牌写法只有一两千种，每次扫一遍是毫秒级。
 pub fn by_brand(conn: &Connection, brand: &str, limit: usize) -> Result<Vec<KbDoc>> {
+    let key = crate::brands::brand_key(brand);
+    if key.is_empty() {
+        return Ok(Vec::new());
+    }
+    let spellings: Vec<String> = conn
+        .prepare("SELECT DISTINCT brand FROM kb_docs WHERE brand <> ''")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|b| crate::brands::brand_key(b) == key)
+        .collect();
+    if spellings.is_empty() {
+        return Ok(Vec::new());
+    }
+    let holes = std::iter::repeat_n("?", spellings.len())
+        .collect::<Vec<_>>()
+        .join(",");
     let mut st = conn.prepare(&format!(
-        "SELECT {COLS} FROM kb_docs WHERE brand = ?1
-         ORDER BY published_at IS NULL, published_at DESC LIMIT ?2"
+        "SELECT {COLS} FROM kb_docs WHERE brand IN ({holes})
+         ORDER BY published_at IS NULL, published_at DESC LIMIT ?"
     ))?;
+    let mut args: Vec<Box<dyn rusqlite::ToSql>> = spellings
+        .into_iter()
+        .map(|b| Box::new(b) as Box<dyn rusqlite::ToSql>)
+        .collect();
+    args.push(Box::new(limit as i64));
     Ok(st
-        .query_map(params![brand, limit as i64], row)?
+        .query_map(
+            rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())),
+            row,
+        )?
         .filter_map(Result::ok)
         .collect())
 }
@@ -508,5 +537,35 @@ mod tests {
             counts_by_kind(&c).unwrap(),
             [("decision".to_string(), 1), ("example".to_string(), 2)]
         );
+    }
+
+    #[test]
+    fn 品牌路认得两种写法() {
+        let conn = csw_collector_core::store::open_in_memory().unwrap();
+        for (kind, r, brand) in [
+            ("generated_post", "g1", "SNOW PEAK"),
+            ("decision", "d1", "snowpeak"),
+            ("decision", "d2", "snow-peak-japan"),
+        ] {
+            upsert(
+                &conn,
+                &KbDoc {
+                    kind: kind.into(),
+                    ref_id: r.into(),
+                    brand: brand.into(),
+                    body: r.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let got: Vec<String> = by_brand(&conn, "SNOW PEAK", 8)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.ref_id)
+            .collect();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got.contains(&"d1".to_string()));
+        assert!(by_brand(&conn, "", 8).unwrap().is_empty());
     }
 }
