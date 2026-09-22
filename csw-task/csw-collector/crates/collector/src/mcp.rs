@@ -55,6 +55,7 @@ pub async fn run(cfg: &Config) -> Result<()> {
         brands,
         tok,
         vector,
+        send_van_quotes: cfg.features.send_van_quotes_to_model,
     });
 
     let server = Server::new("csw-kb", env!("CARGO_PKG_VERSION"))

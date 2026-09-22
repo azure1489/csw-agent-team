@@ -167,6 +167,27 @@ pub fn grouped(materials: &[Material]) -> Vec<(MaterialKind, Vec<&Material>)> {
 }
 
 /// 拼成给模型看的一段。每条带类型、日期、出处——口径里点名要这三样。
+/// 把决定类材料里 Van 的话去掉，**只留「结论」与「理由码」**。
+///
+/// 为什么不直接清空：决定类的正文里还有「结论：rejected」这种判断用得上的结构化信息，
+/// 清空了模型就不知道「这件事被否过」。为什么连「理由」也去掉：真实数据里
+/// `reason` 与 `decision_source` 存的是同一段话——就是她的原话或主编的批量说明。
+///
+/// 开关见 `Features::send_van_quotes_to_model`，默认关。
+pub fn strip_van_quotes(materials: &mut [Material]) {
+    for m in materials.iter_mut() {
+        if m.kind != MaterialKind::Decision {
+            continue;
+        }
+        m.quote = m
+            .quote
+            .lines()
+            .filter(|l| l.starts_with("结论：") || l.starts_with("理由码："))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+}
+
 pub fn as_prompt_block(materials: &[Material]) -> String {
     let mut s = String::new();
     for (kind, ms) in grouped(materials) {
@@ -191,7 +212,14 @@ pub fn as_prompt_block(materials: &[Material]) -> String {
             }
             s.push_str(")\n");
             if !m.quote.trim().is_empty() {
-                s.push_str(&format!("  原话：{}\n", one_line(&m.quote)));
+                // 决定类放的是一整段决定记录（结论、理由码，开关打开时才有原话），
+                // 叫「原话」会让模型把「结论：rejected」也当成她说的话
+                let label = if m.kind == MaterialKind::Decision {
+                    "决定记录"
+                } else {
+                    "原话"
+                };
+                s.push_str(&format!("  {label}：{}\n", one_line(&m.quote)));
             }
         }
     }
@@ -383,5 +411,47 @@ mod tests {
         assert_eq!(a.missing().len(), 5);
         let a = availability(&c, true).unwrap();
         assert_eq!(a.missing().len(), 4, "台账取过了就不算缺");
+    }
+
+    fn decision(quote: &str) -> Material {
+        Material {
+            kind: MaterialKind::Decision,
+            ref_id: "50#norda-1f9378".into(),
+            title: "某品牌腰包发布预告".into(),
+            date: None,
+            source: String::new(),
+            quote: quote.into(),
+            publish_state: String::new(),
+        }
+    }
+
+    /// 开关关着时，决定类只留「结论」与「理由码」。
+    ///
+    /// 这两行是机器词表，模型要靠它知道「这件事被否过」；「理由」与「原话」在真数据里
+    /// 都是她的话或主编的批量说明——Van 原话送不送第三方要单独拍板，没拍板前不送。
+    #[test]
+    fn 不送原话时只留结论与理由码() {
+        let body = "结论：rejected\n品牌：norda\n理由：主选2备选1均批准继续推进，待核退回\n理由码：reject\n原话：这个不要";
+        let mut ms = vec![
+            decision(body),
+            Material {
+                kind: MaterialKind::Published,
+                ref_id: "p1".into(),
+                title: "已发".into(),
+                date: None,
+                source: String::new(),
+                quote: "别的类不该被动".into(),
+                publish_state: String::new(),
+            },
+        ];
+        strip_van_quotes(&mut ms);
+        assert_eq!(ms[0].quote, "结论：rejected\n理由码：reject");
+        assert_eq!(ms[1].quote, "别的类不该被动");
+
+        let block = as_prompt_block(&ms);
+        assert!(!block.contains("这个不要"), "{block}");
+        assert!(!block.contains("主选2备选1"), "{block}");
+        // 去掉原话之后还叫「原话」就是错的——模型会把「结论：rejected」当成她说的
+        assert!(block.contains("决定记录：结论：rejected"), "{block}");
     }
 }

@@ -35,6 +35,9 @@ pub struct KbContext {
     pub tok: Tokenizer,
     /// 向量客户端。**这里只用它算查询向量与重排**，不写库。
     pub vector: Option<VectorClient>,
+    /// `memory_lookup` 返回案例时带不带 Van 的原话。深核时这些工具的结果会进
+    /// codex → 模型（csw-subapi，第三方）。见 `Features::send_van_quotes_to_model`，默认关。
+    pub send_van_quotes: bool,
 }
 
 impl KbContext {
@@ -324,7 +327,12 @@ impl Tool for MemoryLookup {
                 m += 1;
                 out.push_str(&format!("- {}：{}", r.0, r.1));
                 if !r.2.trim().is_empty() {
-                    out.push_str(&format!("　原话：{}", r.2.replace('\n', " / ")));
+                    if self.0.send_van_quotes {
+                        out.push_str(&format!("　原话：{}", r.2.replace('\n', " / ")));
+                    } else {
+                        // 告诉模型「有原话但没给」，免得它以为这条决定没有交代
+                        out.push_str("　（有原话，未送出）");
+                    }
                 }
                 out.push('\n');
             }
@@ -343,6 +351,10 @@ mod tests {
     use csw_collector_kb::fts;
 
     async fn ctx(dir: &std::path::Path) -> Arc<KbContext> {
+        ctx_with(dir, false).await
+    }
+
+    async fn ctx_with(dir: &std::path::Path, send_van_quotes: bool) -> Arc<KbContext> {
         let conn = csw_collector_core::store::open_in_memory().unwrap();
         let brands = BrandIndex::new(
             [("山と道", "山と道"), ("and wander", "andwander")]
@@ -409,6 +421,7 @@ mod tests {
             tok,
             // 不连向量服务：品牌与全文两路照样能检索
             vector: None,
+            send_van_quotes,
         })
     }
 
@@ -470,6 +483,17 @@ mod tests {
         assert!(out.contains("补证不足先待核（v1）\n"), "{out}");
         assert!(!out.contains("补证不足先待核（v1）【Van 确认】"));
         assert!(out.contains("某品牌新色：rejected"), "{out}");
+        // **默认不把 Van 的原话交给模型**：深核时这段文字会经 codex 送到第三方。
+        // 要告诉它「有原话但没给」，免得它以为这条决定没有交代
+        assert!(!out.contains("就是个配色"), "开关关着时原话不能出去：{out}");
+        assert!(out.contains("（有原话，未送出）"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn 开关打开时才带原话() {
+        let dir = tempdir::TempDir::new("mcp").unwrap();
+        let c = ctx_with(dir.path(), true).await;
+        let out = MemoryLookup(c).call(&json!({})).await.unwrap();
         assert!(out.contains("原话：就是个配色"), "{out}");
     }
 

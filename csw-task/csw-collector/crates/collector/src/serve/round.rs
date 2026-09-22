@@ -735,7 +735,11 @@ async fn judge_items<'a>(
         .await
         .unwrap_or_default();
 
-        let materials = csw_collector_judge::materials::assemble(&retrieved, &[]);
+        let mut materials = csw_collector_judge::materials::assemble(&retrieved, &[]);
+        // Van 的原话送不送模型要单独拍板，没拍板前只送结论与理由码
+        if !cfg.features.send_van_quotes_to_model {
+            csw_collector_judge::materials::strip_van_quotes(&mut materials);
+        }
         // **真的把图读出来送进判断。**
         //
         // 这里曾经传的是 `|_| None`，于是 `pick_images` 的 filter_map 把每一张都

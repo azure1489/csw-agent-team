@@ -191,6 +191,16 @@ pub struct Features {
     ///
     /// 做以图搜图那天打开它，那一段代码不用再改。
     pub image_vectors: bool,
+    /// 把 **Van 的原话**送进模型（判断时的决定类材料、深核时的 `memory_lookup`）。
+    /// **默认关。**
+    ///
+    /// 总方案第 536 / 596 行写的是「Van 群聊原话单独拍板」，而这件事一直没拍过板
+    /// ——定下来的只有「不送 TypeSafe」与「P5 抽取送 csw-subapi 要单独同意」。
+    /// 模型在 csw-subapi，是第三方；在拍板之前，代码不该默认把原话发出去。
+    ///
+    /// 关着的时候决定类材料只保留「结论」与「理由码」两行（机器词表），
+    /// 模型仍然知道「这件事被否过 / 被采用过」，只是看不到她是怎么说的。
+    pub send_van_quotes_to_model: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -357,6 +367,7 @@ impl Default for Config {
                 custom_collectors: false,
                 mcp_for_hermes: false,
                 deepcheck_web_tools: false,
+                send_van_quotes_to_model: false,
             },
             alert: Alert::default(),
             web: Web {
