@@ -253,8 +253,9 @@ fn decision_cases(conn: &Connection, since: &str) -> Result<Vec<Case>> {
     let mut stmt = conn.prepare(
         "SELECT id, url, brand, title FROM kb_docs
           WHERE kind = 'decision' AND url LIKE '%instagram.com/%'
-            AND COALESCE(published_at, '') >= ?1
-            AND published_at GLOB '[0-9][0-9][0-9][0-9]-*'
+            -- 发布时间是日期的按日期筛；不是日期的（`unknown`、一句说明）照样出题：
+            -- 那是原帖的披露时间写不清，不是决定旧。决定本身都出自新流程这几周
+            AND (published_at >= ?1 OR COALESCE(published_at, '') NOT GLOB '[0-9][0-9][0-9][0-9]*')
           ORDER BY id",
     )?;
     let rows = stmt

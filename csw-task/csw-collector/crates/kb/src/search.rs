@@ -239,10 +239,12 @@ impl Retriever<'_> {
         let hits = self.brands.hits(q.text);
         let mut brands_hit: Vec<String> = hits.keys().cloned().collect();
         brands_hit.sort();
+        let mut brand_order: Vec<i64> = Vec::new();
         for brand in &brands_hit {
             for d in docs::by_brand(conn, brand, BRAND_PER_BRAND)? {
                 counts.brand += 1;
                 routes.entry(d.id).or_default().brand = true;
+                brand_order.push(d.id);
             }
         }
 
@@ -254,6 +256,7 @@ impl Retriever<'_> {
         // 值得逐字匹配的关键词，一个词一次短语查。
         // （这个错是测试抓出来的：只有 only_fts 那条怎么都召不回来。）
         let df_cap = self.df_cap(conn)?;
+        let mut fts_order: Vec<i64> = Vec::new();
         for term in key_phrases(self.tok, q.text) {
             if counts.fts >= FTS_TOP_N {
                 break;
@@ -265,20 +268,12 @@ impl Retriever<'_> {
             for h in fts::search(conn, self.tok, &term, FTS_PER_TERM)? {
                 counts.fts += 1;
                 routes.entry(h.doc_id).or_default().fts = true;
+                fts_order.push(h.doc_id);
             }
         }
 
         // ── 合并 ──
-        let mut ids: Vec<i64> = routes.keys().copied().collect();
-        // 命中的路越多越可能相关；同数时按 id 稳定排序，免得每次跑出来的顺序不一样
-        ids.sort_by_key(|id| {
-            let r = routes[id];
-            (
-                std::cmp::Reverse(r.names().len()),
-                std::cmp::Reverse(r.vector),
-                *id,
-            )
-        });
+        let mut ids = merge_order(&routes, [vector_ids, &brand_order, &fts_order]);
         counts.merged = ids.len();
         if ids.len() > RERANK_MAX {
             counts.truncated = ids.len() - RERANK_MAX;
@@ -439,6 +434,66 @@ impl Retriever<'_> {
 
 /// 同一类里同一条贴文只留一条。`post_id` 为空的不参与去重——
 /// 范例与决定大多没有 post_id，按空串去重会把它们误合成一条。
+/// 合并三路的次序，截断前用。
+///
+/// 命中两路以上的排最前（路数多者先，同数按在各路里最靠前的名次）。
+/// **只命中一路的三路轮流取**，每路内部保持它自己的次序（向量按相似度、
+/// 品牌按新近、全文按关键词顺序）。
+///
+/// 原先是「路数 → 有没有向量 → id」一把排：向量路每次都满额给回 24 条，
+/// 只从品牌路或全文路进来的文档于是**永远排在第 25 名之后被截掉**——
+/// M2 在线上跑出来「只靠品牌路命中的 0 条」，就是这么来的。
+/// 同时向量路自己的相似度次序也被按 id 排冲掉了，截掉哪几条等于看 id 大小。
+fn merge_order(routes: &HashMap<i64, Routes>, lists: [&[i64]; 3]) -> Vec<i64> {
+    let best_rank = |id: i64| {
+        lists
+            .iter()
+            .filter_map(|l| l.iter().position(|x| *x == id))
+            .min()
+            .unwrap_or(usize::MAX)
+    };
+    let mut multi: Vec<i64> = routes
+        .iter()
+        .filter(|(_, r)| r.names().len() >= 2)
+        .map(|(id, _)| *id)
+        .collect();
+    multi.sort_by_key(|id| {
+        (
+            std::cmp::Reverse(routes[id].names().len()),
+            best_rank(*id),
+            *id,
+        )
+    });
+
+    let mut seen: std::collections::HashSet<i64> = multi.iter().copied().collect();
+    let mut singles: Vec<std::collections::VecDeque<i64>> = lists
+        .iter()
+        .map(|l| {
+            l.iter()
+                .copied()
+                .filter(|id| routes.get(id).is_some_and(|r| r.names().len() == 1))
+                .collect()
+        })
+        .collect();
+    let mut out = multi;
+    loop {
+        let mut took = false;
+        for q in singles.iter_mut() {
+            while let Some(id) = q.pop_front() {
+                if seen.insert(id) {
+                    out.push(id);
+                    took = true;
+                    break;
+                }
+            }
+        }
+        if !took {
+            break;
+        }
+    }
+    out
+}
+
 fn dedupe_by_post(scored: &mut Vec<Scored>) {
     let mut seen: std::collections::HashSet<(String, String)> = Default::default();
     scored.retain(|s| {
@@ -955,5 +1010,30 @@ mod tests {
         // 按字节截会把一个汉字劈成半个，重排看到的就是乱码
         assert_eq!(snippet_text(&long).chars().count(), SNIPPET_CHARS);
         assert_eq!(snippet_text("  短的  "), "短的");
+    }
+
+    #[test]
+    fn 只命中品牌路的不会被向量路挤掉() {
+        let mut routes: HashMap<i64, Routes> = HashMap::new();
+        // 向量路满额 24 条（相似度从高到低是 124..101，故意与 id 大小相反）
+        let vector: Vec<i64> = (101..=124).rev().collect();
+        for id in &vector {
+            routes.entry(*id).or_default().vector = true;
+        }
+        let brand = vec![7, 124];
+        for id in &brand {
+            routes.entry(*id).or_default().brand = true;
+        }
+        let fts = vec![9];
+        routes.entry(9).or_default().fts = true;
+
+        let mut ids = merge_order(&routes, [&vector, &brand, &fts]);
+        ids.truncate(RERANK_MAX);
+        assert_eq!(ids[0], 124, "两路都命中的排第一");
+        assert!(ids.contains(&7), "只从品牌路来的被截掉了：{ids:?}");
+        assert!(ids.contains(&9), "只从全文路来的被截掉了：{ids:?}");
+        // 向量路按相似度截：最像的 123 留着，最不像的 101 被截掉
+        assert!(ids.contains(&123));
+        assert!(!ids.contains(&101));
     }
 }
