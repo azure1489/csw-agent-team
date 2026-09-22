@@ -17,3 +17,6 @@ reqwest.workspace = true
 tokio.workspace = true
 rusqlite.workspace = true
 jiff.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true

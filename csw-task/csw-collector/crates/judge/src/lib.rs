@@ -9,7 +9,9 @@
 //!
 //! Jev 只做初评、核对与窄判断；深核交给 `deepcheck`。
 
+pub mod check;
 pub mod materials;
+pub mod merge;
 pub mod rubric;
 pub mod triage;
 pub mod verdict;
