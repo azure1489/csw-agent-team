@@ -207,6 +207,60 @@ fn comparison_name(v: csw_collector_core::types::ComparisonVerdict) -> &'static 
     }
 }
 
+/// 一条候选的预览图：交付物里每条放一张。
+pub struct Preview {
+    pub candidate_key: String,
+    /// 图片字节。**已经是缩略图**，别把原图塞进来——48 MiB 的上限不经花。
+    pub bytes: Vec<u8>,
+    /// 扩展名（jpg / png / webp），决定 zip 里用不用压缩
+    pub ext: String,
+}
+
+/// 把 01 的交付物拼成 zip 的内容清单。
+///
+/// 形态是协议定死的：`index.md` + `images/` + `trace/`。
+/// 图片按 `候选键.扩展名` 命名，**不用序号**——序号在补件里会错位，
+/// 而条目键在整轮里是稳定的。
+pub fn assemble(
+    meta: crate::index::Meta,
+    body: String,
+    previews: &[Preview],
+    sweeps_jsonl: String,
+    items_jsonl: String,
+) -> Vec<crate::pack::Entry> {
+    let mut out = vec![
+        crate::pack::Entry::text("index.md", crate::index::Document { meta, body }.render()),
+        crate::pack::Entry::text("trace/sweeps.jsonl", sweeps_jsonl),
+        crate::pack::Entry::text("trace/items.jsonl", items_jsonl),
+    ];
+    for p in previews {
+        let ext = if p.ext.trim().is_empty() {
+            "jpg"
+        } else {
+            p.ext.trim()
+        };
+        out.push(crate::pack::Entry::binary(
+            &format!("images/{}.{ext}", safe_name(&p.candidate_key)),
+            p.bytes.clone(),
+        ));
+    }
+    out
+}
+
+/// 条目键进文件名前过一遍。键本身是「品牌小写 + `-` + 哈希前六位」，
+/// 正常不会有问题；但品牌名是从第三方正文来的，**不能假设它干净**。
+fn safe_name(key: &str) -> String {
+    key.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,6 +413,61 @@ mod tests {
         let body = ledger_body(("A", "B"), &[j("k1", Tier::Recommend, true)], |_| None);
         assert!(body.contains("k1"));
         assert!(!body.contains("链接："));
+    }
+
+    #[test]
+    fn 交付物的形态是协议定死的() {
+        let entries = assemble(
+            crate::index::Meta {
+                at: "2026-09-18T05:40:00Z".into(),
+                ..Default::default()
+            },
+            "正文".into(),
+            &[Preview {
+                candidate_key: "yamatomichi-ab12cd".into(),
+                bytes: vec![1, 2, 3],
+                ext: "jpg".into(),
+            }],
+            "{}\n".into(),
+            "{}\n".into(),
+        );
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"index.md"));
+        assert!(paths.contains(&"trace/sweeps.jsonl"));
+        assert!(paths.contains(&"trace/items.jsonl"));
+        // 图片按条目键命名，不用序号——序号在补件里会错位
+        assert!(
+            paths.contains(&"images/yamatomichi-ab12cd.jpg"),
+            "{paths:?}"
+        );
+    }
+
+    #[test]
+    fn 键里的脏字符进不了文件名() {
+        // 品牌名是从第三方正文来的，不能假设它干净
+        assert_eq!(safe_name("a/../b"), "a____b");
+        assert_eq!(
+            safe_name("山と道-ab12cd"),
+            "___-ab12cd",
+            "三个字符三个下划线"
+        );
+        assert_eq!(safe_name("nanga-ab12cd"), "nanga-ab12cd");
+    }
+
+    #[test]
+    fn 扩展名空着就当jpg() {
+        let entries = assemble(
+            crate::index::Meta::default(),
+            String::new(),
+            &[Preview {
+                candidate_key: "k".into(),
+                bytes: vec![1],
+                ext: "  ".into(),
+            }],
+            String::new(),
+            String::new(),
+        );
+        assert!(entries.iter().any(|e| e.path == "images/k.jpg"));
     }
 
     #[test]

@@ -13,3 +13,4 @@
 pub mod index;
 pub mod intake;
 pub mod pack;
+pub mod trace;
