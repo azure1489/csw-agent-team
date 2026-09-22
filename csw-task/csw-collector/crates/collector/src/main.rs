@@ -19,6 +19,7 @@ mod kb;
 mod m1;
 mod mcp;
 mod schema;
+mod serve;
 mod xcheck;
 
 use clap::{Parser, Subcommand};
