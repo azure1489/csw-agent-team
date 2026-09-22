@@ -285,18 +285,27 @@ pub async fn sync_decisions(
 /// **只认 `rejected`。** `deferred` 是暂缓——那恰恰是「以后还想要」的意思，
 /// 拿它去挡后续候选正好挡反。`dropped` 是流程淘汰（这期没排上），不是口味表态。
 ///
-/// 原话两处都看：`quote_ref` 是这次决定的轨迹原话，更准；`decision_source`
-/// 是条目上那句，作兜底。两处都空的规则照样进表，但不自动生效
-/// （见 [`csw_collector_core::exclusion::upsert`]）。
+/// # 原话**只认 `quote_ref`**，不回退 `decision_source`
+///
+/// 第一版是回退的：`quote_ref` 空就用 `decision_source`（引擎侧那个字段的注释
+/// 写着「Van 原话」）。09-23 拉到 394 条真决定之后，这个假设当场就破了：
+///
+/// - 14 条否决里 `quote_ref` **全部为空**，全都回退到了 `decision_source`
+/// - 而那里存的是**一次批量操作的说明**，同一批每条都一样：
+///   「主选2备选1均批准继续推进，待核退回」
+/// - 更要命的一条，内容是 Van 的一整段派工指令（含八个链接），意思是
+///   「这期用我挑的这几条」
+///
+/// 最后那条说明 `rejected` 在实际用法里**混了两种语义**：真正的质量否决，
+/// 和**批次替换**。后者不代表口味，只代表这一期没选它——拿它去挡以后的候选是错的。
+///
+/// 于是「没原话就不自动生效」那道闸形同虚设：14 条全自动开了。
+/// 只认 `quote_ref` 之后，拿不出针对**这一条**的话，就摆在页面上等人确认。
 fn note_rejection(conn: &Connection, d: &Decision) -> Result<()> {
     if d.status != "rejected" || d.item_key.trim().is_empty() {
         return Ok(());
     }
-    let quote = if d.quote_ref.trim().is_empty() {
-        d.decision_source.trim()
-    } else {
-        d.quote_ref.trim()
-    };
+    let quote = d.quote_ref.trim();
     csw_collector_core::exclusion::upsert(
         conn,
         &csw_collector_core::exclusion::Exclusion {
@@ -1110,5 +1119,81 @@ mod tests {
             )
             .unwrap();
         assert_eq!(q, "这个不要");
+    }
+
+    /// 否决的原话**只认 `quote_ref`**，`decision_source` 里那句一律不当原话用。
+    ///
+    /// 这条有真实数据撑着：09-23 拉到 394 条决定，14 条否决的 `quote_ref`
+    /// 全部为空，而 `decision_source` 存的是批量操作的说明（同一批每条都一样），
+    /// 其中一条甚至是「这期用我挑的这几条」那种派工指令——
+    /// 那是**批次替换**，不是质量否决，拿它挡后续候选是错的。
+    ///
+    /// 回退到 `decision_source` 会让「没原话不自动生效」那道闸形同虚设。
+    #[test]
+    fn 否决的原话不回退到批量说明() {
+        let c = conn();
+        let base = Decision {
+            run_id: 50,
+            subject: "2026-09-22".into(),
+            item_key: "norda-1f9378".into(),
+            title: "某品牌腰包发布预告".into(),
+            brand: "norda".into(),
+            source_url: String::new(),
+            published_at: String::new(),
+            status: "rejected".into(),
+            // 真实数据里这里是「主选2备选1均批准继续推进，待核退回」这种批量说明
+            decision_source: "主选2备选1均批准继续推进，待核退回".into(),
+            decided_at: "2026-09-22T01:49:26Z".into(),
+            reason_code: "reject".into(),
+            reason: "主选2备选1均批准继续推进，待核退回".into(),
+            quote_ref: String::new(),
+            actor_role: "van".into(),
+        };
+        note_rejection(&c, &base).unwrap();
+        let rules = csw_collector_core::exclusion::all(&c).unwrap();
+        assert_eq!(rules.len(), 1, "否决要进表");
+        assert_eq!(rules[0].quote, "", "批量说明不能当原话");
+        assert!(!rules[0].active, "拿不出针对这一条的原话就不该自动生效");
+
+        // 真有针对这一条的原话时才自动生效
+        let mut with_quote = base.clone();
+        with_quote.item_key = "other-abc123".into();
+        with_quote.quote_ref = "这个角度上个月刚写过，不要重复".into();
+        note_rejection(&c, &with_quote).unwrap();
+        let on: Vec<_> = csw_collector_core::exclusion::active(&c).unwrap();
+        assert_eq!(on.len(), 1);
+        assert_eq!(on[0].item_key, "other-abc123");
+    }
+
+    /// `deferred` 是「以后还想要」，拿它挡后续候选正好挡反。
+    #[test]
+    fn 只有rejected进排除表() {
+        let c = conn();
+        for st in ["deferred", "dropped", "approved_write", "pending_check"] {
+            note_rejection(
+                &c,
+                &Decision {
+                    run_id: 1,
+                    subject: String::new(),
+                    item_key: format!("k-{st}"),
+                    title: String::new(),
+                    brand: "b".into(),
+                    source_url: String::new(),
+                    published_at: String::new(),
+                    status: st.into(),
+                    decision_source: String::new(),
+                    decided_at: String::new(),
+                    reason_code: String::new(),
+                    reason: String::new(),
+                    quote_ref: "有原话".into(),
+                    actor_role: "van".into(),
+                },
+            )
+            .unwrap();
+        }
+        assert!(
+            csw_collector_core::exclusion::all(&c).unwrap().is_empty(),
+            "只有 rejected 才是口味表态"
+        );
     }
 }
