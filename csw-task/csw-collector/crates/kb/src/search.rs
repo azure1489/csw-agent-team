@@ -166,8 +166,21 @@ impl Default for Query<'_> {
     }
 }
 
+/// 三路召回 + 重排。
+///
+/// # 为什么 `conn` 是参数而不是字段
+///
+/// `rusqlite::Connection` 不是 `Sync`，所以**把 `&Connection` 跨 `await` 持有的
+/// future 不是 `Send`**。检索里有两段是 async 的（向量路、重排），一旦连接
+/// 存在结构体里，整个 `search` 就再也不能在 axum 的 handler 里跑——
+/// 而工作台的知识库页恰恰要在那里跑。
+///
+/// 所以：连接只在**同步**的那几段里出现，且只以参数形式。
+/// [`Retriever::search`] 一次跑完（给不要求 `Send` 的地方用：判断那一步、MCP），
+/// axum 那边按 [`Retriever::vector_route`] → [`Retriever::recall`] →
+/// [`Retriever::rerank`] → [`Retriever::finish`] 自己排，
+/// 每段之间把连接的锁放掉。
 pub struct Retriever<'a> {
-    pub conn: &'a Connection,
     pub store: &'a VectorStore,
     pub brands: &'a BrandIndex,
     pub tok: &'a Tokenizer,
@@ -175,27 +188,51 @@ pub struct Retriever<'a> {
     pub reranker: Option<&'a VectorClient>,
 }
 
-impl Retriever<'_> {
-    pub async fn search(&self, q: &Query<'_>) -> Result<Retrieved> {
-        let mut routes: HashMap<i64, Routes> = HashMap::new();
-        let mut counts = RecallCounts::default();
+/// 第二段的产物：召回到的文档、各路计数、认出的品牌。
+pub struct Recalled {
+    pub scored: Vec<Scored>,
+    pub counts: RecallCounts,
+    pub brands_hit: Vec<String>,
+}
 
-        // ── 一、向量路 ──
-        if let Some(v) = q.vector {
-            let filter = DocFilter {
-                kinds: KbKind::ALL.iter().map(|k| k.as_str().to_string()).collect(),
-                exclude_post_id: q.exclude_post_id.clone(),
-                ..Default::default()
-            };
-            let hits = self
-                .store
-                .search_docs(v, &filter, VECTOR_TOP_K)
-                .await
-                .context("向量召回")?;
-            counts.vector = hits.len();
-            for h in hits {
-                routes.entry(h.doc_id).or_default().vector = true;
-            }
+impl Retriever<'_> {
+    /// 一次跑完。**这个 future 不是 `Send`**（它跨 await 持有 `&Connection`），
+    /// 只能在不要求 `Send` 的地方用。
+    pub async fn search(&self, conn: &Connection, q: &Query<'_>) -> Result<Retrieved> {
+        let vector_ids = self.vector_route(q).await?;
+        let mut r = self.recall(conn, q, &vector_ids)?;
+        self.rerank(q, &mut r.scored).await;
+        self.finish(conn, q, r)
+    }
+
+    /// 第一段：向量路。**不碰库**，所以它的 future 是 `Send` 的。
+    pub async fn vector_route(&self, q: &Query<'_>) -> Result<Vec<i64>> {
+        let Some(v) = q.vector else {
+            return Ok(Vec::new());
+        };
+        let filter = DocFilter {
+            kinds: KbKind::ALL.iter().map(|k| k.as_str().to_string()).collect(),
+            exclude_post_id: q.exclude_post_id.clone(),
+            ..Default::default()
+        };
+        let hits = self
+            .store
+            .search_docs(v, &filter, VECTOR_TOP_K)
+            .await
+            .context("向量召回")?;
+        Ok(hits.into_iter().map(|h| h.doc_id).collect())
+    }
+
+    /// 第二段：品牌路 + 全文路 + 合并 + 取回文档。**只碰库，一次 `await` 都没有。**
+    pub fn recall(&self, conn: &Connection, q: &Query<'_>, vector_ids: &[i64]) -> Result<Recalled> {
+        let mut routes: HashMap<i64, Routes> = HashMap::new();
+        let mut counts = RecallCounts {
+            vector: vector_ids.len(),
+            ..Default::default()
+        };
+
+        for id in vector_ids {
+            routes.entry(*id).or_default().vector = true;
         }
 
         // ── 二、品牌路 ──
@@ -203,7 +240,7 @@ impl Retriever<'_> {
         let mut brands_hit: Vec<String> = hits.keys().cloned().collect();
         brands_hit.sort();
         for brand in &brands_hit {
-            for d in docs::by_brand(self.conn, brand, BRAND_PER_BRAND)? {
+            for d in docs::by_brand(conn, brand, BRAND_PER_BRAND)? {
                 counts.brand += 1;
                 routes.entry(d.id).or_default().brand = true;
             }
@@ -216,16 +253,16 @@ impl Retriever<'_> {
         // 这一路要的是「型号、材质、联名对象」这类字面重合，所以先从正文里挑出
         // 值得逐字匹配的关键词，一个词一次短语查。
         // （这个错是测试抓出来的：只有 only_fts 那条怎么都召不回来。）
-        let df_cap = self.df_cap()?;
+        let df_cap = self.df_cap(conn)?;
         for term in key_phrases(self.tok, q.text) {
             if counts.fts >= FTS_TOP_N {
                 break;
             }
             // 满库都有的词召回的全是噪声，跳过
-            if fts::doc_frequency(self.conn, self.tok, &term)? > df_cap {
+            if fts::doc_frequency(conn, self.tok, &term)? > df_cap {
                 continue;
             }
-            for h in fts::search(self.conn, self.tok, &term, FTS_PER_TERM)? {
+            for h in fts::search(conn, self.tok, &term, FTS_PER_TERM)? {
                 counts.fts += 1;
                 routes.entry(h.doc_id).or_default().fts = true;
             }
@@ -248,7 +285,7 @@ impl Retriever<'_> {
             ids.truncate(RERANK_MAX);
         }
 
-        let found = docs::get_many(self.conn, &ids)?;
+        let found = docs::get_many(conn, &ids)?;
         let mut scored: Vec<Scored> = found
             .into_iter()
             .map(|doc| Scored {
@@ -262,41 +299,52 @@ impl Retriever<'_> {
         // 同一类里同一条贴文只留一条（已发条目与「生成过文章的贴文」是两类，各留各的）
         dedupe_by_post(&mut scored);
 
-        // ── rerank ──
-        if let Some(rr) = self.reranker
-            && !scored.is_empty()
-            && !q.text.trim().is_empty()
+        Ok(Recalled {
+            scored,
+            counts,
+            brands_hit,
+        })
+    }
+
+    /// 第三段：重排。**不碰库**，所以它的 future 是 `Send` 的。
+    ///
+    /// 重排失败不算错：召回顺序本身已经是可用的次序，硬要个名次不值得让整次检索失败。
+    pub async fn rerank(&self, q: &Query<'_>, scored: &mut [Scored]) {
+        let Some(rr) = self.reranker else { return };
+        if scored.is_empty() || q.text.trim().is_empty() {
+            return;
+        }
+        let snippets: Vec<String> = scored.iter().map(|s| snippet(&s.doc)).collect();
+        match rr
+            .rerank(&snippet_text(q.text), &snippets, RERANK_INSTRUCTION)
+            .await
         {
-            let snippets: Vec<String> = scored.iter().map(|s| snippet(&s.doc)).collect();
-            match rr
-                .rerank(&snippet_text(q.text), &snippets, RERANK_INSTRUCTION)
-                .await
-            {
-                Ok(items) => {
-                    for it in &items {
-                        if let Some(s) = scored.get_mut(it.index) {
-                            s.score = Some(it.relevance_score);
-                        }
+            Ok(items) => {
+                for it in &items {
+                    if let Some(s) = scored.get_mut(it.index) {
+                        s.score = Some(it.relevance_score);
                     }
-                    // 分高的在前；没拿到分的排最后而不是当成 0 分——
-                    // 「没排到」和「排了但不相关」是两回事
-                    scored.sort_by(|a, b| match (a.score, b.score) {
-                        (Some(x), Some(y)) => y.total_cmp(&x),
-                        (Some(_), None) => std::cmp::Ordering::Less,
-                        (None, Some(_)) => std::cmp::Ordering::Greater,
-                        (None, None) => std::cmp::Ordering::Equal,
-                    });
                 }
-                Err(e) => {
-                    // 重排失败不阻塞判断：召回顺序本身已经是可用的次序
-                    tracing::warn!(原因 = %format!("{e:#}"), "重排失败，按召回顺序给");
-                }
+                // 分高的在前；没拿到分的排最后而不是当成 0 分——
+                // 「没排到」和「排了但不相关」是两回事
+                scored.sort_by(|a, b| match (a.score, b.score) {
+                    (Some(x), Some(y)) => y.total_cmp(&x),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                });
+            }
+            Err(e) => {
+                tracing::warn!(原因 = %format!("{e:#}"), "重排失败，按召回顺序给");
             }
         }
+    }
 
-        let mut out: Vec<Scored> = scored.iter().take(q.limit.max(1)).cloned().collect();
+    /// 第四段：截断到 `limit`，按需补齐缺的那几类。**只碰库。**
+    pub fn finish(&self, conn: &Connection, q: &Query<'_>, r: Recalled) -> Result<Retrieved> {
+        let mut out: Vec<Scored> = r.scored.iter().take(q.limit.max(1)).cloned().collect();
         let missing = if q.backfill_kinds {
-            self.backfill(&mut out, &scored, q)?
+            self.backfill(conn, &mut out, &r.scored, q)?
         } else {
             KbKind::ALL
                 .into_iter()
@@ -308,15 +356,14 @@ impl Retriever<'_> {
         Ok(Retrieved {
             docs: out,
             missing_kinds: missing,
-            counts,
-            brands_hit,
+            counts: r.counts,
+            brands_hit: r.brands_hit,
         })
     }
 
     /// 一个词命中多少篇就算「满库都有」。
-    fn df_cap(&self) -> Result<usize> {
-        let total: i64 = self
-            .conn
+    fn df_cap(&self, conn: &Connection) -> Result<usize> {
+        let total: i64 = conn
             .query_row("SELECT COUNT(*) FROM kb_docs", [], |r| r.get(0))
             .unwrap_or(0);
         Ok((total as usize / FTS_DF_RATIO).max(FTS_DF_FLOOR))
@@ -329,6 +376,7 @@ impl Retriever<'_> {
     /// 命中品牌捞该类最近一条；还没有就如实记成缺口，由判断那一步落待核。
     fn backfill(
         &self,
+        conn: &Connection,
         out: &mut Vec<Scored>,
         pool: &[Scored],
         q: &Query<'_>,
@@ -345,7 +393,7 @@ impl Retriever<'_> {
                 out.push(s);
                 continue;
             }
-            let from_lib = self.newest_of_kind(k, q)?;
+            let from_lib = self.newest_of_kind(conn, k, q)?;
             match from_lib {
                 Some(doc) => out.push(Scored {
                     doc,
@@ -360,16 +408,21 @@ impl Retriever<'_> {
     }
 
     /// 库里这一类最近的一条。先按命中的品牌找，找不到再退回全库最近。
-    fn newest_of_kind(&self, kind: &str, q: &Query<'_>) -> Result<Option<KbDoc>> {
+    fn newest_of_kind(
+        &self,
+        conn: &Connection,
+        kind: &str,
+        q: &Query<'_>,
+    ) -> Result<Option<KbDoc>> {
         for brand in self.brands.hits(q.text).keys() {
-            let hit = docs::by_brand(self.conn, brand, BRAND_PER_BRAND)?
+            let hit = docs::by_brand(conn, brand, BRAND_PER_BRAND)?
                 .into_iter()
                 .find(|d| d.kind == kind);
             if hit.is_some() {
                 return Ok(hit);
             }
         }
-        let mut st = self.conn.prepare(
+        let mut st = conn.prepare(
             "SELECT id FROM kb_docs WHERE kind = ?1
              ORDER BY published_at IS NULL, published_at DESC, id DESC LIMIT 1",
         )?;
@@ -378,7 +431,7 @@ impl Retriever<'_> {
             .filter_map(Result::ok)
             .next();
         match id {
-            Some(id) => docs::get(self.conn, id),
+            Some(id) => docs::get(conn, id),
             None => Ok(None),
         }
     }
@@ -528,7 +581,6 @@ mod tests {
 
         fn retriever(&self) -> Retriever<'_> {
             Retriever {
-                conn: &self.conn,
                 store: &self.store,
                 brands: &self.brands,
                 tok: &self.tok,
@@ -561,12 +613,15 @@ mod tests {
 
         let got = f
             .retriever()
-            .search(&Query {
-                text: "山と道 的 Dyneema 新包",
-                vector: Some(&v(1)),
-                limit: 10,
-                ..Default::default()
-            })
+            .search(
+                &f.conn,
+                &Query {
+                    text: "山と道 的 Dyneema 新包",
+                    vector: Some(&v(1)),
+                    limit: 10,
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
 
@@ -590,12 +645,15 @@ mod tests {
             .await;
         let got = f
             .retriever()
-            .search(&Query {
-                text: "山と道 新包",
-                vector: Some(&v(2)),
-                limit: 10,
-                ..Default::default()
-            })
+            .search(
+                &f.conn,
+                &Query {
+                    text: "山と道 新包",
+                    vector: Some(&v(2)),
+                    limit: 10,
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         let r = got.docs.iter().find(|s| s.doc.id == id).unwrap().routes;
@@ -619,13 +677,16 @@ mod tests {
 
         let got = f
             .retriever()
-            .search(&Query {
-                text: "山と道 新包",
-                vector: Some(&v(1)),
-                limit: 1, // 只要一条：不补齐的话另外三类会整体缺席
-                backfill_kinds: true,
-                ..Default::default()
-            })
+            .search(
+                &f.conn,
+                &Query {
+                    text: "山と道 新包",
+                    vector: Some(&v(1)),
+                    limit: 1, // 只要一条：不补齐的话另外三类会整体缺席
+                    backfill_kinds: true,
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
 
@@ -656,11 +717,14 @@ mod tests {
         // 检索工具被问「有没有关于 X 的」时，补齐会让答案永远是「有」
         let got = f
             .retriever()
-            .search(&Query {
-                text: "半导体制程良率",
-                limit: 8,
-                ..Default::default()
-            })
+            .search(
+                &f.conn,
+                &Query {
+                    text: "半导体制程良率",
+                    limit: 8,
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         assert!(
@@ -680,13 +744,16 @@ mod tests {
             .await;
         let got = f
             .retriever()
-            .search(&Query {
-                text: "山と道 新包",
-                vector: Some(&v(1)),
-                limit: 8,
-                backfill_kinds: true,
-                ..Default::default()
-            })
+            .search(
+                &f.conn,
+                &Query {
+                    text: "山と道 新包",
+                    vector: Some(&v(1)),
+                    limit: 8,
+                    backfill_kinds: true,
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         // 补不出来就不要编——判断那一步据此落待核
@@ -705,12 +772,15 @@ mod tests {
         // 向量化失败时检索差一点，但不该让这条候选判不了
         let got = f
             .retriever()
-            .search(&Query {
-                text: "山と道 新包",
-                vector: None,
-                limit: 8,
-                ..Default::default()
-            })
+            .search(
+                &f.conn,
+                &Query {
+                    text: "山と道 新包",
+                    vector: None,
+                    limit: 8,
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         assert_eq!(got.counts.vector, 0);
@@ -725,13 +795,16 @@ mod tests {
             .await;
         let got = f
             .retriever()
-            .search(&Query {
-                text: "毫无关系的查询词",
-                vector: Some(&v(3)),
-                exclude_post_id: Some("p-self".into()),
-                limit: 8,
-                backfill_kinds: false,
-            })
+            .search(
+                &f.conn,
+                &Query {
+                    text: "毫无关系的查询词",
+                    vector: Some(&v(3)),
+                    exclude_post_id: Some("p-self".into()),
+                    limit: 8,
+                    backfill_kinds: false,
+                },
+            )
             .await
             .unwrap();
         assert_eq!(got.counts.vector, 0, "自己那条不该从向量路回来");
@@ -792,12 +865,15 @@ mod tests {
         }
         let got = f
             .retriever()
-            .search(&Query {
-                text: "Dyneema 面料的新包",
-                vector: Some(&v(1)),
-                limit: 50,
-                ..Default::default()
-            })
+            .search(
+                &f.conn,
+                &Query {
+                    text: "Dyneema 面料的新包",
+                    vector: Some(&v(1)),
+                    limit: 50,
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         assert_eq!(got.counts.vector, VECTOR_TOP_K);
@@ -851,11 +927,14 @@ mod tests {
 
         let got = f
             .retriever()
-            .search(&Query {
-                text: "新品上市 用的是 Dyneema 面料",
-                limit: 50,
-                ..Default::default()
-            })
+            .search(
+                &f.conn,
+                &Query {
+                    text: "新品上市 用的是 Dyneema 面料",
+                    limit: 50,
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         // 「新品」命中 41 篇，远超 5% 的阈值，不该把整库拉进来

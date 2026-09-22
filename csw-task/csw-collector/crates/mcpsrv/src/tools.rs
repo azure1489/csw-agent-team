@@ -59,7 +59,6 @@ impl KbContext {
         let vec = self.embed(q).await;
         let conn = self.conn.lock().await;
         let r = Retriever {
-            conn: &conn,
             store: &self.store,
             brands: &self.brands,
             tok: &self.tok,
@@ -67,14 +66,17 @@ impl KbContext {
             // 深核线程随手一查就把正式轮的向量化堵住不合适
             reranker: None,
         }
-        .search(&Query {
-            text: q,
-            vector: vec.as_deref(),
-            exclude_post_id: None,
-            limit: limit.clamp(1, MAX_LIMIT),
-            // 检索工具不补齐：被问「有没有关于 X 的」时，补齐会让答案永远是「有」
-            backfill_kinds: false,
-        })
+        .search(
+            &conn,
+            &Query {
+                text: q,
+                vector: vec.as_deref(),
+                exclude_post_id: None,
+                limit: limit.clamp(1, MAX_LIMIT),
+                // 检索工具不补齐：被问「有没有关于 X 的」时，补齐会让答案永远是「有」
+                backfill_kinds: false,
+            },
+        )
         .await?;
 
         let mut out = String::new();

@@ -139,6 +139,63 @@
   --top-h: 52px;
 }
 
+/* ------------------------------------------------------------
+   从 csw-task-web 复制来的那套组件用的是这十来个短类名（.row / .t2 / .gap8 …）。
+   它们在那边是全局样式的一部分，复制组件时**漏掉了**——漏掉的表现不是报错，
+   是卡片里的东西全部竖着堆起来，看着像没写样式。补在这里，别再动组件本身。
+
+   新写的页面一律用 Tailwind 的类，不用这一套。
+   ------------------------------------------------------------ */
+.row {
+  display: flex;
+  align-items: center;
+}
+.col {
+  display: flex;
+  flex-direction: column;
+}
+.between {
+  justify-content: space-between;
+}
+.center {
+  justify-content: center;
+}
+.wrap {
+  flex-wrap: wrap;
+}
+.grow {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.gap4 {
+  gap: 4px;
+}
+.gap8 {
+  gap: 8px;
+}
+.gap12 {
+  gap: 12px;
+}
+.t2 {
+  color: var(--text-2);
+}
+.t3 {
+  color: var(--text-3);
+}
+.sm {
+  font-size: 12.5px;
+}
+.xs {
+  font-size: 11.5px;
+}
+/* 渲染出来的 Markdown：只压掉首尾的外边距，别的交给浏览器默认 */
+.md-body > :first-child {
+  margin-top: 0;
+}
+.md-body > :last-child {
+  margin-bottom: 0;
+}
+
 html,
 body {
   margin: 0;

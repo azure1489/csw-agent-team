@@ -53,7 +53,7 @@
 | 方法 | 路径 | 角色 | 说明 |
 |---|---|---|---|
 | GET | `/api/rounds/:id/judgements` | viewer | 台账。`?tier=&has_gap=&brand=&q=&cursor=&limit=`。按档分组，六维带依据，含 Jev 核对标记 |
-| GET | `/api/rounds/:id/judgements/:key` | viewer | 单条：候选原文、每张图与其描述、五类对照材料、深核结论、模型调用记录 |
+| GET | `/api/rounds/:id/judgements/:key` | viewer | 单条全貌**一次给全**：候选原文、每张图与其描述、判断、改档历史、Van 勾选、深核结论、这一轮的模型调用。分七个接口去拿，页面上就是七个各自转圈的小方块 |
 | POST | `/api/rounds/:id/judgements/:key/override` | operator | 改档。`{to_tier, reason}`，理由必填。**另存不覆盖**，台账上两者都看得见。返回 `{id, effective_tier}` |
 | POST | `/api/rounds/:id/judgements/:key/recover` | operator | 把被 03 决定硬性排除的条目捞回来。**未实现**：硬性排除本身还没做，现在「捞回」就是改档（`override` 到 `alternate`），做出来之后再加这个端点 |
 | POST | `/api/rounds/:id/first-batch` | operator | 指定首批要深核的条目。`{keys: []}`，传空数组＝清空指定、退回自动挑法。不在这一轮里的键忽略，返回 `{marked}` |
@@ -69,8 +69,8 @@ Jev 初评的概率只在服务端决定「先判哪条」，不出现在任何�
 
 | 方法 | 路径 | 角色 | 说明 |
 |---|---|---|---|
-| GET | `/api/rounds/:id/coverage` | viewer | 每个采集器一行：取到、只图文、图片数、已识别、耗时、结果 |
-| GET | `/api/rounds/:id/media?state=failed` | viewer | 下载或识别失败的清单 |
+| GET | `/api/rounds/:id/coverage` | viewer | 每个采集器一行。**数字来自我们自己发出去的那一份**（outbox 里的字节），不是现场再算——页面上看到的要与引擎收到的是同一份。另附采集那一步的耗时账 |
+| GET | `/api/rounds/:id/media?state=failed` | viewer | 这一轮的图；`state=failed` 只看没下到或没识别成的 |
 | GET | `/api/sources` | viewer | 来源台账与待补录账号清单（P1） |
 | GET | `/api/sources/export` | viewer | 待补录账号导出 CSV |
 
@@ -85,10 +85,13 @@ Jev 初评的概率只在服务端决定「先判哪条」，不出现在任何�
 
 | 方法 | 路径 | 角色 | 说明 |
 |---|---|---|---|
-| GET | `/api/kb/search` | viewer | `?q=&kind=&limit=`。向量 top-K ∪ 品牌命中 ∪ 全文 → rerank ≤8 → 分组 |
-| GET | `/api/kb/similar-selected` | viewer | 与某条候选相似的已采用条目 |
-| GET | `/api/kb/brands/:brand` | viewer | 某品牌的历史覆盖 |
-| GET | `/api/kb/status` | viewer | 各来源的同步水位与条数 |
+| GET | `/api/kb/search` | viewer | `?q=&limit=`。向量 top-K ∪ 品牌命中 ∪ 全文 → 合并 → 截断。**这条路上不重排**——重排占 GPU，而 GPU 是全进程串行的；有人在页面上连搜几下，正式轮的向量化就堵住了 |
+| GET | `/api/kb/similar-selected` | viewer | `?q=<candidate_key>`。用候选正文现算一次查询向量（候选的融合向量是一次性的，没存），把它自己排除掉 |
+| GET | `/api/kb/brands/:brand` | viewer | 某品牌的历史覆盖。**纯查库，不碰 GPU**——这一页是拿来翻的 |
+| GET | `/api/kb/status` | viewer | 各来源**同步到哪天了**与条数。不是「库里有多少」：前者好看，后者才回答「今天的判断有没有拿到昨天的已发条目」 |
+
+知识库那三个检索接口在客户端还没建起来时回 **503**，不回空结果——
+「还没起来」与「库里什么都没有」是两件完全不同的事。
 | POST | `/api/kb/sync` | operator | 手动触发增量同步 |
 | GET | `/api/memory/rules` \| `/cases` | viewer | 准则卡与案例库（含 Van 原话） |
 | POST | `/api/memory/rules/:key/confirm` | operator | 记录 Van 的校准结论 |
@@ -97,7 +100,7 @@ Jev 初评的概率只在服务端决定「先判哪条」，不出现在任何�
 
 | 方法 | 路径 | 角色 | 说明 |
 |---|---|---|---|
-| GET | `/api/van/today` | van | 手机优先的当期视图：推荐与备选，每条三句话 + 代表图 |
+| GET | `/api/van/today` | van | 手机优先的当期视图：**只给推荐与备选**（按生效档，改过档的算改过的），每条三句话、热度说明与她已勾的标记。手机上翻三百条不是在帮她；要看全部去判断台账。还没开工时回 `{round_id: null, items: []}`，不是错误 |
 | POST | `/api/van/marks` | van | 勾选。`{candidate_key, mark: like\|doubt\|note, note?, round_id?, remove?}`。不给 `round_id` 就落到当期那一轮（最近开的**派单轮**，不含手动轮与预取轮）。`note` 这一种必须有内容 |
 | GET | `/api/rounds/:id/van-marks` | viewer | 这一轮的全部勾选 |
 
@@ -107,9 +110,9 @@ Jev 初评的概率只在服务端决定「先判哪条」，不出现在任何�
 
 | 方法 | 路径 | 角色 | 说明 |
 |---|---|---|---|
-| GET | `/api/rubric` | viewer | 当前准则版本、六维定义与锚点 |
+| GET | `/api/rubric` | viewer | 当前准则版本、核心问题、三问、七类优先、七类降低、六维锚点、**四项「不是维度」**。从代码里的常量来，不是从库里——它要跟着提示词一起走 |
 | GET | `/api/rubric/backtest` | operator | 回测结果 |
-| GET | `/api/metrics/selection` | viewer | 采用率、首批命中、待核结转等 |
+| GET | `/api/metrics/selection` | viewer | **全是计数，没有一个是分数**。「模型判了什么」与「人改成了什么」分开算（被捞回的 / 被压下的）：两者重合得越少，说明判断框架离 Van 的口味越远——那正是要看的 |
 
 ## 运行与设置
 

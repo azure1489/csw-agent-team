@@ -66,7 +66,9 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
     );
 
     // 客户端一次建好整个进程复用：闸门藏在里面，每处各建一个等于把闸门复制几份
-    let svc = services::Services::build(cfg, secrets, &conn).await?;
+    // Arc 是为了让工作台的知识库页也能用同一套客户端：闸门（网关信号量、GPU 锁）
+    // 必须全进程只有一份，页面上搜一下与正式轮抢的是同一块卡
+    let svc = std::sync::Arc::new(services::Services::build(cfg, secrets, &conn).await?);
 
     // 二、先把欠引擎的发完，再去接新单
     match outbox_sender::drain(&conn, &engine).await {
@@ -98,6 +100,7 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
         conn: tokio::sync::Mutex::new(http_conn),
         cfg: cfg.clone(),
         started: std::time::Instant::now(),
+        svc: Some(svc.clone()),
     });
     let auth = std::sync::Arc::new(crate::bff::AuthState {
         engine: csw_collector_engineapi::admin::AdminClient::new(&cfg.engine.admin_url)?,

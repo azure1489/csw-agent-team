@@ -614,20 +614,22 @@ async fn judge_items<'a>(
     for p in prepared {
         let text = judge_text(p);
         let retrieved = Retriever {
-            conn,
             store: &svc.store,
             brands: &svc.brands,
             tok: &svc.tok,
             reranker: Some(&svc.vector),
         }
-        .search(&Query {
-            text: &text,
-            vector: p.fused.as_deref(),
-            exclude_post_id: Some(p.candidate.source_id.clone()),
-            limit: csw_collector_kb::search::FINAL_MAX,
-            // 判断受「五类缺一不判」约束，某一类整体缺席会把条目卡成待核
-            backfill_kinds: true,
-        })
+        .search(
+            conn,
+            &Query {
+                text: &text,
+                vector: p.fused.as_deref(),
+                exclude_post_id: Some(p.candidate.source_id.clone()),
+                limit: csw_collector_kb::search::FINAL_MAX,
+                // 判断受「五类缺一不判」约束，某一类整体缺席会把条目卡成待核
+                backfill_kinds: true,
+            },
+        )
         .await
         .unwrap_or_default();
 

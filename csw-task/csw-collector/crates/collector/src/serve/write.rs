@@ -405,6 +405,8 @@ mod tests {
             conn: tokio::sync::Mutex::new(conn),
             cfg: csw_collector_core::Config::default(),
             started: std::time::Instant::now(),
+            // 测试里不起客户端：知识库那几个接口会如实回 503
+            svc: None,
         });
         let auth = std::sync::Arc::new(AuthState {
             engine: csw_collector_engineapi::admin::AdminClient::new("http://127.0.0.1:1").unwrap(),

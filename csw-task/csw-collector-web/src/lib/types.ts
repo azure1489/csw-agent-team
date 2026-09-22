@@ -1,0 +1,280 @@
+/**
+ * 后端接口的返回形状。
+ *
+ * **只写页面真的会读的字段**，不照抄整个响应——照抄的那部分没人维护，
+ * 后端改了名字这边也不会报错，等到页面上出现 `undefined` 才发现。
+ *
+ * 契约在 `csw-task/csw-collector/API.md`；`core::types` 的那部分由
+ * `csw-collector schema` 导出到 `contract.json`，这里不重复。
+ */
+
+/** 四档。**没有第五档，也没有分数。** */
+export type Tier = 'recommend' | 'alternate' | 'not_recommend' | 'pending_check'
+
+export interface RoundBrief {
+  id: number
+  kind: 'task' | 'manual' | 'prefetch' | 'replay'
+  trigger: string
+  run_id: number | null
+  task_id: number | null
+  window_start: string
+  window_end: string
+  status: string
+  note: string
+  created_at: string
+}
+
+export interface RoundDetail extends RoundBrief {
+  rubric_version: string
+  kb_snapshot: string
+  instructions_hash: string
+  /** [档, 条数]，按档名排序 */
+  tiers: [string, number][]
+  candidates: number
+  carried: number
+  unjudged: number
+}
+
+export interface StepRow {
+  step: string
+  attempt: number
+  status: string
+  input_hash: string
+  counts: Record<string, unknown>
+  error: string
+  started_at: string | null
+  ended_at: string | null
+}
+
+export interface DimJudgement {
+  verdict: 'yes' | 'no' | 'unclear'
+  basis: string
+}
+
+export interface ThreeSentences {
+  what_changed: string
+  why_it_matters: string
+  how_different: string
+}
+
+export interface JudgementRow {
+  candidate_key: string
+  /** 模型的原判。**人工改过档也不动它** */
+  tier: Tier
+  /** 现在生效的那一档 */
+  effective_tier: Tier
+  override_reason: string
+  override_actor: string
+  first_batch: boolean
+  /** [维度, 判断] 的数组，键固定六个 */
+  dims: [string, DimJudgement][]
+  three_sentences: ThreeSentences
+  comparison: { verdict: string; against: string; note: string }
+  heat_note: string
+  image_seen: boolean
+  gaps: string[]
+  check_flags: string[]
+  account: string
+  url: string
+}
+
+export interface ImageRow {
+  blake3: string
+  ordinal: number
+  url: string
+  failed: boolean
+  kind: string
+  content: string
+  matches_text: string
+  missing_from_text: string
+  usable_as_figure: boolean
+  model: string
+  prompt_version: string
+}
+
+export interface JudgementDetail {
+  candidate: Record<string, unknown>
+  judgement: (Omit<JudgementRow, 'candidate_key' | 'effective_tier'> & {
+    unanswered: string
+    look: string
+    priority_hits: string[]
+    lower_hits: string[]
+    jev_disagreement: string
+    kb_refs: string[]
+    memory_refs: string[]
+    inputs_hash: string
+    model: string
+    rubric_version: string
+    created_at: string
+  }) | null
+  effective_tier: Tier | ''
+  overrides: OverrideRow[]
+  marks: VanMarkRow[]
+  images: ImageRow[]
+  deepcheck: { status: string; result: unknown; started_at: string; ended_at: string } | null
+  model_calls: ModelCallRow[]
+  first_batch: boolean
+}
+
+export interface OverrideRow {
+  candidate_key: string
+  from_tier: string
+  to_tier: string
+  reason: string
+  actor: string
+  created_at: string
+}
+
+export interface VanMarkRow {
+  candidate_key: string
+  mark: 'like' | 'doubt' | 'note'
+  note: string
+  actor: string
+  created_at: string
+}
+
+export interface ModelCallRow {
+  purpose: string
+  model: string
+  input_tokens: number
+  output_tokens: number
+  latency_ms: number
+  attempts: number
+  status: string
+  error: string
+  created_at: string
+}
+
+export interface SweepRow {
+  sweep_key: string
+  platform: string
+  source_key: string
+  query: string
+  found: number
+  fetched_unique: number
+  in_window: number
+  reviewed: number
+  /** **应当是 0**：工作台每条都判。不是 0 就说明那一步没跑完 */
+  unreviewed: number
+  registered: number
+  result: string
+  error: string
+  paged_to_end: boolean
+}
+
+export interface Coverage {
+  sweeps: SweepRow[]
+  harvest: Record<string, number>
+}
+
+export interface VanItem {
+  candidate_key: string
+  tier: Tier
+  title: string
+  brand: string
+  url: string
+  three_sentences: ThreeSentences
+  heat_note: string
+  look: string
+  marks: string[]
+}
+
+export interface Health {
+  ok: boolean
+  uptime_secs: number
+  deps: { name: string; ok: boolean; note: string }[]
+  outbox_conflicts: number
+}
+
+export interface WorkItem {
+  id: number
+  kind: string
+  round_id: number | null
+  payload_json: string
+  actor: string
+  status: 'queued' | 'running' | 'done' | 'failed'
+  note: string
+  created_at: string
+}
+
+export interface AuditRow {
+  id: number
+  actor: string
+  action: string
+  target: string
+  detail_json: string
+  created_at: string
+}
+
+export interface Settings {
+  engine_base_url: string
+  csw_base_url: string
+  vector_base_url: string
+  model: string
+  fallback_model: string
+  embed_model: string
+  jev_enabled: boolean
+  features: Record<string, boolean>
+  /** [env 名, 有没有配]。**不返回值** */
+  secrets: [string, boolean][]
+}
+
+export interface Rubric {
+  version: string
+  core_question: string
+  three_questions: string[]
+  priority: string[]
+  lower: string[]
+  dim_anchors: { dim: string; anchor: string }[]
+  /** 四项「不是维度」的东西：这套框架里最容易被偷偷用上的 */
+  not_dimensions: string[]
+}
+
+export interface MemoryRule {
+  rule_key: string
+  text: string
+  version: string
+  confirmed_by_van: boolean
+  updated_at: string
+}
+
+export interface MemoryCase {
+  case_key: string
+  decision: string
+  /** Van 原话，一字不改 */
+  quote: string
+  source_url: string
+  decided_at: string
+}
+
+export interface KbDocRow {
+  id: number
+  kind: string
+  ref_id: string
+  title: string
+  brand: string
+  url: string
+  published_at: string | null
+  publish_state: string
+  is_reference: boolean
+  snippet: string
+  routes?: string[]
+  backfilled?: boolean
+}
+
+export interface KbSearchResult {
+  brands_hit: string[]
+  missing_kinds: string[]
+  counts: { vector: number; brand: number; fts: number; merged: number; truncated: number }
+  docs: KbDocRow[]
+}
+
+export interface KbStatus {
+  cursors: { source: string; cursor: string; synced_at: string }[]
+  docs: number
+  docs_by_kind: Record<string, number>
+  品牌: number
+  别名: number
+  待算向量: number
+  embed_model: string
+}
