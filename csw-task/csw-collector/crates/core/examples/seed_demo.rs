@@ -15,7 +15,7 @@
 //! | 判断台账 | 12 条候选，四档都有、六维齐、三句话、对照结论 |
 //! | 事件详情 | 每条都有正文、图、描述、缺口、热度 |
 //! | Van 模式 | 推荐与备选 + 三种勾选 |
-//! | 采集与覆盖 | 两个采集器、一条失败的 |
+//! | 采集与覆盖 | 两个采集器（一个失败的）+ 八个计数与耗时卡片 |
 //! | 待核结转 | 两条待核（一条是没读到实图） |
 //! | 指标 | 原判与生效档不一致的两条（捞回 / 压下） |
 //! | 判断框架 | 三条排除规则：生效的、没原话的、人工停用的 |
@@ -187,23 +187,26 @@ fn main() -> Result<()> {
         )?;
     }
 
-    // 主编改了两档：一条捞回、一条压下。指标页看的就是这两者的重合度
-    workbench::put_override(
+    // 主编改了两档：一条捞回、一条压下。指标页看的就是这两者的重合度。
+    //
+    // **忽略「本来就是这一档」那个错**：这个脚本要能在同一个库上反复跑
+    // （走查脚本每次起栈都会调它），第二次跑时这两条已经是改过的档了。
+    let _ = workbench::put_override(
         &conn,
         round.id,
         "chums",
         Tier::Alternate,
         "这条其实是新配色，上周那条是另一个系列",
         "editor",
-    )?;
-    workbench::put_override(
+    );
+    let _ = workbench::put_override(
         &conn,
         round.id,
         "goldwin",
         Tier::Alternate,
         "联名信息还没官宣，先放备选",
         "editor",
-    )?;
+    );
 
     // Van 的勾选：三种都来一个
     workbench::put_van_mark(&conn, round.id, "and_wander", "like", "", "editor")?;
@@ -363,6 +366,58 @@ fn main() -> Result<()> {
                 exclusion::restore(&conn, round.id, key, "主编", "这次带了发售日和价格，是新料")?;
             }
         }
+    }
+
+    // ── 采集与覆盖那一页要的两份账 ──
+    //
+    // 覆盖页的八个卡片读 `round_steps.counts_json`，各采集器那张表读的是
+    // **我们真发给引擎的那一份字节**（outbox 里 kind=sweeps 的 body）——
+    // 不是现场再算一遍，页面上看到的要和引擎收到的是同一份。
+    // 少了这两样，那一页就是八个「——」加一句「还没发出去」。
+    {
+        let step = rounds::begin_step(&conn, round.id, StepCode::Harvest, "demo")?;
+        rounds::end_step(
+            &conn,
+            step.id,
+            csw_collector_core::types::StepStatus::Succeeded,
+            &serde_json::json!({
+                "候选": 14,
+                "读到实图": 12,
+                "复用识别": 3,
+                "新落库描述": 22,
+                "下载毫秒": 41_000,
+                "识别向量墙钟毫秒": 398_000,
+                "网关占用毫秒": 286_000,
+                "GPU占用毫秒": 540_000,
+            }),
+            "",
+        )?;
+        // 两个采集器，其中网页那个失败了——「失败不兜底，如实报」要看得见
+        let sweeps = serde_json::json!({"sweeps": [
+            {"sweep_key": "csw_window", "platform": "instagram", "source_key": "csw-window",
+             "query": "2026-09-22T05:30Z ~ 2026-09-23T05:30Z", "tool": "csw_api",
+             "found": 438, "fetched_unique": 305, "in_window": 14, "reviewed": 14,
+             "unreviewed": 0, "registered": 14, "result": "ok", "error": "",
+             "paged_to_end": true},
+            {"sweep_key": "web_rss", "platform": "web", "source_key": "camphack",
+             "query": "https://camphack.example/feed", "tool": "web",
+             "found": 0, "fetched_unique": 0, "in_window": 0, "reviewed": 0,
+             "unreviewed": 0, "registered": 0, "result": "failed",
+             "error": "解析 RSS 失败：响应不是 XML（HTTP 503）", "paged_to_end": false}
+        ]});
+        let body = serde_json::to_string(&sweeps)?;
+        csw_collector_core::outbox::enqueue(
+            &conn,
+            &csw_collector_core::outbox::NewEntry {
+                round_id: round.id,
+                kind: OutboxKind::Sweeps,
+                idem_key: format!("demo-sweeps-r{}", round.id),
+                body_path: String::new(),
+                body_json: body.clone(),
+                body_sha: blake3::hash(body.as_bytes()).to_hex().to_string(),
+                depends_on: None,
+            },
+        )?;
     }
 
     // 轮次收尾。不收的话总览页会一直显示「还在跑」，而且重启后的
