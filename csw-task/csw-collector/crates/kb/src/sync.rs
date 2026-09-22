@@ -45,6 +45,23 @@ const DECISIONS_LIMIT: u32 = 500;
 const GENERATED_MAX_PAGES: u32 = 30;
 /// 一次向量化处理多少条。GPU 串行，批太大只是让失败重来得更贵。
 pub const EMBED_BATCH: usize = 32;
+/// 送进向量模型的正文截多长（字符）。
+///
+/// 这个数是实跑逼出来的：第一次对真数据建库时，1804 条已生成贴文里的长正文
+/// 让向量服务一路 OOM 降批（批 5 → 2 → 1），400 条花了 211.8 秒，
+/// 是 0.5 实测（96–118 ms/条）的五倍。整篇文章的主题在开头就定了，
+/// 后面几千字对检索没有额外帮助——截掉既躲开 OOM 又省时间。
+///
+/// **只截嵌入的那一份**：全文索引要的是完整正文，不受这里影响。
+pub const EMBED_MAX_CHARS: usize = 2000;
+
+/// 截到 [`EMBED_MAX_CHARS`]。按字符截，不按字节——按字节会把汉字劈成半个。
+fn for_embedding(text: &str) -> String {
+    if text.chars().count() <= EMBED_MAX_CHARS {
+        return text.to_string();
+    }
+    text.chars().take(EMBED_MAX_CHARS).collect()
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SourceReport {
@@ -479,7 +496,10 @@ pub async fn embed_pending(
         if todo.is_empty() {
             break;
         }
-        let inputs: Vec<EmbedInput> = todo.iter().map(|d| EmbedInput::Text(d.text())).collect();
+        let inputs: Vec<EmbedInput> = todo
+            .iter()
+            .map(|d| EmbedInput::Text(for_embedding(&d.text())))
+            .collect();
         match vector.embed(&inputs).await {
             Ok(vs) if vs.len() == todo.len() => {
                 let rows: Vec<DocVector> = todo
@@ -806,6 +826,14 @@ mod tests {
         assert_eq!(store.counts().await.unwrap().0, 0);
         assert_eq!(rep.remaining, 3);
         assert_eq!(docs::needs_embedding(&c, "测试模型", 10).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn 长正文要截了再嵌入() {
+        let long = "字".repeat(EMBED_MAX_CHARS + 500);
+        // 按字符截不按字节：按字节会把汉字劈成半个
+        assert_eq!(for_embedding(&long).chars().count(), EMBED_MAX_CHARS);
+        assert_eq!(for_embedding("短的"), "短的");
     }
 
     #[test]

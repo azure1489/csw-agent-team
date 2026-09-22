@@ -15,6 +15,7 @@
 //! 时区口径：**内部一律 UTC**，只在界面与引擎交互的边界换算北京时间。
 
 pub mod config;
+pub mod jev;
 pub mod model;
 pub mod record;
 pub mod store;
