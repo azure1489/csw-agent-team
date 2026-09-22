@@ -255,7 +255,7 @@ pub async fn run_intake(
     detail: &TaskDetail,
     cfg: &Config,
     svc: &super::services::Services,
-) -> Result<RoundCounts> {
+) -> Result<(RoundCounts, Finished)> {
     let standard = work_standard(detail);
 
     // 二、采集媒体信息
@@ -337,7 +337,39 @@ pub async fn run_intake(
         tracing::info!("手动轮不写引擎，只落本地");
     }
 
-    count_round(conn, round.id, &prepared)
+    let mut counts = count_round(conn, round.id, &prepared)?;
+
+    // 六、深核首批。失败不抛错——条目照样登记，只在缺口里写明。
+    let deep_out = super::finish::deepcheck(
+        conn,
+        round,
+        cfg,
+        &outcome.judgements,
+        &by_key,
+        &prepared,
+        &standard,
+    )
+    .await;
+    counts.deepchecked = deep_out.iter().filter(|o| o.done()).count();
+
+    Ok((
+        counts,
+        Finished {
+            judgements: outcome.judgements,
+            sweeps,
+            by_key,
+            deep_gaps: super::finish::deepcheck_gaps(&deep_out),
+        },
+    ))
+}
+
+/// 一轮跑到登记为止的产物，交给「自查 → 交付物 → 提交」那三步。
+pub struct Finished {
+    pub judgements: Vec<Judgement>,
+    pub sweeps: Vec<SweepCount>,
+    pub by_key: HashMap<String, Candidate>,
+    /// 深核补出来的缺口，按条目键
+    pub deep_gaps: HashMap<String, Vec<String>>,
 }
 
 /// 把采集产物与检索结果拼成判断那一步要的输入。

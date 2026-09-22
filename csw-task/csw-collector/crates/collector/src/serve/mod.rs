@@ -13,6 +13,7 @@
 //! 不接飞书、不接 webhook。引擎是唯一真相，派单从 `GET /me/tasks` 来。
 //! 群消息只是提示。
 
+pub mod finish;
 pub mod outbox_sender;
 pub mod register;
 pub mod round;
@@ -164,8 +165,39 @@ async fn start_round(
     tracing::info!(任务 = t.task.id, 轮次 = r.id, 窗口 = %format!("{} ~ {}", r.window_start, r.window_end), "开工");
 
     match round::run_intake(conn, &r, &detail, cfg, svc).await {
-        Ok(counts) => {
+        Ok((counts, fin)) => {
             tracing::info!(轮次 = r.id, ?counts, "这一轮的账");
+            // 登记要先发出去，自查才查得到真东西
+            let (sent, conflicts) = outbox_sender::drain(conn, engine).await.unwrap_or((0, 0));
+            tracing::info!(发出 = sent, 冲突 = conflicts, "登记发完了");
+
+            // 九、自查。**报红也要往下走**，把红灯写进交付物的缺口。
+            let check = finish::self_check(conn, &r, engine, t.task.run_id).await;
+            let gaps = finish::check_gaps(check.as_ref());
+            if !gaps.is_empty() {
+                tracing::warn!(条数 = gaps.len(), "自查有没过的判据，会原样写进交付物");
+            }
+
+            // 深核补出来的缺口要并进台账：只留在线程日志里等于没人看得见
+            let mut judgements = fin.judgements;
+            let added = finish::merge_deepcheck_gaps(&mut judgements, &fin.deep_gaps);
+            if added > 0 {
+                tracing::info!(条数 = added, "深核补了几条缺口进台账");
+            }
+
+            // 七、交付物；十、提交
+            let built = finish::build_deliverable(
+                conn,
+                &r,
+                cfg,
+                t.task.id,
+                &judgements,
+                &fin.sweeps,
+                &fin.by_key,
+                &gaps,
+            )?;
+            finish::submit(conn, &r, engine, t.task.id, &built).await?;
+
             rounds::finish_round(conn, r.id, "awaiting_review", "")?;
             Ok(())
         }
