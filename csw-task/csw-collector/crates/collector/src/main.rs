@@ -11,12 +11,14 @@
 //!   auth-probe            登录转发自检（阶段 0.6：对一台真引擎跑通 login/refresh/me/CSRF）
 //!   schema                导出契约的 JSON Schema，给前端生成 TS 类型
 //!   m1                    M1 验收：对真数据跑一遍采集媒体信息
+//!   m2                    M2 验收：知识库检索命中率
 
 mod authprobe;
 mod bff;
 mod codexprobe;
 mod kb;
 mod m1;
+mod m2;
 mod mcp;
 mod p5;
 mod p5_distill;
@@ -123,6 +125,24 @@ enum Command {
         /// Van 本期补的短码，逗号分隔
         #[arg(long, default_value = "")]
         van: String,
+    },
+    /// M2 验收：知识库检索命中率（历史决定召回 + 已发条目自检）
+    M2 {
+        /// 往回看几天
+        #[arg(long, default_value_t = 30)]
+        days: i64,
+        /// 每组最多抽几条。0 = 全部
+        #[arg(long, default_value_t = 0)]
+        sample: usize,
+        /// 跑重排、报终选命中。占 GPU，每条约 3.5 秒
+        #[arg(long)]
+        rerank: bool,
+        /// 本地候选里没有原帖时不向 csw 取
+        #[arg(long)]
+        no_fetch: bool,
+        /// 明细报告写到哪
+        #[arg(long, default_value = "/tmp/m2.md")]
+        out: String,
     },
     /// 导出契约 JSON Schema（阶段 1 的契约冻结产物）
     Schema {
@@ -364,6 +384,29 @@ async fn main() -> anyhow::Result<()> {
                         .filter(|s| !s.is_empty())
                         .map(str::to_string)
                         .collect(),
+                },
+            )
+            .await
+        }
+        Command::M2 {
+            days,
+            sample,
+            rerank,
+            no_fetch,
+            out,
+        } => {
+            let cfg =
+                csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
+            let secrets = csw_collector_core::Secrets::from_env();
+            m2::run(
+                &cfg,
+                &secrets,
+                m2::Opts {
+                    days,
+                    sample,
+                    rerank,
+                    fetch: !no_fetch,
+                    out: out.into(),
                 },
             )
             .await
