@@ -18,6 +18,7 @@ pub mod http;
 pub mod outbox_sender;
 pub mod register;
 pub mod round;
+pub mod schedule;
 pub mod services;
 pub mod tasks;
 
@@ -90,15 +91,94 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
         }
     });
 
-    // 四、轮询
+    // 四、轮询 + 定时。**同一个循环里做**：定时那几件活要和正式轮抢同一块 GPU
+    // 与同一个网关闸门，放进同一个进程闸门才只有一套。
     let every = Duration::from_secs(cfg.engine.poll_secs.max(5));
-    tracing::info!(间隔秒 = every.as_secs(), 地址 = %cfg.engine.base_url, "开始轮询派单");
+    let jobs = schedule::jobs_from(cfg);
+    tracing::info!(
+        间隔秒 = every.as_secs(),
+        地址 = %cfg.engine.base_url,
+        定时 = ?jobs.iter().map(|j| format!("{} {}", j.name, j.at)).collect::<Vec<_>>(),
+        "开始轮询派单"
+    );
+    let mut prev_min = schedule::now_minute();
     loop {
         if let Err(e) = tick(&conn, &engine, cfg, &svc).await {
             tracing::warn!(原因 = %format!("{e:#}"), "这一轮轮询没跑完");
         }
+        let now_min = schedule::now_minute();
+        for name in schedule::due(&jobs, prev_min, now_min) {
+            run_job(name, cfg, &conn, &svc, now_min).await;
+        }
+        prev_min = now_min;
         tokio::time::sleep(every).await;
     }
+}
+
+/// 跑一件定时的活。**一件出错不影响别的**，也不影响轮询。
+async fn run_job(
+    name: &str,
+    cfg: &Config,
+    conn: &rusqlite::Connection,
+    svc: &services::Services,
+    now_min: u32,
+) {
+    // 安静窗口里把 GPU 让给正式轮：两边抢卡会把双方都拖到四倍延迟，
+    // 比任何一边单独跑都糟
+    if schedule::in_quiet_window(
+        &cfg.schedule.gpu_quiet_from_utc,
+        &cfg.schedule.gpu_quiet_to_utc,
+        now_min,
+    ) {
+        tracing::info!(活 = name, "在安静窗口里，让开 GPU，这次跳过");
+        return;
+    }
+    tracing::info!(活 = name, "定时的活开始");
+    let r = match name {
+        "kb_sync_1" | "kb_sync_2" => kb_sync_job(cfg, conn, svc).await,
+        "prefetch" => {
+            // 预取轮是缓存不是前置条件。它还没接进编排，先如实说一声，
+            // 免得日志看起来像跑过了
+            tracing::warn!("预取轮还没接进编排，这一次只跑知识库同步");
+            kb_sync_job(cfg, conn, svc).await
+        }
+        other => Err(anyhow::anyhow!("不认识的定时活：{other}")),
+    };
+    match r {
+        Ok(note) => tracing::info!(活 = name, "{note}"),
+        Err(e) => tracing::warn!(活 = name, 原因 = %format!("{e:#}"), "这件活没跑成，下一次再来"),
+    }
+
+    // 顺带把过期的图清掉。只删图不删记录——
+    // media 表那一行要留着，否则「这条当时有几张图」就查不回来了
+    match schedule::sweep_old_media(&cfg.blob_dir(), cfg.schedule.media_retention_days) {
+        Ok(n) if n > 0 => tracing::info!(删了 = n, "清掉了过期的图"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(原因 = %format!("{e:#}"), "清图失败"),
+    }
+}
+
+async fn kb_sync_job(
+    cfg: &Config,
+    conn: &rusqlite::Connection,
+    svc: &services::Services,
+) -> Result<String> {
+    let rep = csw_collector_kb::sync::embed_pending(
+        conn,
+        &svc.store,
+        &svc.vector,
+        &cfg.vector.embed_model,
+        usize::MAX,
+    )
+    .await?;
+    // 夜间顺手整一次向量库：每次写都生成新文件，白天整会和检索抢 IO
+    if let Err(e) = svc.store.optimize().await {
+        tracing::warn!(原因 = %format!("{e:#}"), "整理向量库失败");
+    }
+    Ok(format!(
+        "算了 {} 条向量、失败 {}、还剩 {}",
+        rep.embedded, rep.failed, rep.remaining
+    ))
 }
 
 /// 轮询一次。
