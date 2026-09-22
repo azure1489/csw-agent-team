@@ -11,8 +11,12 @@
   **界面负责换算北京时间**，接口不返回本地时间。
 - 鉴权走服务端会话：`csw_collector_sid`（HttpOnly、SameSite=Lax、生产带 Secure）。
   引擎的 access 与 refresh **只留在服务端**，浏览器一个都拿不到。
-- 所有**写**接口要回填 `X-CSW-CSRF` 头，值取自 `/api/auth/me` 的 `csrf_token`。
-  `SameSite=Lax` 挡不住表单式跨站 POST，这层不能省。
+- **`/api` 下的每一个接口都要会话**，读接口也不例外，没有就 401。
+  读得到的东西没有一样能匿名给出去：整期台账、谁把哪一条改了档、Van 说过的原话。
+  服务挂在公网域名上，前端那层 `Guard` 只是体验，拦人的是路由上的守卫。
+- 所有**写**接口另外要回填 `X-CSW-CSRF` 头，值取自 `/api/auth/me` 的 `csrf_token`。
+  `SameSite=Lax` 挡不住表单式跨站 POST，这层不能省。读接口不校验 CSRF：
+  它不改状态，而跨站发起的读，攻击者也读不到响应。
 - 错误统一 `{"error": "一句人话"}` + 恰当的 HTTP 码。引擎的原文错误只进日志，不透给浏览器。
 - 角色：`superadmin` > `operator` > `viewer`，另有 `van`（配置里列出的 viewer 映射而来，
   引擎侧仍是 viewer）。下表的「角色」是**最低**要求。

@@ -209,14 +209,22 @@ async fn logout(State(st): State<Arc<AuthState>>, headers: HeaderMap) -> Respons
     ([(header::SET_COOKIE, cookie)], StatusCode::NO_CONTENT).into_response()
 }
 
+/// 只读接口的守卫：有一枚有效会话就行，**不校验 CSRF**。
+///
+/// CSRF 防的是「攻击者借受害者的 cookie 发出一个**改状态**的请求」。
+/// 读接口不改状态，而跨站发出去的读请求，攻击者也读不到响应（同源策略挡在那里），
+/// 所以这里只问「你是谁」。写接口另有 [`check_write`]。
+pub fn check_read(st: &AuthState, headers: &HeaderMap) -> Result<Session, ApiError> {
+    let sid = sid_from(headers).ok_or_else(|| ApiError::unauth_plain("没有会话"))?;
+    st.store
+        .get(&sid)
+        .ok_or_else(|| ApiError::unauth_plain("会话已失效"))
+}
+
 /// 写接口的守卫：会话有效 + CSRF 头与会话里的对得上。
 /// SameSite=Lax 挡不住表单式的跨站 POST，所以双提交这一层不能省。
 pub fn check_write(st: &AuthState, headers: &HeaderMap) -> Result<Session, ApiError> {
-    let sid = sid_from(headers).ok_or_else(|| ApiError::unauth_plain("没有会话"))?;
-    let s = st
-        .store
-        .get(&sid)
-        .ok_or_else(|| ApiError::unauth_plain("会话已失效"))?;
+    let s = check_read(st, headers)?;
     let got = headers
         .get(CSRF_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -259,7 +267,7 @@ impl ApiError {
         tracing::warn!(error = %cause, "登录或续期失败");
         Self(StatusCode::UNAUTHORIZED, msg.to_string())
     }
-    fn unauth_plain(msg: &str) -> Self {
+    pub fn unauth_plain(msg: &str) -> Self {
         Self(StatusCode::UNAUTHORIZED, msg.to_string())
     }
     /// 拆给工作台的错误类型用。登录层的错（401 / 403）要原样传到页面上——

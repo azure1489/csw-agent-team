@@ -45,6 +45,7 @@ fn original_downloader(cfg: &Config) -> Result<Downloader> {
         concurrency: cfg.limits.download_concurrency,
         timeout: std::time::Duration::from_secs(120),
         max_attempts: 3,
+        max_bytes: csw_collector_harvest::download::DEFAULT_MAX_BYTES,
     })
 }
 

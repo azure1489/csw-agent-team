@@ -14,6 +14,14 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tokio::sync::Semaphore;
 
+/// 一张图最多收这么多字节。
+///
+/// Instagram 的原图极少超过 10 MiB，缩略更小。设这个上限不是为了省流量，
+/// 是因为**响应体一次读进内存**：并发 8 的时候，一个地址指向一份大文件
+/// 就能把服务顶到 `MemoryMax` 上去，而那一轮的其余一千多张图跟着一起没了。
+/// 一张图取不到只是这条候选落待核，整轮被拖垮是另一回事。
+pub const DEFAULT_MAX_BYTES: u64 = 32 * 1024 * 1024;
+
 #[derive(Debug, Clone)]
 pub struct DownloadConfig {
     /// 按内容哈希存盘的根目录
@@ -23,6 +31,8 @@ pub struct DownloadConfig {
     pub concurrency: usize,
     pub timeout: Duration,
     pub max_attempts: u32,
+    /// 单张上限，见 [`DEFAULT_MAX_BYTES`]
+    pub max_bytes: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -140,10 +150,25 @@ impl Downloader {
     }
 
     async fn try_once(&self, orig: &str, target: &str) -> Result<Downloaded> {
-        let resp = self.http.get(target).send().await.context("发起请求")?;
+        let mut resp = self.http.get(target).send().await.context("发起请求")?;
         let status = resp.status();
         anyhow::ensure!(status.is_success(), "返回 {status}");
-        let bytes = resp.bytes().await.context("读响应体")?;
+        let cap = self.cfg.max_bytes;
+        // 先看它自报多大，能省掉一次白读
+        if let Some(n) = resp.content_length() {
+            anyhow::ensure!(n <= cap, "说自己有 {n} 字节，超过单张上限 {cap}");
+        }
+        // 但 Content-Length 可以撒谎，也可以干脆不给（chunked），所以边读边数。
+        // 超了立刻断开：已经读进来的那部分扔掉，不进内存更不落盘。
+        let mut bytes: Vec<u8> = Vec::new();
+        while let Some(chunk) = resp.chunk().await.context("读响应体")? {
+            anyhow::ensure!(
+                bytes.len() as u64 + chunk.len() as u64 <= cap,
+                "读到 {} 字节还没完，超过单张上限 {cap}",
+                bytes.len() + chunk.len()
+            );
+            bytes.extend_from_slice(&chunk);
+        }
         anyhow::ensure!(!bytes.is_empty(), "响应体为空");
         let hash = blake3::hash(&bytes).to_hex().to_string();
         let path = blob_path(&self.cfg.dir, &hash);
@@ -228,6 +253,66 @@ mod tests {
         assert_eq!(p, Path::new("/data/blobs/ab/cd/abcdef0123456789.jpg"));
     }
 
+    /// 超大的那张要被挡在内存外面，同一批里其余的照常下完。
+    ///
+    /// 两种都要挡：老老实实报 Content-Length 的，和什么都不报（chunked）却一直发的。
+    /// 后者才是真正危险的那种——只看 Content-Length 会放它进来。
+    #[tokio::test]
+    async fn 超过上限的那张不会读进内存() {
+        let srv = wiremock::MockServer::start().await;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        Mock::given(method("GET"))
+            .and(path("/small.jpg"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"ok".to_vec()))
+            .mount(&srv)
+            .await;
+        // 自报 3000 字节，上限 1000
+        Mock::given(method("GET"))
+            .and(path("/big.jpg"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![7u8; 3000]))
+            .mount(&srv)
+            .await;
+        // 不报长度，分块一直发
+        Mock::given(method("GET"))
+            .and(path("/endless.jpg"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(vec![9u8; 5000])
+                    .append_header("transfer-encoding", "chunked"),
+            )
+            .mount(&srv)
+            .await;
+
+        let dir = std::env::temp_dir().join(format!("csw-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let d = Downloader::new(DownloadConfig {
+            dir: dir.clone(),
+            width: 768,
+            concurrency: 4,
+            timeout: Duration::from_secs(5),
+            max_attempts: 1,
+            max_bytes: 1000,
+        })
+        .unwrap();
+        let rep = d
+            .fetch_all(&[
+                format!("{}/small.jpg", srv.uri()),
+                format!("{}/big.jpg", srv.uri()),
+                format!("{}/endless.jpg", srv.uri()),
+            ])
+            .await;
+        assert_eq!(rep.ok.len(), 1, "只该下来那张小的");
+        assert!(rep.ok[0].url.ends_with("small.jpg"));
+        assert_eq!(rep.failed.len(), 2, "两张超限的都该挡下：{:?}", rep.failed);
+        for f in &rep.failed {
+            assert!(f.error.contains("上限"), "{} 的理由是 {}", f.url, f.error);
+        }
+        // 超限的一个字节都不该落盘
+        assert_eq!(walkdir(&dir).len(), 1, "超限的那两张不该留下文件");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn 个别失败不拖垮整批且内容相同只存一份() {
         let srv = wiremock::MockServer::start().await;
@@ -258,6 +343,7 @@ mod tests {
             concurrency: 4,
             timeout: Duration::from_secs(5),
             max_attempts: 1,
+            max_bytes: DEFAULT_MAX_BYTES,
         })
         .unwrap();
 

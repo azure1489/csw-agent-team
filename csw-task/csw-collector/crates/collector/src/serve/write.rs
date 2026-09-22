@@ -85,6 +85,29 @@ fn actor(s: &Session) -> String {
     s.engine.user.username.clone()
 }
 
+/// 改动与留痕**同进同出**。
+///
+/// 上面第二条规矩说每一个写都要留痕。那就不能是「改完了顺手记一笔，记不上也算了」：
+/// 台账上一条被改过档、却查不到是谁改的，这条台账就不能拿去跟 Van 对质，
+/// 而那正是留痕唯一的用处。所以两件事进同一个事务——要么都成，要么都不成，
+/// 宁可让主编看见一个错误再点一次，也不要留下一条没有出处的改动。
+///
+/// `body` 自己产出留痕内容：有些细节（比如真标上了几条）要做完才知道。
+fn with_audit<T>(
+    conn: &rusqlite::Connection,
+    who: &str,
+    action: &str,
+    target: &str,
+    body: impl FnOnce(&rusqlite::Connection) -> Result<(T, serde_json::Value), ApiError>,
+) -> Result<T, ApiError> {
+    let tx = conn.unchecked_transaction().map_err(ApiError::db)?;
+    // 这里出错，tx 走 Drop 回滚，改动一并撤掉
+    let (out, detail) = body(&tx)?;
+    workbench::audit(&tx, who, action, target, &detail).map_err(ApiError::any)?;
+    tx.commit().map_err(ApiError::db)?;
+    Ok(out)
+}
+
 // ─────────────────────────────── 改档 ───────────────────────────────
 
 #[derive(Deserialize)]
@@ -113,15 +136,14 @@ async fn override_tier(
     let to = parse_tier(&req.to_tier)?;
     let conn = st.app.conn.lock().await;
     let who = actor(&s);
-    let row = workbench::put_override(&conn, id, &key, to, &req.reason, &who)
-        .map_err(ApiError::bad_request)?;
-    let _ = workbench::audit(
-        &conn,
-        &who,
-        "override",
-        &format!("r{id}/{key}"),
-        &serde_json::json!({"to": req.to_tier, "reason": req.reason.trim()}),
-    );
+    let row = with_audit(&conn, &who, "override", &format!("r{id}/{key}"), |c| {
+        let row = workbench::put_override(c, id, &key, to, &req.reason, &who)
+            .map_err(ApiError::bad_request)?;
+        Ok((
+            row,
+            serde_json::json!({"to": req.to_tier, "reason": req.reason.trim()}),
+        ))
+    })?;
     let effective = workbench::effective_tier(&conn, id, &key)
         .map_err(ApiError::any)?
         .unwrap_or_default();
@@ -167,14 +189,10 @@ async fn set_first_batch(
     let s = require(&st, &headers, Need::Editor)?;
     let conn = st.app.conn.lock().await;
     let who = actor(&s);
-    let n = workbench::set_first_batch(&conn, id, &req.keys).map_err(ApiError::any)?;
-    let _ = workbench::audit(
-        &conn,
-        &who,
-        "first_batch",
-        &format!("r{id}"),
-        &serde_json::json!({"要的": req.keys.len(), "标上的": n}),
-    );
+    let n = with_audit(&conn, &who, "first_batch", &format!("r{id}"), |c| {
+        let n = workbench::set_first_batch(c, id, &req.keys).map_err(ApiError::any)?;
+        Ok((n, serde_json::json!({"要的": req.keys.len(), "标上的": n})))
+    })?;
     Ok(Json(CountResp { marked: n }))
 }
 
@@ -207,27 +225,23 @@ async fn van_mark(
         None => current_round(&conn)?,
     };
     let who = actor(&s);
+    let target = format!("r{id}/{}", req.candidate_key);
     if req.remove {
-        let n = workbench::drop_van_mark(&conn, id, &req.candidate_key, &req.mark, &who)
-            .map_err(ApiError::any)?;
-        let _ = workbench::audit(
-            &conn,
-            &who,
-            "van_mark_remove",
-            &format!("r{id}/{}", req.candidate_key),
-            &serde_json::json!({"mark": req.mark}),
-        );
+        let n = with_audit(&conn, &who, "van_mark_remove", &target, |c| {
+            let n = workbench::drop_van_mark(c, id, &req.candidate_key, &req.mark, &who)
+                .map_err(ApiError::any)?;
+            Ok((n, serde_json::json!({"mark": req.mark})))
+        })?;
         return Ok(Json(serde_json::json!({ "removed": n })));
     }
-    workbench::put_van_mark(&conn, id, &req.candidate_key, &req.mark, &req.note, &who)
-        .map_err(ApiError::bad_request)?;
-    let _ = workbench::audit(
-        &conn,
-        &who,
-        "van_mark",
-        &format!("r{id}/{}", req.candidate_key),
-        &serde_json::json!({"mark": req.mark, "note": req.note.trim()}),
-    );
+    with_audit(&conn, &who, "van_mark", &target, |c| {
+        workbench::put_van_mark(c, id, &req.candidate_key, &req.mark, &req.note, &who)
+            .map_err(ApiError::bad_request)?;
+        Ok((
+            (),
+            serde_json::json!({"mark": req.mark, "note": req.note.trim()}),
+        ))
+    })?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -338,14 +352,11 @@ async fn queue(
 ) -> Result<Json<QueuedResp>, ApiError> {
     let conn = st.app.conn.lock().await;
     let who = actor(s);
-    let id = workbench::enqueue(&conn, kind, round_id, &payload, &who).map_err(ApiError::any)?;
-    let _ = workbench::audit(
-        &conn,
-        &who,
-        kind,
-        &round_id.map(|r| format!("r{r}")).unwrap_or_default(),
-        &payload,
-    );
+    let target = round_id.map(|r| format!("r{r}")).unwrap_or_default();
+    let id = with_audit(&conn, &who, kind, &target, |c| {
+        let id = workbench::enqueue(c, kind, round_id, &payload, &who).map_err(ApiError::any)?;
+        Ok((id, payload.clone()))
+    })?;
     let ahead: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM work_queue WHERE id < ?1 AND status IN ('queued','running')",
@@ -614,6 +625,34 @@ mod tests {
             .await,
             StatusCode::OK
         );
+    }
+
+    /// 留痕与改动同进同出。
+    ///
+    /// 把 `audit` 表掀掉来模拟「留痕写不进去」——磁盘满、表坏，现实里都会发生。
+    /// 这时改档必须整个失败：一条改过档却查不到出处的台账，比没改还糟，
+    /// 因为它看上去就像模型本来就那么判的。
+    #[tokio::test]
+    async fn 留痕写不进去的时候改动也不留下() {
+        let (app, st) = app_with("operator");
+        {
+            let conn = st.conn.lock().await;
+            conn.execute_batch("DROP TABLE audit;").unwrap();
+        }
+        let code = status(
+            &app,
+            req(
+                "/api/rounds/1/judgements/k1/override",
+                serde_json::json!({"to_tier": "alternate", "reason": "主编捞回"}),
+            ),
+        )
+        .await;
+        assert!(code.is_server_error() || code.is_client_error(), "{code}");
+        let conn = st.conn.lock().await;
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM judgement_overrides", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "留痕没写成，改档却留下来了");
     }
 
     #[tokio::test]

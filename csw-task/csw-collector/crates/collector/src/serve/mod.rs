@@ -110,7 +110,7 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
     });
     let app = axum::Router::new()
         .merge(http::ops_router(app_state.clone()))
-        .merge(http::api_router(app_state.clone()))
+        .merge(http::api_router(app_state.clone(), auth.clone()))
         .merge(write::write_router(app_state, auth.clone()))
         .merge(crate::bff::router(auth));
     let listener = tokio::net::TcpListener::bind(&cfg.listen)

@@ -873,6 +873,7 @@ mod tests {
             concurrency: 2,
             timeout: std::time::Duration::from_secs(5),
             max_attempts: 1,
+            max_bytes: crate::download::DEFAULT_MAX_BYTES,
         })
         .unwrap();
         let model = ModelClient::new(csw_collector_core::model::ModelConfig {

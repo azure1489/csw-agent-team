@@ -132,6 +132,7 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
         concurrency: cfg.limits.download_concurrency,
         timeout: Duration::from_secs(60),
         max_attempts: 3,
+        max_bytes: csw_collector_harvest::download::DEFAULT_MAX_BYTES,
     })?;
     let model = ModelClient::new(ModelConfig {
         base_url: cfg.model.base_url.clone(),

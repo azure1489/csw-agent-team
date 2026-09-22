@@ -25,6 +25,8 @@ use rusqlite::OptionalExtension;
 
 use csw_collector_core::{Config, ledger};
 
+use crate::bff::{AuthState, Session};
+
 pub struct AppState {
     pub conn: Mutex<rusqlite::Connection>,
     pub cfg: Config,
@@ -48,8 +50,16 @@ pub fn ops_router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// 工作台的只读接口。写接口另挂，要过 CSRF。
-pub fn api_router(state: Arc<AppState>) -> Router {
+/// 工作台的只读接口。**每一个都要求一枚有效会话**。
+///
+/// 这里读得到的东西没有一样是可以匿名给出去的：整期的判断台账、谁把哪一条改了档、
+/// Van 说过的原话（选题记忆里存的就是她的原话）。服务挂在公网域名上，
+/// 前端那层 `Guard` 只是体验——真正拦人的是这道 `route_layer`。
+///
+/// 不校验 CSRF：读接口不改状态，跨站发起的读请求攻击者也读不到响应。
+/// 校验会话的同时把 [`Session`] 放进 extensions，
+/// 个别要再看角色的接口（`/api/settings`）自己从那里取。
+pub fn api_router(state: Arc<AppState>, auth: Arc<AuthState>) -> Router {
     Router::new()
         .route("/api/rounds", get(list_rounds))
         .route("/api/rounds/{id}", get(round_detail))
@@ -73,7 +83,34 @@ pub fn api_router(state: Arc<AppState>) -> Router {
         .route("/api/work", get(work_queue))
         .route("/api/audit", get(audit_log))
         .route("/api/settings", get(settings))
+        // route_layer 只套在匹配到的路由上：没有的路径照常 404，不会先要求登录
+        .route_layer(axum::middleware::from_fn_with_state(auth, require_session))
         .with_state(state)
+}
+
+/// 运维面的两个接口（`/api/settings`、`/api/audit`）要主编那一档。
+///
+/// `API.md` 的表里它们标的就是 operator，这里把那句话变成代码。
+fn need_operator(s: &Session, what: &str) -> Result<(), ApiError> {
+    if matches!(s.role.as_str(), "superadmin" | "operator") {
+        Ok(())
+    } else {
+        Err(ApiError(
+            StatusCode::FORBIDDEN,
+            format!("{} 看不了{what}", s.role),
+        ))
+    }
+}
+
+/// 会话守卫。校验过的会话进 extensions，handler 需要角色时从那里取。
+async fn require_session(
+    State(auth): State<Arc<AuthState>>,
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<Response, ApiError> {
+    let s = crate::bff::check_read(&auth, req.headers()).map_err(ApiError::from_bff)?;
+    req.extensions_mut().insert(s);
+    Ok(next.run(req).await)
 }
 
 // ─────────────────────────────── 运维 ───────────────────────────────
@@ -530,9 +567,15 @@ struct Settings {
     secrets: Vec<(String, bool)>,
 }
 
-async fn settings(State(st): State<Arc<AppState>>) -> Result<Json<Settings>, ApiError> {
+async fn settings(
+    State(st): State<Arc<AppState>>,
+    axum::Extension(s): axum::Extension<Session>,
+) -> Result<Json<Settings>, ApiError> {
+    // 前端那页挂着 `Guard need="operator"`，服务端得说同一句话。
+    // 这里露的是引擎地址、网关地址、开了哪些开关——运维面的东西，不给 viewer 与 van。
+    need_operator(&s, "运行设置")?;
     let c = &st.cfg;
-    let s = csw_collector_core::Secrets::from_env();
+    let secrets = csw_collector_core::Secrets::from_env();
     Ok(Json(Settings {
         engine_base_url: c.engine.base_url.clone(),
         csw_base_url: c.csw.base_url.clone(),
@@ -544,10 +587,10 @@ async fn settings(State(st): State<Arc<AppState>>) -> Result<Json<Settings>, Api
         features: serde_json::to_value(&c.features).unwrap_or_default(),
         // 只回「已配置 / 缺」。返回值等于把密钥送到浏览器里
         secrets: vec![
-            ("CSW_API_KEY".into(), !s.csw_api_key.is_empty()),
-            ("SUB2API_API_KEY".into(), !s.sub2api_key.is_empty()),
-            ("TYPESAFE_API_KEY".into(), !s.typesafe_key.is_empty()),
-            ("CSW_ENGINE_TOKEN".into(), !s.engine_token.is_empty()),
+            ("CSW_API_KEY".into(), !secrets.csw_api_key.is_empty()),
+            ("SUB2API_API_KEY".into(), !secrets.sub2api_key.is_empty()),
+            ("TYPESAFE_API_KEY".into(), !secrets.typesafe_key.is_empty()),
+            ("CSW_ENGINE_TOKEN".into(), !secrets.engine_token.is_empty()),
             // 告警地址同样只回「已配置 / 缺」：它是一个谁拿到都能往群里发消息的地址。
             // 但「有没有配」要让人看得见——没配的话，磁盘满了也没人会知道
             (
@@ -1291,8 +1334,10 @@ async fn work_queue(
 /// 谁在什么时候改了什么。**台账被改过却追不到人，这份台账就不能拿去跟 Van 对质。**
 async fn audit_log(
     State(st): State<Arc<AppState>>,
+    axum::Extension(s): axum::Extension<Session>,
     Query(q): Query<LimitQuery>,
 ) -> Result<Json<Vec<csw_collector_core::workbench::AuditRow>>, ApiError> {
+    need_operator(&s, "留痕")?;
     let conn = st.conn.lock().await;
     Ok(Json(
         csw_collector_core::workbench::recent_audit(&conn, q.limit.clamp(1, 500))
@@ -1390,7 +1435,46 @@ mod tests {
             // 测试里不起客户端：知识库那几个接口会如实回 503
             svc: None,
         });
-        (api_router(state.clone()), state)
+        // 只读接口全在会话守卫后面，测试也得先有一枚会话
+        (api_router(state.clone(), auth_with("operator")), state)
+    }
+
+    const SID: &str = "test-sid";
+
+    /// 一把挂着 `role` 会话的钥匙，sid 固定是 [`SID`]。
+    fn auth_with(role: &str) -> Arc<AuthState> {
+        let auth = Arc::new(AuthState {
+            engine: csw_collector_engineapi::admin::AdminClient::new("http://127.0.0.1:1").unwrap(),
+            store: Default::default(),
+            van_usernames: vec!["van".into()],
+            secure_cookie: false,
+        });
+        auth.store.put(SID.into(), session(role));
+        auth
+    }
+
+    fn session(role: &str) -> Session {
+        Session {
+            engine: csw_collector_engineapi::admin::EngineSession {
+                access_token: String::new(),
+                access_expires_at: i64::MAX,
+                refresh_cookie: String::new(),
+                user: csw_collector_engineapi::admin::AdminUser {
+                    id: 1,
+                    username: "editor".into(),
+                    display_name: "主编".into(),
+                    role: if role == "van" {
+                        "viewer".into()
+                    } else {
+                        role.to_string()
+                    },
+                    status: "active".into(),
+                },
+            },
+            csrf: "test-csrf".into(),
+            created_at: csw_collector_engineapi::admin::now(),
+            role: role.to_string(),
+        }
     }
 
     fn cand(key: &str) -> Candidate {
@@ -1478,10 +1562,70 @@ mod tests {
         }
     }
 
+    /// 台账、审计、Van 的原话，一条都不能匿名读出去。
+    ///
+    /// 服务挂在公网域名上，前端的 Guard 只是体验：真正拦人的是路由上那道守卫。
+    #[tokio::test]
+    async fn 没登录一个只读接口都打不开() {
+        let (app, _) = app();
+        for uri in [
+            "/api/rounds",
+            "/api/rounds/1/judgements",
+            "/api/rounds/1/judgements/k1",
+            "/api/van/today",
+            "/api/audit",
+            "/api/memory/rules",
+            "/api/memory/cases",
+            "/api/kb/search?q=x",
+            "/api/settings",
+            "/api/pending-check",
+        ] {
+            let (code, _) = get_as(&app, uri, None).await;
+            assert_eq!(code, StatusCode::UNAUTHORIZED, "{uri} 居然匿名能读");
+        }
+        // 会话对不上号同样不行
+        let (code, _) = get_as(&app, "/api/rounds", Some("不存在的会话")).await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED);
+    }
+
+    /// 没有的路径照常 404——守卫不该把「这个接口不存在」说成「你没登录」。
+    #[tokio::test]
+    async fn 不存在的路径不会被守卫说成没登录() {
+        let (app, _) = app();
+        let (code, _) = get_as(&app, "/api/没有这个接口", None).await;
+        assert_eq!(code, StatusCode::NOT_FOUND);
+    }
+
+    /// 运行设置里有引擎地址与各网关地址，是运维面的东西。
+    /// Van 是个 viewer，她登录了也不该看见。
+    #[tokio::test]
+    async fn van看不了运行设置但看得了自己那一页() {
+        let (_, st) = app();
+        let as_van = api_router(st, auth_with("van"));
+        for uri in ["/api/settings", "/api/audit"] {
+            let (code, _) = get(&as_van, uri).await;
+            assert_eq!(code, StatusCode::FORBIDDEN, "{uri}");
+        }
+        let (code, _) = get(&as_van, "/api/van/today").await;
+        assert_eq!(code, StatusCode::OK);
+    }
+
     async fn get(app: &Router, uri: &str) -> (StatusCode, serde_json::Value) {
+        get_as(app, uri, Some(SID)).await
+    }
+
+    /// `sid` 为 None 就是没登录。
+    async fn get_as(app: &Router, uri: &str, sid: Option<&str>) -> (StatusCode, serde_json::Value) {
+        let mut b = Request::builder().uri(uri);
+        if let Some(sid) = sid {
+            b = b.header(
+                axum::http::header::COOKIE,
+                format!("{}={sid}", crate::bff::SESSION_COOKIE),
+            );
+        }
         let resp = app
             .clone()
-            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .oneshot(b.body(Body::empty()).unwrap())
             .await
             .unwrap();
         let code = resp.status();
@@ -1583,7 +1727,7 @@ mod tests {
             // 测试里不起客户端：知识库那几个接口会如实回 503
             svc: None,
         });
-        let (code, v) = get(&api_router(state), "/api/van/today").await;
+        let (code, v) = get(&api_router(state, auth_with("operator")), "/api/van/today").await;
         // 显示「今天还没开始」比显示一个错误体强
         assert_eq!(code, StatusCode::OK);
         assert!(v["round_id"].is_null());

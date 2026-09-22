@@ -282,6 +282,7 @@ pub fn downloader(cfg: &Config) -> Result<Downloader> {
         concurrency: cfg.limits.download_concurrency,
         timeout: Duration::from_secs(60),
         max_attempts: 3,
+        max_bytes: csw_collector_harvest::download::DEFAULT_MAX_BYTES,
     })
 }
 
