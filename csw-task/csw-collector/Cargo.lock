@@ -1173,8 +1173,11 @@ dependencies = [
  "anyhow",
  "csw-collector-core",
  "csw-collector-kb",
+ "rusqlite",
  "serde",
  "serde_json",
+ "tempdir",
+ "tokio",
  "tracing",
 ]
 

@@ -145,6 +145,12 @@ pub struct Query<'a> {
     pub exclude_post_id: Option<String>,
     /// 最终要几条
     pub limit: usize,
+    /// 缺的那一类要不要从库里补一条进来。
+    ///
+    /// **判断那一步要开，检索工具要关。** 判断受「五类缺一不判」约束，
+    /// 某一类整体缺席会把条目卡成待核；而检索工具被问「有没有关于 X 的」时，
+    /// 补齐会让答案永远是「有」——那不是回答，是糊弄。
+    pub backfill_kinds: bool,
 }
 
 impl Default for Query<'_> {
@@ -154,6 +160,8 @@ impl Default for Query<'_> {
             vector: None,
             exclude_post_id: None,
             limit: FINAL_MAX,
+            // 默认不补：补齐是判断那一步的特殊需要，不是检索的常态
+            backfill_kinds: false,
         }
     }
 }
@@ -287,7 +295,15 @@ impl Retriever<'_> {
         }
 
         let mut out: Vec<Scored> = scored.iter().take(q.limit.max(1)).cloned().collect();
-        let missing = self.backfill(&mut out, &scored, q)?;
+        let missing = if q.backfill_kinds {
+            self.backfill(&mut out, &scored, q)?
+        } else {
+            KbKind::ALL
+                .into_iter()
+                .filter(|k| !out.iter().any(|s| s.doc.kind == k.as_str()))
+                .map(KbKind::as_str)
+                .collect()
+        };
 
         Ok(Retrieved {
             docs: out,
@@ -607,6 +623,7 @@ mod tests {
                 text: "山と道 新包",
                 vector: Some(&v(1)),
                 limit: 1, // 只要一条：不补齐的话另外三类会整体缺席
+                backfill_kinds: true,
                 ..Default::default()
             })
             .await
@@ -627,6 +644,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn 不开补齐就不该凭空多出材料() {
+        let f = Fixture::new().await;
+        f.put(KbKind::Example, "e1", "山と道", "山と道 新包", Some(1))
+            .await;
+        for (k, r) in [(KbKind::PublishedItem, "p1"), (KbKind::Decision, "d1")] {
+            // 用真正不共享词元的内容：「毫不相干」和「完全不相干」共享「不相干」，
+            // 那会被全文路正当命中，验不到要验的东西
+            f.put(k, r, "无名", "露营灯具的保养方法", None).await;
+        }
+        // 检索工具被问「有没有关于 X 的」时，补齐会让答案永远是「有」
+        let got = f
+            .retriever()
+            .search(&Query {
+                text: "半导体制程良率",
+                limit: 8,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(
+            got.docs.is_empty(),
+            "{:?}",
+            got.docs.iter().map(|s| &s.doc.ref_id).collect::<Vec<_>>()
+        );
+        assert!(got.docs.iter().all(|s| !s.backfilled));
+        // 缺口仍然如实报出来，只是不去填它
+        assert_eq!(got.missing_kinds.len(), 4);
+    }
+
+    #[tokio::test]
     async fn 库里真没有那一类就如实报缺口() {
         let f = Fixture::new().await;
         f.put(KbKind::Example, "e1", "山と道", "山と道 新包", Some(1))
@@ -637,6 +684,7 @@ mod tests {
                 text: "山と道 新包",
                 vector: Some(&v(1)),
                 limit: 8,
+                backfill_kinds: true,
                 ..Default::default()
             })
             .await
@@ -682,6 +730,7 @@ mod tests {
                 vector: Some(&v(3)),
                 exclude_post_id: Some("p-self".into()),
                 limit: 8,
+                backfill_kinds: false,
             })
             .await
             .unwrap();
