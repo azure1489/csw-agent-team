@@ -21,6 +21,8 @@ pub struct Opts {
     pub budget_secs: u64,
     /// 附加一张本地图片，验证 localImage 那条路
     pub image: Option<PathBuf>,
+    /// 放行给 codex 的环境变量名
+    pub env: Vec<String>,
 }
 
 pub async fn run(o: Opts) -> Result<()> {
@@ -29,7 +31,8 @@ pub async fn run(o: Opts) -> Result<()> {
 
     println!("codex     {}", o.bin.display());
     println!("HOME      {}", o.home.display());
-    println!("模型      {}\n", o.model);
+    println!("模型      {}", o.model);
+    println!("放行环境  {}\n", o.env.join("、"));
 
     let t0 = Instant::now();
     let codex = Codex::start(CodexConfig {
@@ -38,6 +41,7 @@ pub async fn run(o: Opts) -> Result<()> {
         cwd: o.cwd.clone(),
         model: o.model.clone(),
         turn_budget: Duration::from_secs(o.budget_secs),
+        env_passthrough: o.env.clone(),
     })
     .await
     .context("拉起并握手")?;

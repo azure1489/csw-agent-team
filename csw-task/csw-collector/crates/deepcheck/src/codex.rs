@@ -48,7 +48,20 @@ pub struct CodexConfig {
     pub model: String,
     /// 一个回合最多跑多久
     pub turn_budget: Duration,
+    /// **放行名单**：只有这些环境变量会传给 codex 子进程。
+    ///
+    /// 默认清空整个环境（我们自己的进程里有 csw 与引擎的密钥，codex 用不着），
+    /// 但 codex 的 `config.toml` 会按 `env_key` 去取模型网关的密钥——
+    /// 那一个必须放行，否则回合会以
+    /// `Missing environment variable: SUB2API_API_KEY` 失败。
+    /// （这条是对真 codex 跑自检时当场抓到的：`env_clear` 一刀切，把该给的也清了。）
+    ///
+    /// `CODEX_HOME`、`PATH`、`HOME` 总是传，不用写进来。
+    pub env_passthrough: Vec<String>,
 }
+
+/// 模型网关的密钥变量名。codex 的 `config.toml` 里 `env_key` 就写的它。
+pub const DEFAULT_ENV_PASSTHROUGH: [&str; 1] = ["SUB2API_API_KEY"];
 
 /// 一次回合的产物。
 #[derive(Debug, Clone, Default)]
@@ -105,14 +118,27 @@ pub struct Codex {
 impl Codex {
     /// 拉起进程并握手。
     pub async fn start(cfg: CodexConfig) -> Result<Self> {
-        let mut child = Command::new(&cfg.bin)
-            .arg("app-server")
-            // 不继承调用方的环境变量：里面有 csw 与网关的密钥，codex 用不着它们。
+        let mut cmd = Command::new(&cfg.bin);
+        cmd.arg("app-server")
+            // 不继承整个环境：我们进程里有 csw 与引擎的密钥，codex 用不着。
             // env_clear 要在所有 env 之前，否则前面设的会被清掉。
             .env_clear()
             .env("CODEX_HOME", &cfg.home)
             .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env("HOME", std::env::var("HOME").unwrap_or_default())
+            .env("HOME", std::env::var("HOME").unwrap_or_default());
+        for k in &cfg.env_passthrough {
+            match std::env::var(k) {
+                Ok(v) => {
+                    cmd.env(k, v);
+                }
+                // 缺了就早点说。不说的话它会变成回合里一句
+                // 「Missing environment variable」，隔着一层协议很难看出来
+                Err(_) => {
+                    tracing::warn!(变量 = %k, "放行名单里的环境变量不在，codex 回合可能会失败")
+                }
+            }
+        }
+        let mut child = cmd
             .current_dir(&cfg.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

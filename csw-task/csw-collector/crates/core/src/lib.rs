@@ -16,6 +16,7 @@
 
 pub mod config;
 pub mod jev;
+pub mod ledger;
 pub mod model;
 pub mod outbox;
 pub mod record;

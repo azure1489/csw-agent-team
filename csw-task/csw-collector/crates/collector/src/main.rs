@@ -114,6 +114,9 @@ enum Command {
         /// 附一张本地图片，验证 localImage 那条路
         #[arg(long)]
         image: Option<String>,
+        /// 放行给 codex 的环境变量名，逗号分隔。默认只放模型网关的密钥。
+        #[arg(long, default_value = "SUB2API_API_KEY")]
+        env: String,
     },
     /// 依赖自检：SQLite、LanceDB、TLS、axum 各跑一遍
     Xcheck {
@@ -249,6 +252,7 @@ async fn main() -> anyhow::Result<()> {
             model,
             budget_secs,
             image,
+            env,
         } => {
             codexprobe::run(codexprobe::Opts {
                 bin: bin.into(),
@@ -257,6 +261,12 @@ async fn main() -> anyhow::Result<()> {
                 model,
                 budget_secs,
                 image: image.map(Into::into),
+                env: env
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect(),
             })
             .await
         }
