@@ -19,6 +19,7 @@ mod kb;
 mod m1;
 mod mcp;
 mod p5;
+mod p5_distill;
 mod schema;
 mod serve;
 mod xcheck;
@@ -85,6 +86,25 @@ enum Command {
         /// 产物写到哪
         #[arg(long, default_value = "/tmp/p5")]
         out: String,
+    },
+    /// P5 第二步：把第一步捞出来的原话分类、归纳成准则卡草稿。
+    ///
+    /// **这一步要把她的原话送给模型（第三方）。** 不给
+    /// `--confirm-send-to-model` 就只干跑：算清要送什么、打印出来，
+    /// 一个字节都不发。
+    P5Distill {
+        /// 第一步产出的 quotes.jsonl
+        #[arg(long, default_value = "/tmp/p5/quotes.jsonl")]
+        quotes: String,
+        /// 产物写到哪
+        #[arg(long, default_value = "/tmp/p5")]
+        out: String,
+        /// 确认把原话送模型。**不给就只干跑**
+        #[arg(long)]
+        confirm_send_to_model: bool,
+        /// 只处理前几条（试水）。0 = 全部
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
     },
     /// M1 验收：对真数据跑一遍「采集媒体信息」
     M1 {
@@ -281,6 +301,43 @@ async fn main() -> anyhow::Result<()> {
             context,
             out: std::path::PathBuf::from(out),
         }),
+        Command::P5Distill {
+            quotes,
+            out,
+            confirm_send_to_model,
+            limit,
+        } => {
+            // 干跑不需要客户端，也就**不需要密钥**——这条路径上连建都不建
+            let model = if confirm_send_to_model {
+                let cfg = csw_collector_core::Config::load(
+                    cli.config.as_deref().map(std::path::Path::new),
+                )?;
+                let secrets = csw_collector_core::Secrets::from_env();
+                Some(csw_collector_core::model::ModelClient::new(
+                    csw_collector_core::model::ModelConfig {
+                        base_url: cfg.model.base_url.clone(),
+                        api_key: secrets.sub2api_key.clone(),
+                        model: cfg.model.model.clone(),
+                        fallback_model: cfg.model.fallback_model.clone(),
+                        concurrency: 1,
+                        timeout: std::time::Duration::from_secs(cfg.model.timeout_secs),
+                        max_attempts: 3,
+                    },
+                )?)
+            } else {
+                None
+            };
+            p5_distill::run(
+                &p5_distill::Opts {
+                    quotes: std::path::PathBuf::from(quotes),
+                    out: std::path::PathBuf::from(out),
+                    confirm_send_to_model,
+                    limit,
+                },
+                model.as_ref(),
+            )
+            .await
+        }
         Command::M1 {
             from,
             to,
