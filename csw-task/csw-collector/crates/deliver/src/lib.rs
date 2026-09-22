@@ -9,3 +9,7 @@
 //! 确定性生成是第二道防线：路径按字节序、mtime 与权限固定、JPEG 用 Stored、
 //! 文本固定 Deflate 级别、JSONL 键序固定、`index.md` 不写当前时间。
 //! 有一条测试专门断言「构建两次哈希相同」。
+
+pub mod index;
+pub mod intake;
+pub mod pack;
