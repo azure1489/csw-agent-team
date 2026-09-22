@@ -134,8 +134,10 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
         "开始轮询派单"
     );
     let mut prev_min = schedule::now_minute();
+    // 接下来但还没轮到做的任务，心跳要一直发着，否则引擎判「接单后无活动」
+    let mut beats: std::collections::HashMap<i64, tasks::Beat> = Default::default();
     loop {
-        if let Err(e) = tick(&conn, &engine, cfg, &svc).await {
+        if let Err(e) = tick(&conn, &engine, cfg, &svc, &mut beats).await {
             tracing::warn!(原因 = %format!("{e:#}"), "这一轮轮询没跑完");
         }
         let now_min = schedule::now_minute();
@@ -465,20 +467,67 @@ async fn kb_sync_job(
 }
 
 /// 轮询一次。
+///
+/// # 先把这一批都接下来，再一个个做
+///
+/// 做一轮是阻塞的（01 整轮四十分钟起，周一两小时），而接单与心跳都在
+/// `start_round` 里面——于是**同一批派来的第二个任务，在第一个跑完之前连 ack
+/// 都发不出去**。引擎那边按「派工后未接单」5 分钟提醒、15 分钟升级给中枢，
+/// 全是假警报。
+///
+/// 这会真发生：05 是逐条阶段，Van 批 7 条引擎就派 7 个任务。
+///
+/// 所以接单与干活分开：先把这一批全 ack 并挂上心跳（`beats` 跨 tick 活着），
+/// 再一个个跑。排队排到时限要到的那个，`should_fail_early` 会主动报失败，
+/// 不会挂着假装在做。
 async fn tick(
     conn: &rusqlite::Connection,
     engine: &EngineClient,
     cfg: &Config,
     svc: &services::Services,
+    beats: &mut std::collections::HashMap<i64, tasks::Beat>,
 ) -> Result<()> {
     let mine = engine.my_tasks().await.context("取派单")?;
-    for (t, action) in tasks::plan(&mine.tasks) {
+    let batch = tasks::plan(&mine.tasks);
+
+    // 一、先全接下来。ack 就是心跳，重复发是无害的
+    for (t, action) in &batch {
+        if !matches!(action, Action::Start | Action::Rework) {
+            continue;
+        }
+        if beats.contains_key(&t.task.id) {
+            continue;
+        }
+        match engine.ack(t.task.id).await {
+            Ok(_) => {
+                beats.insert(
+                    t.task.id,
+                    tasks::start_heartbeat(
+                        engine.clone(),
+                        t.task.id,
+                        Duration::from_secs(cfg.engine.ack_secs.max(30)),
+                    ),
+                );
+                tracing::info!(任务 = t.task.id, 阶段 = %t.task.stage_code, "接单");
+            }
+            // 接不下来就不跑它，下一次轮询再试
+            Err(e) => tracing::warn!(任务 = t.task.id, 原因 = %format!("{e:#}"), "接单失败"),
+        }
+    }
+
+    // 二、再一个个做
+    for (t, action) in batch {
         match action {
             Action::Start | Action::Rework => {
+                if !beats.contains_key(&t.task.id) {
+                    continue; // 上面没接下来
+                }
                 // 一个任务出错不该让别的任务也不跑
                 if let Err(e) = start_round(conn, engine, cfg, svc, t, action).await {
                     tracing::error!(任务 = t.task.id, 原因 = %format!("{e:#}"), "这一轮没跑起来");
                 }
+                // 做完了（成或败都算），心跳可以停了
+                beats.remove(&t.task.id);
             }
             Action::Continue => {
                 // 时限快到了就主动报失败，不挂着等超时——
@@ -606,12 +655,8 @@ async fn start_round(
         return Ok(());
     }
 
-    engine.ack(t.task.id).await.context("接单")?;
-    let _beat = tasks::start_heartbeat(
-        engine.clone(),
-        t.task.id,
-        Duration::from_secs(cfg.engine.ack_secs.max(30)),
-    );
+    // 接单与心跳在 `tick` 里已经做了——见那儿的模块注释，
+    // 放在这里会让同一批的第二个任务在第一个跑完前连 ack 都发不出去
     tracing::info!(任务 = t.task.id, 轮次 = r.id, 窗口 = %format!("{} ~ {}", r.window_start, r.window_end), "开工");
 
     // 05／11 走的是另一条短得多的路：条目取单条 → 原图 → 识别 → 交付（0 闸）。
@@ -767,5 +812,95 @@ mod tests {
         // 已经是具体地址的原样不动
         assert_eq!(local_addr("127.0.0.1:18090"), "127.0.0.1:18090");
         assert_eq!(local_addr("192.168.1.9:8090"), "192.168.1.9:8090");
+    }
+    /// 同一批派来的任务，**每一个都要在开跑之前就接下来**。
+    ///
+    /// 这条钉的是一个真会发假警报的 bug：接单原本写在 `start_round` 里，
+    /// 而跑一轮是阻塞的，于是第二个任务在第一个跑完之前连 ack 都没有。
+    /// 05 是逐条阶段，Van 批 7 条就派 7 个任务——后面六个必然被引擎判
+    /// 「派工后未接单」，5 分钟提醒、15 分钟升级给中枢。
+    ///
+    /// 测法：让 `/me/tasks` 返回三个派单，任务详情一律 400（4xx 不重试，
+    /// 三轮都在取详情那步就断了，不真跑轮），然后数 ack 的次数。
+    /// 接单发生在取详情之前，所以三个都该有。
+    #[tokio::test]
+    async fn 同一批派单在开跑之前就全接下来了() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let srv = wiremock::MockServer::start().await;
+        let tasks = serde_json::json!({"tasks": (1..=3).map(|i| serde_json::json!({
+            "task": {"id": i, "run_id": 48, "stage_code": "intake", "status": "dispatched",
+                     "cur_version": 1, "due_at": "2099-01-01T00:00:00Z"}
+        })).collect::<Vec<_>>()});
+        Mock::given(method("GET"))
+            .and(path("/api/v1/me/tasks"))
+            // 引擎客户端不解信封（那是 csw 的格式），直接就是结构体
+            .respond_with(ResponseTemplate::new(200).set_body_json(tasks))
+            .mount(&srv)
+            .await;
+        // 接单都收下
+        Mock::given(method("POST"))
+            .and(path("/api/v1/tasks/1/ack"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .mount(&srv)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/tasks/2/ack"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .mount(&srv)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/tasks/3/ack"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .mount(&srv)
+            .await;
+        // 任务详情 400：4xx 不重试，三轮都在这步断掉——而那发生在接单之后
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "code": "bad_request", "message": "测试里不给详情"
+            })))
+            .mount(&srv)
+            .await;
+
+        let engine = EngineClient::new(
+            &format!("{}/api/v1", srv.uri()),
+            "t",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let conn = csw_collector_core::store::open_in_memory().unwrap();
+        let dir = std::env::temp_dir().join(format!("csw-tick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = Config {
+            data_dir: dir.clone(),
+            ..Config::default()
+        };
+        let secrets = Secrets {
+            csw_api_key: "k".into(),
+            sub2api_key: "k".into(),
+            ..Default::default()
+        };
+        let svc = services::Services::build(&cfg, &secrets, &conn)
+            .await
+            .unwrap();
+        let mut beats = std::collections::HashMap::new();
+        let _ = tick(&conn, &engine, &cfg, &svc, &mut beats).await;
+
+        let acked: std::collections::HashSet<String> = srv
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path().ends_with("/ack"))
+            .map(|r| r.url.path().to_string())
+            .collect();
+        assert_eq!(
+            acked.len(),
+            3,
+            "三个都该在开跑前接下来，实际只接了 {acked:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
