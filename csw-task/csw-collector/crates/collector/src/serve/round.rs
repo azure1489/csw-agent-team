@@ -210,16 +210,33 @@ pub fn register_and_enqueue(
     carried: &HashSet<String>,
 ) -> Result<i64> {
     let step = rounds::begin_step(conn, round.id, StepCode::Register, &round.instructions_hash)?;
-    let unjudged = ledger::unjudged_keys(conn, round.id)?.len();
+    let unjudged_keys: HashSet<String> =
+        ledger::unjudged_keys(conn, round.id)?.into_iter().collect();
+    let judged_keys: HashSet<&str> = judgements
+        .iter()
+        .map(|j| j.candidate_key.as_str())
+        .collect();
     let lookup = |k: &str| by_key.get(k).cloned();
 
     let items = register::item_inputs(judgements, lookup);
-    let sweep_inputs = register::sweep_inputs(
-        sweeps,
-        (&round.window_start, &round.window_end),
-        judgements.len(),
-        unjudged,
-    );
+    // 每一路各算各的：这一路来的候选里，判了几条、没判几条
+    let per = |sweep_key: &str| {
+        let col = register::collector_of(sweep_key);
+        by_key
+            .iter()
+            .filter(|(_, c)| c.collector == col)
+            .fold((0, 0), |(j, u), (k, _)| {
+                if judged_keys.contains(k.as_str()) {
+                    (j + 1, u)
+                } else if unjudged_keys.contains(k) {
+                    (j, u + 1)
+                } else {
+                    (j, u)
+                }
+            })
+    };
+    let sweep_inputs =
+        register::sweep_inputs(sweeps, (&round.window_start, &round.window_end), per);
     let jis = register::judgement_inputs(judgements, lookup, carried, RUBRIC_VERSION)?;
     let last = register::enqueue_registration(conn, round.id, run_id, &items, &sweep_inputs, &jis)?;
 
@@ -231,7 +248,7 @@ pub fn register_and_enqueue(
             "条目": items.len(),
             "采集轮": sweep_inputs.len(),
             "判断": jis.len(),
-            "未判": unjudged,
+            "未判": unjudged_keys.len(),
         }),
         "",
     )?;

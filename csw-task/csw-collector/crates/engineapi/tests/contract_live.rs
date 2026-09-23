@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use csw_collector_engineapi::{EngineClient, JudgementInput, SweepInput};
+use csw_collector_engineapi::{
+    DeliverableKind, EngineClient, ItemInput, JudgementInput, SubmitInput, SweepInput,
+};
 
 /// 引擎二进制的位置：crates/engineapi → 上三层是 csw-task/，旁边就是 csw-task-svc。
 fn engine_bin_dir() -> PathBuf {
@@ -198,6 +200,22 @@ async fn 对真引擎跑通接单登记与自查() {
         c.ack(task_id).await.unwrap();
     }
 
+    // 条目登记：形态照 `serve::register::item_inputs`。推荐与备选都写 shortlisted——
+    // 09-23 演练时写的是 candidate / alternate，引擎 400 bad_item_status
+    c.put_items(
+        run_id,
+        &[ItemInput {
+            item_key: "a-000001".into(),
+            title: "品牌｜一句话".into(),
+            source_url: "https://www.instagram.com/p/AAA/".into(),
+            published_at: "2026-09-22T06:43:00Z".into(),
+            status: "shortlisted".into(),
+            ..Default::default()
+        }],
+    )
+    .await
+    .unwrap();
+
     // 采集轮：tool=csw_api 必须被接受（0036 才加进白名单的）
     c.put_sweeps(
         run_id,
@@ -249,6 +267,24 @@ async fn 对真引擎跑通接单登记与自查() {
         .find(|c| c.name.starts_with("每条都判"))
         .expect("应当有「每条都判」这条判据");
     assert!(judged.ok, "每条都判应当通过：{judged:?}");
+
+    // 提交：kind 是英文 output——09-23 送的是中文「产出」，引擎 400 bad_kind
+    let zip = std::env::temp_dir().join(format!("csw-live-{}.zip", std::process::id()));
+    std::fs::write(&zip, b"PK\x05\x06\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0").unwrap();
+    let sub = c
+        .submit(&SubmitInput {
+            task_id,
+            kind: DeliverableKind::Output,
+            zip_path: zip.clone(),
+            file_name: "情报逐条_情报收集员_test_v1.zip".into(),
+            idem_key: format!("submit-{task_id}-live"),
+            note: String::new(),
+            affects_deliverable_id: None,
+            item_key: String::new(),
+        })
+        .await;
+    let _ = std::fs::remove_file(&zip);
+    sub.expect("真引擎应当接受 kind=output 的提交");
 
     // 历史决定：空库也要给空列表而不是报错
     let ds = c.ledger_decisions("365d", 10).await.unwrap();
