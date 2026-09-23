@@ -109,7 +109,9 @@ pub async fn check_one(codex: &Codex, t: &Target, stage_standard: &str) -> Outco
                     note: if card.is_some() {
                         String::new()
                     } else {
-                        "回合完成了但没拿到条目卡".into()
+                        let why = card_miss_reason(&out);
+                        tracing::warn!(候选 = %t.candidate_key, 原因 = %why, "深核回合完成了但没拿到条目卡");
+                        format!("回合完成了但没拿到条目卡（{why}）")
                     },
                     card,
                     items: out.items,
@@ -239,6 +241,37 @@ pub fn card_schema() -> Value {
 }
 
 /// 从回合产物里取条目卡。取不到就是取不到，不猜。
+/// 没拿到条目卡时，回复到底长什么样。只说一句「没拿到」的话，
+/// 09-23 演练 6 条全挂时连是空回复还是格式不对都分不出来。
+fn card_miss_reason(out: &TurnOutcome) -> String {
+    let text = out.text.trim();
+    let kinds: Vec<&str> = out
+        .items
+        .iter()
+        .filter_map(|i| i.get("type").and_then(Value::as_str))
+        .collect();
+    if text.is_empty() {
+        return format!(
+            "没有 agentMessage 文本；回合里的 item 类型：{}",
+            kinds.join("、")
+        );
+    }
+    let head: String = text.chars().take(200).collect();
+    let err = serde_json::from_str::<Card>(
+        text.trim_start_matches("```json")
+            .trim_start_matches("```")
+            .trim_end_matches("```")
+            .trim(),
+    )
+    .err()
+    .map(|e| e.to_string())
+    .unwrap_or_default();
+    format!(
+        "回复 {} 字，解析：{err}；开头：{head}",
+        text.chars().count()
+    )
+}
+
 fn parse_card(out: &TurnOutcome, candidate_key: &str) -> Option<Card> {
     let text = out.text.trim();
     let raw = if text.is_empty() { None } else { Some(text) }?;
