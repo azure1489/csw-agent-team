@@ -320,7 +320,9 @@ impl Default for Config {
                 base_url: "https://csw-subapi.833233.xyz/v1".into(),
                 model: "gpt-6-astra".into(),
                 fallback_model: "gpt-5.6-sol".into(),
-                concurrency: 8,
+                // 0.4 实测单独用时 8 最合适；但网关账号的并发上限与 Hermes 的十几个 agent 共用，
+                // 09-23 切换后 8 条就开始撞 429。降到 5，给 Hermes 留余量
+                concurrency: 5,
                 judge_batch: 6,
                 timeout_secs: 420,
                 daily_input_budget: 4_000_000,
@@ -470,7 +472,7 @@ mod tests {
         let text = toml::to_string_pretty(&Config::default()).unwrap();
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back.model.model, "gpt-6-astra");
-        assert_eq!(back.model.concurrency, 8);
+        assert_eq!(back.model.concurrency, 5);
     }
 
     #[test]

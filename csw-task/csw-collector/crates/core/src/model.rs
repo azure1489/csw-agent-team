@@ -6,7 +6,7 @@
 //! 多出来的并发全换成了退避。所以闸门必须在共用的这一层。
 //!
 //! 实测得到的三条参数，默认值直接照抄：
-//! - **并发 8**。再高只换来 429。
+//! - **并发 8**。再高只换来 429。（那是网关只有我们一家时；与 Hermes 共用后默认降到 5，见 `Config`）
 //! - **超时不低于 420 秒**。单批延迟实测到过 405 秒。
 //! - **批量 6 条一请求**省三分之二输入 token（7292 → 2370），吞吐不变——
 //!   批量是为了成本，不是为了速度。
@@ -168,6 +168,9 @@ impl ModelClient {
     async fn send_with_fallback(&self, mut body: serde_json::Value) -> Result<ModelOutput> {
         match self.send(&body, &self.cfg.model).await {
             Ok(o) => Ok(o),
+            // 限流不是模型坏了：换个弱一点的模型去撞同一个并发上限，只会让这一批
+            // 由备用模型来判——09-23 重跑时就这样悄悄降级了几批。退避已经等够，直接认输
+            Err(e) if e.downcast_ref::<RateLimited>().is_some() => Err(e),
             Err(e)
                 if self.cfg.fallback_model.is_empty()
                     || self.cfg.fallback_model == self.cfg.model =>
@@ -259,8 +262,20 @@ impl ModelClient {
                             model: model.to_string(),
                         });
                     }
-                    let retryable = status.as_u16() == 429 || status.is_server_error();
-                    if !retryable || attempt >= self.cfg.max_attempts {
+                    if status.as_u16() == 429 {
+                        // 限流单独多给几次：网关的并发上限与 Hermes 共用，
+                        // 撞上时等一等大多能过，而这一批换模型、丢掉都不划算
+                        if attempt >= RATE_LIMIT_ATTEMPTS.max(self.cfg.max_attempts) {
+                            return Err(RateLimited(format!(
+                                "网关返回 {status}（重试 {attempt} 次仍限流）：{}",
+                                text.chars().take(300).collect::<String>()
+                            ))
+                            .into());
+                        }
+                        backoff_rate_limited(attempt).await;
+                        continue;
+                    }
+                    if !status.is_server_error() || attempt >= self.cfg.max_attempts {
                         bail!(
                             "网关返回 {status}：{}",
                             text.chars().take(300).collect::<String>()
@@ -289,6 +304,33 @@ fn extract(r: &RespBody) -> Option<String> {
     found
         .cloned()
         .or_else(|| r.output_text.clone().filter(|t| !t.trim().is_empty()))
+}
+
+/// 撞上 429 最多试几次（含第一次）。退避 2、4、8、16、30 秒，合计约一分钟。
+pub const RATE_LIMIT_ATTEMPTS: u32 = 6;
+
+/// 限流到最后也没过。**不降级**——见 `send_with_fallback`。
+#[derive(Debug)]
+pub struct RateLimited(pub String);
+
+impl std::fmt::Display for RateLimited {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for RateLimited {}
+
+async fn backoff_rate_limited(attempt: u32) {
+    // 单测里按毫秒退避，不然一条「一直限流」的测试要真等一分钟
+    let unit = if cfg!(test) { 1 } else { 1000 };
+    let base = 2u64.saturating_pow(attempt).min(30) * unit;
+    let jitter = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_millis())
+        .unwrap_or(0) as u64)
+        % unit;
+    tokio::time::sleep(std::time::Duration::from_millis(base + jitter)).await;
 }
 
 async fn backoff(attempt: u32) {
@@ -439,6 +481,31 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.attempts, 2);
+    }
+
+    #[tokio::test]
+    async fn 一直限流就认输_不降级到备用模型() {
+        let srv = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(429).set_body_string("gateway_concurrency_limit"))
+            .mount(&srv)
+            .await;
+        let mut c = cfg(&srv.uri());
+        c.fallback_model = "gpt-5.6-sol".into();
+        let m = ModelClient::new(c).unwrap();
+        let err = m
+            .structured(&[], "j", &serde_json::json!({}), 10)
+            .await
+            .unwrap_err();
+        assert!(err.downcast_ref::<RateLimited>().is_some(), "{err:#}");
+        let reqs = srv.received_requests().await.unwrap();
+        assert_eq!(reqs.len() as u32, RATE_LIMIT_ATTEMPTS, "限流要多试几次");
+        // 一次都没拿备用模型去撞
+        assert!(reqs.iter().all(|r| {
+            let b: serde_json::Value = serde_json::from_slice(&r.body).unwrap_or_default();
+            b["model"] == "gpt-6-astra"
+        }));
     }
 
     /// 记录每次请求用的模型，用来验证降级
