@@ -158,6 +158,8 @@ elif [ ! -f collector.env ]; then
 CSW_API_KEY=
 SUB2API_API_KEY=
 CSW_ENGINE_TOKEN=
+# 深核的 csw MCP 要它（不是密钥）
+CSW_API_URL=https://agent-api.campsomewhere.com
 # Jev 不填就是关着，判断退回生成模型
 TYPESAFE_API_KEY=
 # 运维告警群。谁拿到都能往群里发消息，所以它也算密钥。不填＝告警关着只进日志

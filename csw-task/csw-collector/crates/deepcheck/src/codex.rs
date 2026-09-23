@@ -50,7 +50,7 @@ pub struct CodexConfig {
     pub turn_budget: Duration,
     /// **放行名单**：只有这些环境变量会传给 codex 子进程。
     ///
-    /// 默认清空整个环境（我们自己的进程里有 csw 与引擎的密钥，codex 用不着），
+    /// 默认清空整个环境（我们自己的进程里有引擎的 token 等，codex 用不着），
     /// 但 codex 的 `config.toml` 会按 `env_key` 去取模型网关的密钥——
     /// 那一个必须放行，否则回合会以
     /// `Missing environment variable: SUB2API_API_KEY` 失败。
@@ -60,8 +60,16 @@ pub struct CodexConfig {
     pub env_passthrough: Vec<String>,
 }
 
-/// 模型网关的密钥变量名。codex 的 `config.toml` 里 `env_key` 就写的它。
-pub const DEFAULT_ENV_PASSTHROUGH: [&str; 1] = ["SUB2API_API_KEY"];
+/// 默认放行的三个变量。
+///
+/// - `SUB2API_API_KEY`：模型网关密钥，codex 的 `config.toml` 里 `env_key` 就写的它。
+/// - `CSW_API_KEY`、`CSW_API_URL`：**csw MCP 要的**。MCP 是 codex 拉起的孙进程，
+///   `config.toml` 里 `env_vars` 列的变量 codex 从**自己的**环境里取——codex 这一层
+///   被清空了，MCP 就拿不到，深核里查贴文库的工具全部失败。09-22 实测十项全过，是因为
+///   测试脚本手动带了这两个；正式代码只放了第一个，09-23 装正式布局时核出来的。
+///
+/// codex 自己的命令执行一律被拒（审批应答 `decline`），拿到这两个变量也用不了。
+pub const DEFAULT_ENV_PASSTHROUGH: [&str; 3] = ["SUB2API_API_KEY", "CSW_API_KEY", "CSW_API_URL"];
 
 /// 一次回合的产物。
 #[derive(Debug, Clone, Default)]
