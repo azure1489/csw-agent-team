@@ -38,12 +38,26 @@ export function Rubric() {
         <div className="mt-1 text-[15px] font-semibold text-accent">{r.core_question}</div>
       </div>
 
-      <H2>三问</H2>
+      <H2>三句话</H2>
       <ol className="m-0 space-y-1 pl-5 text-[13.5px]">
         {r.three_questions.map((x, i) => (
           <li key={i}>{x}</li>
         ))}
       </ol>
+
+      <H2>六维怎么用</H2>
+      <p className="m-0 text-[13.5px] leading-relaxed">{r.not_a_checklist}</p>
+      <p className="mb-0 mt-1 text-[12.5px] text-muted">{r.readiness_note}</p>
+
+      <H2>四问要分清</H2>
+      <ul className="m-0 space-y-1 pl-5 text-[13.5px]">
+        {r.four_questions.map((x, i) => (
+          <li key={i}>{x}</li>
+        ))}
+      </ul>
+
+      <H2>中国读者价值</H2>
+      <p className="m-0 text-[13.5px] leading-relaxed">{r.china_reader}</p>
 
       <H2>六维与锚点</H2>
       <div className="grid gap-2 md:grid-cols-2">
@@ -220,7 +234,7 @@ function Rule({ e, canEdit }: { e: Exclusion; canEdit: boolean }) {
               </button>
             </div>
           )}
-          {m.error && <span className="ml-2 text-[12px] text-danger">{errText(m.error)}</span>}
+          {m.error && <span className="ml-2 text-[12px] text-bad">{errText(m.error)}</span>}
         </div>
       )}
     </div>

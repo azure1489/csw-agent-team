@@ -28,8 +28,12 @@ export interface RoundDetail extends RoundBrief {
   rubric_version: string
   kb_snapshot: string
   instructions_hash: string
-  /** [档, 条数]，按档名排序 */
+  /** [档, 条数]，按档名排序（模型原判） */
   tiers: [string, number][]
+  /** [档, 条数]，叠加人工改档后的有效档。页面上的数字以它为准 */
+  effective_tiers: [string, number][]
+  /** 推荐贴文数与独立选题数分开统计 */
+  topics: TopicCounts
   candidates: number
   carried: number
   unjudged: number
@@ -51,10 +55,81 @@ export interface DimJudgement {
   basis: string
 }
 
+export interface TopicCounts {
+  recommend_posts: number
+  recommend_topics: number
+  alternate_posts: number
+  alternate_topics: number
+  topics: number
+}
+
+/** 三句话（v2）：是什么 / 为什么值得看 / 依据是什么。旧行只有 v1 的三个键 */
 export interface ThreeSentences {
-  what_changed: string
-  why_it_matters: string
-  how_different: string
+  what?: string
+  why_worth?: string
+  grounds?: string
+  what_changed?: string
+  why_it_matters?: string
+  how_different?: string
+}
+
+export type GapLevel = 'decision' | 'production' | 'boundary'
+export type GapOwner = 'collector' | 'editor' | 'van'
+
+/** 一条缺口。旧行是纯字符串，用 `normGaps` 统一成这个形状 */
+export interface Gap {
+  level: GapLevel
+  what: string
+  owner: GapOwner
+  tried: string
+  next: string
+}
+
+export interface ComparisonHit {
+  ref_no: string
+  title: string
+  url: string
+  state: 'published' | 'draft' | 'generated' | 'decision' | 'unknown'
+  published_at: string
+  body_available: boolean
+  dup_fact: string
+}
+
+export interface Comparison {
+  verdict: string
+  against: string
+  note: string
+  hits?: ComparisonHit[]
+}
+
+export interface Novelty {
+  kind?: 'existing_feature' | 'evidenced_change' | 'explainable_design'
+  basis?: string
+  prior_evidence?: string
+}
+
+export interface Readiness {
+  fact_source?: 'primary' | 'reshared' | 'brand_claim_only' | 'unknown'
+  usable_images?: number
+  material_complete?: boolean
+  note?: string
+}
+
+export interface MemberNote {
+  candidate_key: string
+  new_info: string
+  is_duplicate: boolean
+}
+
+/** 选题：同产品、同事件的多帖合成一个报道对象 */
+export interface Topic {
+  topic_key: string
+  primary_key: string
+  members: string[]
+  merge_note: string
+  tier: Tier | null
+  headline: string
+  synthesis: { shared_facts: string[]; per_member: MemberNote[]; unsupported: string[] }
 }
 
 export interface JudgementRow {
@@ -69,13 +144,22 @@ export interface JudgementRow {
   /** [维度, 判断] 的数组，键固定六个 */
   dims: [string, DimJudgement][]
   three_sentences: ThreeSentences
-  comparison: { verdict: string; against: string; note: string }
+  comparison: Comparison
   heat_note: string
   image_seen: boolean
-  gaps: string[]
+  gaps: (Gap | string)[]
   check_flags: string[]
   account: string
   url: string
+  /** 「具体对象｜一句推荐理由」 */
+  headline: string
+  novelty: Novelty
+  readiness: Readiness
+  /** 代表图的内容哈希，取图走 /api/media/{hash} */
+  cover: string | null
+  topic_key: string | null
+  posted_at: string | null
+  decision_gaps: number
 }
 
 export interface ImageRow {
@@ -106,8 +190,12 @@ export interface JudgementDetail {
     model: string
     rubric_version: string
     created_at: string
+    rejudged: boolean
   }) | null
   effective_tier: Tier | ''
+  topic: Topic | null
+  /** [地址, 结果] */
+  refetches: [string, string][]
   overrides: OverrideRow[]
   marks: VanMarkRow[]
   images: ImageRow[]
@@ -200,6 +288,26 @@ export interface VanItem {
   heat_note: string
   look: string
   marks: string[]
+  dedup: string
+  decision_gaps: string[]
+  cover: string | null
+  images: string[]
+  topic_key: string | null
+  /** 同一选题的其余帖子：不另占卡片 */
+  also: { candidate_key: string; url: string; title: string }[]
+}
+
+export interface PendingRow {
+  candidate_key: string
+  round_id: number
+  headline: string
+  account: string
+  url: string
+  cover: string | null
+  rounds_pending: number
+  first_pending_at: string
+  gaps: Gap[]
+  refetches: [string, string][]
 }
 
 export interface Health {
@@ -246,6 +354,10 @@ export interface Rubric {
   version: string
   core_question: string
   three_questions: string[]
+  four_questions: string[]
+  not_a_checklist: string
+  china_reader: string
+  readiness_note: string
   priority: string[]
   lower: string[]
   dim_anchors: { dim: string; anchor: string }[]
@@ -300,6 +412,10 @@ export interface KbStatus {
   别名: number
   待算向量: number
   embed_model: string
+  /** 被标成范例的篇数（应有）；docs_by_kind.example 是实有 */
+  examples_expected: number
+  /** 标成范例、却没有整篇入库的 post_id */
+  examples_missing: string[]
 }
 
 /**

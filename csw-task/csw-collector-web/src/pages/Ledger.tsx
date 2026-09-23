@@ -1,22 +1,28 @@
 /**
  * 判断台账：**窗口内每条候选判了什么、凭什么判。**
  *
- * 三条刻意的设计：
+ * 几条刻意的设计：
  *
  * 1. **不推荐的也全列出来。** 只给推荐的，等于把「审阅覆盖 100%」变成一句
  *    无法验证的话——主编要能看见这三百多条都过了一遍。
  * 2. **没有分数栏，也不会有。** 排序在服务端定：按生效档、再按条目键。
- *    加一列分数，人就会开始按分数看，而那个分数根本不存在。
  * 3. **原判与生效档同时显示。** 「模型判不推荐、主编捞回成备选」与
  *    「模型判备选」是两件事，混成一个字段就再也分不出来。
+ * 4. **默认按选题看**（09-22 反馈第五项）：同产品、同事件的多帖合成一行，
+ *    推荐位按选题算；逐帖台账切到「按贴文」照样全在。
+ * 5. **主信息是「图 + 具体对象 + 一句推荐理由」**（第六项）：发布时间、关键缺口、
+ *    查重在行上；六维依据、制作条件、热度折叠在展开里。
  */
 import { useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 
 import { Empty, ErrorBox, Head, Loading, Table, TierBadge, bj } from '@/components/Bits'
+import { DedupBadge, Fold, GapList, Hits, Thumb } from '@/components/Judged'
 import { Td, Th } from '@/components/ui'
+import { DIMS, FACT_SOURCE, NOVELTY, TIER_LABEL } from '@/lib/constants'
 import { errText } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
+import { normGaps, three, titleOf } from '@/lib/judgement'
 import {
   useJudgements,
   useOverride,
@@ -24,8 +30,9 @@ import {
   useRoundExclusions,
   useRounds,
   useSetFirstBatch,
+  useTopics,
 } from '@/lib/queries'
-import type { JudgementRow, Tier } from '@/lib/types'
+import type { JudgementRow, Tier, Topic } from '@/lib/types'
 
 const TIERS: { key: Tier | 'all'; label: string }[] = [
   { key: 'all', label: '全部' },
@@ -35,13 +42,13 @@ const TIERS: { key: Tier | 'all'; label: string }[] = [
   { key: 'not_recommend', label: '不推荐' },
 ]
 
-const DIM_LABEL: Record<string, string> = {
-  change: '变化',
-  use: '使用',
-  gain: '价值',
-  compare: '比较',
-  explain: '判断',
-  csw: '调性',
+type View = 'topic' | 'post'
+
+/** 一行 = 一个选题（按选题看）或一条贴文（按贴文看） */
+interface Line {
+  head: JudgementRow
+  members: JudgementRow[]
+  topic?: Topic
 }
 
 export function Ledger() {
@@ -50,12 +57,14 @@ export function Ledger() {
   const roundId = Number(sp.get('round')) || rounds.data?.find((r) => r.kind === 'task')?.id
   const [tier, setTier] = useState<Tier | 'all'>('all')
   const [onlyGap, setOnlyGap] = useState(false)
+  const [view, setView] = useState<View>('topic')
   const [open, setOpen] = useState<string | null>(null)
 
   const js = useJudgements(roundId, {
     tier: tier === 'all' ? undefined : tier,
     has_gap: onlyGap || undefined,
   })
+  const topics = useTopics(roundId)
   const { me } = useAuth()
   const canEdit = me?.role === 'operator' || me?.role === 'superadmin'
   const override = useOverride(roundId)
@@ -66,11 +75,35 @@ export function Ledger() {
     [js.data],
   )
 
+  const lines: Line[] = useMemo(() => {
+    const rows = js.data ?? []
+    if (view === 'post') return rows.map((r) => ({ head: r, members: [r] }))
+    const byTopic = new Map((topics.data ?? []).map((t) => [t.topic_key, t]))
+    // 服务端已按生效档排好：每个选题第一次出现的位置就是它最高那一档的位置
+    const out: Line[] = []
+    const at = new Map<string, number>()
+    for (const r of rows) {
+      const k = r.topic_key ?? r.candidate_key
+      const i = at.get(k)
+      if (i === undefined) {
+        at.set(k, out.length)
+        out.push({ head: r, members: [r], topic: byTopic.get(k) })
+      } else {
+        out[i].members.push(r)
+        // 代表帖在前
+        if (r.candidate_key === k) out[i].head = r
+      }
+    }
+    return out
+  }, [js.data, topics.data, view])
+
+  const posts = js.data?.length ?? 0
+
   return (
     <section>
       <Head
         title="判断台账"
-        desc="窗口内每条都在这里，包括不推荐的——只给推荐的，等于把「审阅覆盖 100%」变成一句无法验证的话。没有分数栏。"
+        desc="窗口内每条都在这里，包括不推荐的。默认按选题看：同一产品或事件的多帖合成一行，只占一个推荐位。没有分数栏。"
         right={
           <select
             value={roundId ?? ''}
@@ -101,12 +134,26 @@ export function Ledger() {
             {t.label}
           </button>
         ))}
+        <div className="ml-2 inline-flex overflow-hidden rounded-[var(--r-sm)] border border-rule">
+          {(['topic', 'post'] as View[]).map((v) => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={[
+                'border-none px-2.5 py-1 text-[12.5px]',
+                view === v ? 'bg-accent-soft font-semibold text-accent' : 'bg-surface text-ink',
+              ].join(' ')}
+            >
+              {v === 'topic' ? '按选题' : '按贴文'}
+            </button>
+          ))}
+        </div>
         <label className="ml-2 flex items-center gap-1.5 text-[12.5px] text-muted">
           <input type="checkbox" checked={onlyGap} onChange={(e) => setOnlyGap(e.target.checked)} />
           只看有缺口的
         </label>
         <span className="ml-auto text-[12.5px] text-muted">
-          {js.data ? `${js.data.length} 条` : ''}
+          {js.data ? `${posts} 帖${view === 'topic' ? ` · ${lines.length} 个选题` : ''}` : ''}
           {pinned.length > 0 && ` · 首批指定了 ${pinned.length} 条`}
         </span>
       </div>
@@ -118,47 +165,52 @@ export function Ledger() {
       {override.error && <ErrorBox error={override.error} />}
       {js.data?.length === 0 && <Empty>这一档下没有条目。</Empty>}
 
-      {js.data && js.data.length > 0 && (
-        <Table
-          head={
-            <tr>
-              <Th>条目</Th>
-              <Th>档</Th>
-              <Th>六维</Th>
-              <Th>热度</Th>
-              <Th>缺口</Th>
-              <Th right>操作</Th>
-            </tr>
-          }
-        >
-          {js.data.map((j) => (
-            <Row
-              key={j.candidate_key}
-              j={j}
-              roundId={roundId}
-              open={open === j.candidate_key}
-              onToggle={() => setOpen(open === j.candidate_key ? null : j.candidate_key)}
-              canEdit={canEdit}
-              onOverride={(to, reason) =>
-                override.mutate({ key: j.candidate_key, to_tier: to, reason })
-              }
-              onPin={() =>
-                firstBatch.mutate(
-                  j.first_batch
-                    ? pinned.filter((k) => k !== j.candidate_key)
-                    : [...pinned, j.candidate_key],
-                )
-              }
-            />
-          ))}
-        </Table>
+      {lines.length > 0 && (
+        <div className="overflow-x-auto">
+          <Table
+            head={
+              <tr>
+                <Th>图</Th>
+                <Th>对象与推荐理由</Th>
+                <Th>档</Th>
+                <Th>发布</Th>
+                <Th>关键缺口</Th>
+                <Th>查重</Th>
+                <Th right>操作</Th>
+              </tr>
+            }
+          >
+            {lines.map((l) => (
+              <Row
+                key={l.head.candidate_key}
+                line={l}
+                roundId={roundId}
+                open={open === l.head.candidate_key}
+                onToggle={() =>
+                  setOpen(open === l.head.candidate_key ? null : l.head.candidate_key)
+                }
+                canEdit={canEdit}
+                onOverride={(to, reason) =>
+                  override.mutate({ key: l.head.candidate_key, to_tier: to, reason })
+                }
+                onPin={() =>
+                  firstBatch.mutate(
+                    l.head.first_batch
+                      ? pinned.filter((k) => k !== l.head.candidate_key)
+                      : [...pinned, l.head.candidate_key],
+                  )
+                }
+              />
+            ))}
+          </Table>
+        </div>
       )}
     </section>
   )
 }
 
 function Row({
-  j,
+  line,
   roundId,
   open,
   onToggle,
@@ -166,7 +218,7 @@ function Row({
   onOverride,
   onPin,
 }: {
-  j: JudgementRow
+  line: Line
   roundId?: number
   open: boolean
   onToggle: () => void
@@ -174,17 +226,26 @@ function Row({
   onOverride: (to: Tier, reason: string) => void
   onPin: () => void
 }) {
+  const j = line.head
   const changed = j.effective_tier !== j.tier
+  const title = line.topic?.headline?.trim() || titleOf(j.headline, j.three_sentences)
+  const flags = j.check_flags.length
   return (
     <>
       <tr className="border-t border-rule align-top">
         <Td>
+          <Thumb hash={j.cover} size={64} alt={title} />
+        </Td>
+        <Td>
           <button onClick={onToggle} className="border-none bg-transparent p-0 text-left">
-            <div className="text-[13px] font-medium text-ink">
-              {j.three_sentences.what_changed || <Untitled j={j} />}
-            </div>
+            <div className="text-[13.5px] font-medium text-ink">{title || <Untitled j={j} />}</div>
             <div className="mt-0.5 text-[11.5px] text-muted">
               {j.account} · {j.candidate_key}
+              {line.members.length > 1 && (
+                <span className="ml-1.5 rounded-[var(--r-sm)] bg-accent-soft px-1.5 text-accent">
+                  同一选题 {line.members.length} 帖
+                </span>
+              )}
             </div>
           </button>
         </Td>
@@ -193,42 +254,25 @@ function Row({
           {changed && (
             // 「模型判不推荐、主编捞回成备选」与「模型判备选」是两件事
             <div className="mt-1 text-[11px] text-muted">
-              原判 {tierLabel(j.tier)} · {j.override_actor} 改的
+              原判 {TIER_LABEL[j.tier] ?? j.tier} · {j.override_actor} 改的
             </div>
           )}
           {j.first_batch && <div className="mt-1 text-[11px] text-accent">已进首批</div>}
         </Td>
+        <Td className="tnum whitespace-nowrap text-[12px] text-muted">{bj(j.posted_at)}</Td>
         <Td>
-          <div className="flex gap-1">
-            {j.dims.map(([dim, d]) => (
-              <span
-                key={dim}
-                title={`${DIM_LABEL[dim] ?? dim}：${d.basis}`}
-                className={[
-                  'inline-block h-[18px] w-[18px] rounded-[3px] text-center text-[10px] leading-[18px]',
-                  d.verdict === 'yes'
-                    ? 'bg-ok-soft text-ok'
-                    : d.verdict === 'no'
-                      ? 'bg-surface-2 text-dim'
-                      : 'border border-rule text-dim',
-                ].join(' ')}
-              >
-                {(DIM_LABEL[dim] ?? dim).slice(0, 1)}
-              </span>
-            ))}
-          </div>
-        </Td>
-        <Td className="text-[12px] text-muted">{j.heat_note || '——'}</Td>
-        <Td>
-          {j.gaps.length === 0 && j.check_flags.length === 0 ? (
+          {j.decision_gaps === 0 && flags === 0 && j.image_seen ? (
             <span className="text-[12px] text-dim">——</span>
           ) : (
             <span className="text-[12px] text-warn">
-              {j.gaps.length > 0 && `${j.gaps.length} 条缺口`}
-              {j.check_flags.length > 0 && ` · ${j.check_flags.length} 条依据被标出`}
+              {j.decision_gaps > 0 && `${j.decision_gaps} 条影响判断`}
+              {flags > 0 && `${j.decision_gaps > 0 ? ' · ' : ''}${flags} 条留痕`}
             </span>
           )}
           {!j.image_seen && <div className="text-[11.5px] text-warn">没读到实图</div>}
+        </Td>
+        <Td>
+          <DedupBadge verdict={j.comparison.verdict} sm />
         </Td>
         <Td right>
           {canEdit ? (
@@ -246,63 +290,137 @@ function Row({
           )}
         </Td>
       </tr>
-      {open && <Detail j={j} roundId={roundId} />}
+      {open && <Detail line={line} roundId={roundId} />}
     </>
   )
 }
 
-/** 展开行：三句话、六维依据、对照结论、缺口。**依据是这一页的重点** */
-function Detail({ j, roundId }: { j: JudgementRow; roundId?: number }) {
+/**
+ * 展开行。顺序照 09-22 反馈第六项：选题成员 → 推荐理由与三句话 → 关键缺口 → 查重，
+ * 六维依据、制作条件与热度折叠在后面。
+ */
+function Detail({ line, roundId }: { line: Line; roundId?: number }) {
+  const j = line.head
+  const t = three(j.three_sentences)
+  const gaps = normGaps(j.gaps)
+  const decision = gaps.filter((g) => g.level === 'decision')
+  const rest = gaps.filter((g) => g.level !== 'decision')
+  const notes = line.topic?.synthesis.per_member ?? []
   return (
     <tr className="border-t border-rule bg-surface-2">
-      <td colSpan={6} className="px-3 py-3">
-        <div className="grid gap-4 md:grid-cols-2">
-          <div>
-            <div className="mb-1 text-[12px] font-semibold text-muted">三句话</div>
-            <ol className="m-0 space-y-1 pl-4 text-[13px]">
-              <li>{j.three_sentences.what_changed}</li>
-              <li>{j.three_sentences.why_it_matters}</li>
-              <li>{j.three_sentences.how_different}</li>
-            </ol>
-            <div className="mb-1 mt-3 text-[12px] font-semibold text-muted">对照结论</div>
-            <div className="text-[13px]">
-              {comparisonLabel(j.comparison.verdict)}
-              {j.comparison.against && ` · 对照 ${j.comparison.against}`}
-              {j.comparison.note && <div className="text-[12.5px] text-muted">{j.comparison.note}</div>}
+      <td colSpan={7} className="px-3 py-3">
+        {line.members.length > 1 && (
+          <div className="mb-3">
+            <div className="mb-1 text-[12px] font-semibold text-muted">
+              这个选题的 {line.members.length} 帖（推荐位只算一个）
             </div>
-          </div>
-          <div>
-            <div className="mb-1 text-[12px] font-semibold text-muted">六维与依据</div>
-            <div className="space-y-1">
-              {j.dims.map(([dim, d]) => (
-                <div key={dim} className="text-[12.5px]">
-                  <span className="mr-1.5 text-muted">{DIM_LABEL[dim] ?? dim}</span>
-                  <span
-                    className={
-                      d.verdict === 'yes' ? 'text-ok' : d.verdict === 'no' ? 'text-dim' : 'text-muted'
-                    }
-                  >
-                    {verdictLabel(d.verdict)}
-                  </span>
-                  <span className="ml-1.5 text-ink">{d.basis}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-        {(j.gaps.length > 0 || j.check_flags.length > 0) && (
-          <div className="mt-3">
-            <div className="mb-1 text-[12px] font-semibold text-muted">缺口与被标出的依据</div>
-            <ul className="m-0 space-y-0.5 pl-4 text-[12.5px] text-warn">
-              {j.gaps.map((g, i) => (
-                <li key={`g${i}`}>{g}</li>
-              ))}
-              {j.check_flags.map((f, i) => (
-                <li key={`f${i}`}>{f}</li>
-              ))}
+            <ul className="m-0 space-y-1 pl-0">
+              {line.members.map((m) => {
+                const n = notes.find((x) => x.candidate_key === m.candidate_key)
+                return (
+                  <li key={m.candidate_key} className="flex list-none items-start gap-2 text-[12.5px]">
+                    <Thumb hash={m.cover} size={40} />
+                    <div>
+                      <Link
+                        to={`/ledger/${roundId}/${encodeURIComponent(m.candidate_key)}`}
+                        className="text-accent no-underline"
+                      >
+                        {m.account} · {m.candidate_key}
+                      </Link>
+                      <span className="ml-1.5 text-muted">{TIER_LABEL[m.effective_tier]}</span>
+                      {m.candidate_key === j.candidate_key && (
+                        <span className="ml-1.5 text-muted">（代表帖）</span>
+                      )}
+                      {n && (
+                        <div className="text-muted">
+                          {n.is_duplicate ? '与其余帖子重复' : n.new_info ? `新增：${n.new_info}` : ''}
+                        </div>
+                      )}
+                    </div>
+                  </li>
+                )
+              })}
             </ul>
+            {(line.topic?.synthesis.shared_facts.length ?? 0) > 0 && (
+              <div className="mt-1 text-[12.5px] text-muted">
+                共同事实：{line.topic?.synthesis.shared_facts.join('；')}
+              </div>
+            )}
+            {(line.topic?.synthesis.unsupported.length ?? 0) > 0 && (
+              <div className="mt-1 text-[12.5px] text-warn">
+                这些「新增」在该帖材料里核不到，请过一眼：{line.topic?.synthesis.unsupported.join('；')}
+              </div>
+            )}
           </div>
         )}
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <div>
+            <div className="mb-1 text-[12px] font-semibold text-muted">是什么 · 为什么值得看 · 依据</div>
+            <ol className="m-0 space-y-1 pl-4 text-[13px]">
+              <li>{t.what || '——'}</li>
+              <li>{t.why || '——'}</li>
+              <li>{t.grounds || '——'}</li>
+            </ol>
+            {j.novelty?.kind && (
+              <div className="mt-1.5 text-[12.5px] text-muted">
+                看点类型：{NOVELTY[j.novelty.kind] ?? j.novelty.kind}
+                {j.novelty.prior_evidence && `（旧款依据：${j.novelty.prior_evidence}）`}
+              </div>
+            )}
+            <div className="mb-1 mt-3 text-[12px] font-semibold text-muted">影响判断的缺口</div>
+            <GapList gaps={decision} empty="没有影响判断的缺口。" />
+          </div>
+          <div>
+            <div className="mb-1 flex items-center gap-2 text-[12px] font-semibold text-muted">
+              查重 <DedupBadge verdict={j.comparison.verdict} sm />
+            </div>
+            <Hits hits={j.comparison.hits ?? []} />
+            {j.comparison.note && (
+              <div className="mt-1 text-[12.5px] text-muted">{j.comparison.note}</div>
+            )}
+            {j.check_flags.length > 0 && (
+              <>
+                <div className="mb-1 mt-3 text-[12px] font-semibold text-muted">留痕（口径兜底、依据核对）</div>
+                <ul className="m-0 space-y-0.5 pl-4 text-[12.5px] text-warn">
+                  {j.check_flags.map((f, i) => (
+                    <li key={i}>{f}</li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
+        </div>
+
+        <Fold title="六维依据（值得推荐的价值是核心，其余为支撑）">
+          <div className="space-y-1">
+            {j.dims.map(([dim, d]) => (
+              <div key={dim} className="text-[12.5px]">
+                <span className="mr-1.5 text-muted">{DIMS[dim]?.full ?? dim}</span>
+                <span
+                  className={
+                    d.verdict === 'yes' ? 'text-ok' : d.verdict === 'no' ? 'text-dim' : 'text-muted'
+                  }
+                >
+                  {verdictLabel(d.verdict)}
+                </span>
+                <span className="ml-1.5 text-ink">{d.basis}</span>
+              </div>
+            ))}
+          </div>
+        </Fold>
+        <Fold title="制作条件、影响成稿的缺口与热度">
+          <div className="text-[12.5px] text-muted">
+            事实来源 {FACT_SOURCE[j.readiness?.fact_source ?? 'unknown'] ?? '不详'} · 可作配图{' '}
+            {j.readiness?.usable_images ?? 0} 张 · 资料{j.readiness?.material_complete ? '齐' : '未齐'}
+            {j.readiness?.note && ` · ${j.readiness.note}`}
+          </div>
+          <div className="mt-2">
+            <GapList gaps={rest} empty="没有影响成稿的缺口或表达边界。" />
+          </div>
+          <div className="mt-2 text-[12.5px] text-muted">热度：{j.heat_note || '——'}（是输入，不是维度）</div>
+        </Fold>
+
         {j.override_reason && (
           <div className="mt-3 text-[12.5px]">
             <span className="text-muted">改档理由（{j.override_actor}）：</span>
@@ -314,7 +432,7 @@ function Detail({ j, roundId }: { j: JudgementRow; roundId?: number }) {
             to={`/ledger/${roundId}/${encodeURIComponent(j.candidate_key)}`}
             className="text-accent no-underline"
           >
-            看全貌（图、深核、改档历史）
+            看全貌（全部实图、原文、深核、改档历史）
           </Link>
           <a href={j.url} target="_blank" rel="noreferrer" className="text-accent no-underline">
             看原贴
@@ -426,7 +544,7 @@ function Excluded({ roundId, canEdit }: { roundId?: number; canEdit: boolean }) 
           </div>
         ))}
       </div>
-      {m.error && <div className="mt-1 text-[12px] text-danger">{errText(m.error)}</div>}
+      {m.error && <div className="mt-1 text-[12px] text-bad">{errText(m.error)}</div>}
       <p className="mt-1.5 text-[12px] text-muted">
         捞回只对这一轮这一条生效，规则本身还开着（规则在「判断框架」那一页开关）。
         <b>捞回之后要重跑判断那一步</b>——它当初没送模型，没有结论可以改档。
@@ -452,8 +570,8 @@ function Untitled({ j }: { j: JudgementRow }) {
       </span>
     )
   }
-  // 其余没有三句话的情形（没读到实图的待核也可能是空的）
-  return <span className="text-muted">（没有三句话）</span>
+  // 其余没有标题的情形（没读到实图的待核也可能是空的）
+  return <span className="text-muted">（没有标题）</span>
 }
 
 /** 改档。**理由必填**——没有理由的改档在台账上与「模型本来就这么判的」分不出来 */
@@ -511,20 +629,6 @@ function ChangeTier({ current, onPick }: { current: Tier; onPick: (t: Tier, reas
   )
 }
 
-function tierLabel(t: string): string {
-  return TIERS.find((x) => x.key === t)?.label ?? t
-}
-
 function verdictLabel(v: string): string {
   return { yes: '成立', no: '不成立', unclear: '不明' }[v] ?? v
-}
-
-function comparisonLabel(v: string): string {
-  return (
-    {
-      same_fact_no_gain: '同一事实、没有新增',
-      same_brand_with_gain: '同品牌但有新增',
-      unrelated: '与已发的无关',
-    }[v] ?? v
-  )
 }

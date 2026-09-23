@@ -23,11 +23,13 @@ import type {
   KbStatus,
   MemoryCase,
   MemoryRule,
+  PendingRow,
   RoundBrief,
   RoundDetail,
   RoundExclusions,
   Rubric,
   Settings,
+  Topic,
   StepRow,
   Tier,
   VanItem,
@@ -109,7 +111,16 @@ export const useVanMarks = (id?: number) =>
   })
 
 export const usePendingCheck = () =>
-  useQuery({ queryKey: ['pending-check'], queryFn: () => get<string[]>('/pending-check') })
+  useQuery({ queryKey: ['pending-check'], queryFn: () => get<PendingRow[]>('/pending-check') })
+
+/** 这一轮的选题：同产品、同事件的多帖合成一个 */
+export const useTopics = (id?: number) =>
+  useQuery({
+    queryKey: ['topics', id],
+    queryFn: () => get<Topic[]>(`/rounds/${id}/topics`),
+    enabled: !!id,
+    refetchInterval: 30_000,
+  })
 
 /** 改档。**原判不动**，改动另存一行；改完把台账与详情一起作废 */
 export function useOverride(roundId?: number) {

@@ -1,0 +1,163 @@
+/**
+ * 判断台账、条目详情、Van 模式、待核结转共用的几件：实图、缺口、查重。
+ *
+ * 09-22 反馈第六项：Van 要**直接看图**判断外观、设计与审美，图片描述代替不了；
+ * 第四、八项：查重要列出命中的文章与状态，缺口要分级、写清谁处理与下一步。
+ * 同一件东西在四页长得一样，人才不会以为是四件事。
+ */
+import { useCallback, useEffect, useState } from 'react'
+
+import { Badge } from '@/components/ui'
+import { DEDUP, GAP_LEVEL, HIT_STATE, OWNER } from '@/lib/constants'
+import { mediaUrl } from '@/lib/judgement'
+import type { ComparisonHit, Gap } from '@/lib/types'
+
+/** 缩略图。取不到（清理过、下载失败）就显示「无图」，不留一个破图标 */
+export function Thumb({ hash, size = 56, alt = '' }: { hash: string | null; size?: number; alt?: string }) {
+  const [bad, setBad] = useState(false)
+  if (!hash || bad) {
+    return (
+      <div
+        style={{ width: size, height: size }}
+        className="flex shrink-0 items-center justify-center rounded-[var(--r-sm)] border border-rule bg-surface-2 text-[11px] text-dim"
+      >
+        无图
+      </div>
+    )
+  }
+  return (
+    <img
+      src={mediaUrl(hash)}
+      alt={alt}
+      loading="lazy"
+      onError={() => setBad(true)}
+      style={{ width: size, height: size }}
+      className="shrink-0 rounded-[var(--r-sm)] border border-rule bg-surface-2 object-cover"
+    />
+  )
+}
+
+/** 图集：网格缩略，点开看大图；Esc 关，左右键翻 */
+export function Gallery({ hashes, size = 132 }: { hashes: string[]; size?: number }) {
+  const [open, setOpen] = useState<number | null>(null)
+  const close = useCallback(() => setOpen(null), [])
+  useEffect(() => {
+    if (open === null) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close()
+      if (e.key === 'ArrowRight') setOpen((i) => (i === null ? i : Math.min(i + 1, hashes.length - 1)))
+      if (e.key === 'ArrowLeft') setOpen((i) => (i === null ? i : Math.max(i - 1, 0)))
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, close, hashes.length])
+
+  if (hashes.length === 0) {
+    return <div className="text-[12.5px] text-muted">这一条没有取到实图。</div>
+  }
+  return (
+    <>
+      <div className="flex flex-wrap gap-2">
+        {hashes.map((h, i) => (
+          <button
+            key={h}
+            onClick={() => setOpen(i)}
+            aria-label={`看第 ${i + 1} 张大图`}
+            className="rounded-[var(--r-sm)] border-none bg-transparent p-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            <Thumb hash={h} size={size} alt={`第 ${i + 1} 张`} />
+          </button>
+        ))}
+      </div>
+      {open !== null && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="大图"
+          onClick={close}
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-2 bg-black/80 p-4"
+        >
+          <img
+            src={mediaUrl(hashes[open])}
+            alt={`第 ${open + 1} 张`}
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[85vh] max-w-full rounded-[var(--r)] object-contain"
+          />
+          <div className="text-[12.5px] text-white/80">
+            第 {open + 1} / {hashes.length} 张 · Esc 关闭 · ← → 翻页
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
+export function DedupBadge({ verdict, sm }: { verdict: string; sm?: boolean }) {
+  const d = DEDUP[verdict] ?? { label: verdict || '——', tone: 'gray' as const }
+  return (
+    <Badge tone={d.tone} sm={sm} outline={verdict === 'unrelated'}>
+      {d.label}
+    </Badge>
+  )
+}
+
+/** 查重命中：哪篇、什么状态、重复了哪条事实。生成稿不是「已发」 */
+export function Hits({ hits }: { hits: ComparisonHit[] }) {
+  if (hits.length === 0) return <div className="text-[12.5px] text-muted">没有命中历史材料。</div>
+  return (
+    <ul className="m-0 space-y-1 pl-4 text-[12.5px]">
+      {hits.map((h, i) => (
+        <li key={`${h.ref_no}-${i}`}>
+          {h.url ? (
+            <a href={h.url} target="_blank" rel="noreferrer" className="text-accent no-underline">
+              《{h.title || h.ref_no}》
+            </a>
+          ) : (
+            <span>《{h.title || h.ref_no}》</span>
+          )}
+          <span className="ml-1 text-muted">
+            {HIT_STATE[h.state] ?? h.state}
+            {h.published_at && ` · ${h.published_at.slice(0, 10)}`}
+            {!h.body_available && ' · 正文不可得'}
+          </span>
+          {h.dup_fact && <div className="text-ink">重复的事实：{h.dup_fact}</div>}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/** 缺口：级别、缺什么、谁处理、已尝试、下一步 */
+export function GapList({ gaps, empty = '没有缺口。' }: { gaps: Gap[]; empty?: string }) {
+  if (gaps.length === 0) return <div className="text-[12.5px] text-muted">{empty}</div>
+  return (
+    <ul className="m-0 list-none space-y-1.5 p-0">
+      {gaps.map((g, i) => {
+        const lv = GAP_LEVEL[g.level] ?? GAP_LEVEL.decision
+        return (
+          <li key={i} className="text-[12.5px] leading-relaxed">
+            <Badge tone={lv.tone} sm>
+              {lv.label}
+            </Badge>
+            <span className="ml-1.5 text-ink">{g.what}</span>
+            <div className="text-muted">
+              由{OWNER[g.owner] ?? g.owner}处理
+              {g.tried && `；已尝试：${g.tried}`}
+              {g.next && `；下一步：${g.next}`}
+            </div>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
+/** 折叠块：技术记录默认收起，要看再点开 */
+export function Fold({ title, children, open }: { title: string; children: React.ReactNode; open?: boolean }) {
+  return (
+    <details open={open} className="mt-3 rounded-[var(--r)] border border-rule bg-surface px-3 py-2">
+      <summary className="cursor-pointer select-none text-[13px] font-semibold text-muted">{title}</summary>
+      <div className="mt-2">{children}</div>
+    </details>
+  )
+}

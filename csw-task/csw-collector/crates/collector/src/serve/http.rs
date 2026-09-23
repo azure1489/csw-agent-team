@@ -1399,6 +1399,10 @@ async fn rubric() -> Json<serde_json::Value> {
         "version": r::RUBRIC_VERSION,
         "core_question": r::CORE_QUESTION,
         "three_questions": r::THREE_QUESTIONS,
+        "four_questions": r::FOUR_QUESTIONS,
+        "not_a_checklist": r::NOT_A_CHECKLIST,
+        "china_reader": r::CHINA_READER,
+        "readiness_note": r::READINESS_NOTE,
         "priority": r::PRIORITY,
         "lower": r::LOWER,
         "dim_anchors": r::DIM_ANCHORS

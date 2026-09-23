@@ -8,7 +8,7 @@ import { Link } from 'react-router-dom'
 
 import { Empty, ErrorBox, H2, Head, Loading, Stat, StepBadge, Table, bj } from '@/components/Bits'
 import { Td, Th } from '@/components/ui'
-import { useHealth, useRound, useRounds, useSteps, useWork } from '@/lib/queries'
+import { useHealth, usePendingCheck, useRound, useRounds, useSteps, useWork } from '@/lib/queries'
 
 /** 十步。名字与 `core::types::StepCode` 一一对应，顺序就是流程顺序。 */
 const STEPS: [string, string][] = [
@@ -31,11 +31,18 @@ export function Overview() {
   const steps = useSteps(latest?.id)
   const health = useHealth()
   const work = useWork()
+  const pending = usePendingCheck()
 
   if (rounds.isLoading) return <Loading what="轮次" />
   if (rounds.error) return <ErrorBox error={rounds.error} />
 
-  const tiers = Object.fromEntries(detail.data?.tiers ?? [])
+  // 按有效档（叠加人工改档）算：主编改过的档，总览上也该是改过的
+  const tiers = Object.fromEntries(detail.data?.effective_tiers ?? detail.data?.tiers ?? [])
+  const tc = detail.data?.topics
+  // 等主编或 Van 处理的待核亮出来，不用等 Van 来催（09-22 反馈第八项）
+  const waiting = (pending.data ?? []).filter((r) =>
+    r.gaps.some((g) => g.owner === 'editor' || g.owner === 'van'),
+  ).length
   const bad = health.data?.deps.filter((d) => !d.ok) ?? []
 
   return (
@@ -49,6 +56,15 @@ export function Overview() {
         }
         right={latest ? <StepBadge status={latest.status} /> : null}
       />
+
+      {waiting > 0 && (
+        <div className="mb-3 rounded-[var(--r-md)] border border-warn-soft bg-warn-soft px-3.5 py-2.5 text-[13px] text-warn">
+          有 {waiting} 条待核在等主编或 Van 处理（缺口里写了下一步）。
+          <Link to="/pending" className="ml-1 text-warn underline">
+            去待核结转
+          </Link>
+        </div>
+      )}
 
       {(bad.length > 0 || (health.data?.outbox_conflicts ?? 0) > 0) && (
         <div className="mb-4 rounded-[var(--r-md)] border border-warn-soft bg-warn-soft px-3.5 py-2.5 text-[13px] text-warn">
@@ -82,7 +98,15 @@ export function Overview() {
               note="每条都判，这里应当是 0"
               tone={(detail.data?.unjudged ?? 0) > 0 ? 'bad' : undefined}
             />
-            <Stat label="推荐" value={tiers.recommend ?? 0} note={`备选 ${tiers.alternate ?? 0}`} />
+            <Stat
+              label="推荐选题"
+              value={tc?.recommend_topics ?? tiers.recommend ?? 0}
+              note={
+                tc
+                  ? `${tc.recommend_posts} 帖 · 备选 ${tc.alternate_topics} 题 / ${tc.alternate_posts} 帖`
+                  : `备选 ${tiers.alternate ?? 0}`
+              }
+            />
             <Stat
               label="待核"
               value={tiers.pending_check ?? 0}

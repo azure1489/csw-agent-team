@@ -89,9 +89,20 @@ export function Kb() {
                 className="rounded-[var(--r-sm)] border border-rule bg-surface px-2.5 py-1 text-[12.5px]"
               >
                 {KIND_CN[k] ?? k} <b className="tnum">{n}</b>
+                {k === 'example' && s.examples_expected > 0 && (
+                  <span className={n < s.examples_expected ? 'ml-1 text-warn' : 'ml-1 text-muted'}>
+                    / 应有 {s.examples_expected}
+                  </span>
+                )}
               </span>
             ))}
           </div>
+          {(s.examples_missing?.length ?? 0) > 0 && (
+            <p className="mt-2 text-[12.5px] text-warn">
+              这几篇标成了范例、却没有整篇入库（正文为空、读取失败或与已发记录合并了）：
+              <span className="mono">{s.examples_missing.join('、')}</span>
+            </p>
+          )}
         </>
       )}
 

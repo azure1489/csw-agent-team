@@ -4,23 +4,18 @@
  * 一次拿全（候选原文、每张图与描述、判断、改档历史、Van 勾选、深核、模型调用）——
  * 分七个接口去拿，这一页上就是七个各自转圈的小方块。
  *
- * 这是人在「这条为什么是这个档」上打转的地方，所以**依据排在最前面**：
- * 六维各自凭什么、三句话说了什么、图里到底有没有那个东西。
+ * 顺序照 09-22 反馈第六项：**先让人直接看图、读原文**，再看发布时间、关键缺口、
+ * 查重与推荐理由；六维依据、制作条件、图片描述表、深核与模型调用这些技术记录折叠在后面。
+ * 图片描述用于辅助核查，不能代替对外观、设计和审美的直接判断。
  */
 import { Link, useParams } from 'react-router-dom'
 
 import { Empty, ErrorBox, H2, Head, Loading, Table, TierBadge, bj } from '@/components/Bits'
+import { DedupBadge, Fold, Gallery, GapList, Hits } from '@/components/Judged'
 import { Td, Th } from '@/components/ui'
+import { DIMS, FACT_SOURCE, NOVELTY, TIER_LABEL } from '@/lib/constants'
+import { normGaps, three, titleOf } from '@/lib/judgement'
 import { useJudgementDetail } from '@/lib/queries'
-
-const DIM_CN: Record<string, string> = {
-  change: '变化具体',
-  use: '与真实使用有关',
-  gain: '读者能理解的价值',
-  compare: '有比较参照',
-  explain: '能形成编辑判断',
-  csw: 'CSW 调性',
-}
 
 const KIND_CN: Record<string, string> = {
   product: '产品',
@@ -30,6 +25,15 @@ const KIND_CN: Record<string, string> = {
   outfit: '穿着',
   screenshot: '截图',
   unrelated: '无关',
+}
+
+const REFETCH_CN: Record<string, string> = {
+  ok: '取到',
+  blocked: '地址不安全，未访问',
+  http_error: '对方返回错误',
+  too_large: '页面过大',
+  bad_type: '不是网页',
+  failed: '访问失败',
 }
 
 export function Item() {
@@ -43,11 +47,17 @@ export function Item() {
 
   const c = d.candidate as Record<string, string | number | null>
   const j = d.judgement
+  const t = three(j?.three_sentences)
+  const gaps = normGaps(j?.gaps)
+  const decision = gaps.filter((g) => g.level === 'decision')
+  const rest = gaps.filter((g) => g.level !== 'decision')
+  const pics = d.images.filter((m) => !m.failed && m.blake3).map((m) => m.blake3)
+  const topic = d.topic && d.topic.members.length > 1 ? d.topic : null
 
   return (
     <section>
       <Head
-        title={String(j?.three_sentences?.what_changed ?? c.account ?? key)}
+        title={titleOf(j?.headline, j?.three_sentences) || String(c.account ?? key)}
         desc={
           <>
             <Link to={`/ledger?round=${round}`} className="text-accent no-underline">
@@ -65,117 +75,39 @@ export function Item() {
         }
       />
 
-      {!j && <Empty>这一轮没有判过这一条。</Empty>}
+      {j && j.tier !== d.effective_tier && (
+        <div className="mb-3 rounded-[var(--r)] border border-warn-soft bg-warn-soft px-3 py-2 text-[12.5px] text-warn">
+          模型原判是「{TIER_LABEL[j.tier] ?? j.tier}」，现在显示的是人改过的「
+          {TIER_LABEL[d.effective_tier] ?? d.effective_tier}」。原判一个字没动。
+        </div>
+      )}
 
-      {j && (
-        <>
-          {j.tier !== d.effective_tier && (
-            <div className="mb-3 rounded-[var(--r)] border border-warn-soft bg-warn-soft px-3 py-2 text-[12.5px] text-warn">
-              模型原判是「{j.tier}」，现在显示的是人改过的「{d.effective_tier}」。原判一个字没动。
-            </div>
-          )}
-
-          <H2>三句话</H2>
-          <ol className="m-0 space-y-1 pl-5 text-[13.5px] leading-relaxed">
-            <li>{j.three_sentences.what_changed}</li>
-            <li>{j.three_sentences.why_it_matters}</li>
-            <li>{j.three_sentences.how_different}</li>
-          </ol>
-          {j.unanswered && j.unanswered !== 'none' && (
-            <p className="mt-1 text-[12.5px] text-warn">
-              答不清的地方：{UNANSWERED_CN[j.unanswered] ?? j.unanswered}
-            </p>
-          )}
-
-          <H2>六维与依据</H2>
-          <Table
-            head={
-              <tr>
-                <Th>维度</Th>
-                <Th>成立吗</Th>
-                <Th>依据</Th>
-              </tr>
-            }
-          >
-            {j.dims.map(([dim, dj]) => (
-              <tr key={dim} className="border-t border-rule align-top">
-                <Td>{DIM_CN[dim] ?? dim}</Td>
-                <Td>
-                  <span
-                    className={
-                      dj.verdict === 'yes' ? 'text-ok' : dj.verdict === 'no' ? 'text-dim' : 'text-muted'
-                    }
-                  >
-                    {{ yes: '成立', no: '不成立', unclear: '不明' }[dj.verdict] ?? dj.verdict}
-                  </span>
-                </Td>
-                <Td className="text-[12.5px]">{dj.basis}</Td>
-              </tr>
+      {topic && (
+        <div className="mb-3 rounded-[var(--r)] border border-rule bg-accent-soft px-3 py-2 text-[12.5px]">
+          这一帖属于选题「{topic.headline || topic.topic_key}」，同一选题共 {topic.members.length} 帖，
+          推荐位只算一个：
+          {topic.members
+            .filter((m) => m !== key)
+            .map((m) => (
+              <Link
+                key={m}
+                to={`/ledger/${round}/${encodeURIComponent(m)}`}
+                className="ml-1.5 text-accent no-underline"
+              >
+                {m}
+              </Link>
             ))}
-          </Table>
-
-          {(j.gaps.length > 0 || j.check_flags.length > 0) && (
-            <>
-              <H2>缺口与被标出的依据</H2>
-              <ul className="m-0 space-y-0.5 pl-5 text-[13px] text-warn">
-                {j.gaps.map((g, i) => (
-                  <li key={`g${i}`}>{g}</li>
-                ))}
-                {j.check_flags.map((f, i) => (
-                  <li key={`f${i}`}>{f}</li>
-                ))}
-              </ul>
-              <p className="mt-1 text-[12.5px] text-muted">
-                被标出的依据是 Jev 核过材料后认为「材料不支持」的那几条。
-                <b>标出来给人看，不自动淘汰。</b>
-              </p>
-            </>
-          )}
-        </>
+        </div>
       )}
 
-      <H2>图（{d.images.length} 张）</H2>
-      {d.images.length === 0 ? (
-        <Empty>这一条没有图，或者图还没下下来。</Empty>
-      ) : (
-        <Table
-          head={
-            <tr>
-              <Th>序</Th>
-              <Th>类型</Th>
-              <Th>画面里有什么</Th>
-              <Th>对应正文</Th>
-              <Th>可作配图</Th>
-            </tr>
-          }
-        >
-          {d.images.map((m) => (
-            <tr key={`${m.blake3}-${m.ordinal}`} className="border-t border-rule align-top">
-              <Td className="tnum">{m.ordinal}</Td>
-              <Td>
-                {m.failed ? (
-                  <span className="text-bad">没识别成</span>
-                ) : (
-                  (KIND_CN[m.kind] ?? m.kind ?? '——')
-                )}
-              </Td>
-              <Td className="text-[12.5px]">{m.content || '——'}</Td>
-              <Td className="text-[12.5px] text-muted">
-                {m.matches_text || '——'}
-                {m.missing_from_text && (
-                  <div className="text-warn">正文提到但画面没有：{m.missing_from_text}</div>
-                )}
-              </Td>
-              <Td>{m.failed ? '——' : m.usable_as_figure ? '是' : '否'}</Td>
-            </tr>
-          ))}
-        </Table>
-      )}
+      <H2>实图（{pics.length} 张）</H2>
+      <Gallery hashes={pics} />
 
       <H2>原文</H2>
       <div className="rounded-[var(--r)] border border-rule bg-surface px-3 py-2">
         <div className="text-[12px] text-muted">
-          {String(c.account ?? '')} ·{' '}
+          {String(c.account ?? '')} · 原始披露 {bj(c.posted_at as string | null)} · 首次入库{' '}
+          {bj(c.ingested_at as string | null)} ·{' '}
           <a
             href={String(c.url ?? '')}
             target="_blank"
@@ -195,9 +127,161 @@ export function Item() {
         ) : null}
       </div>
 
-      {d.overrides.length > 0 && (
+      {!j && <Empty>这一轮没有判过这一条。</Empty>}
+
+      {j && (
         <>
-          <H2>改档历史</H2>
+          <H2>影响判断的缺口</H2>
+          <GapList gaps={decision} empty="没有影响判断的缺口。" />
+          {j.unanswered && j.unanswered !== 'none' && (
+            <p className="mt-1 text-[12.5px] text-warn">
+              答不清的地方：{UNANSWERED_CN[j.unanswered] ?? j.unanswered}
+            </p>
+          )}
+
+          <H2>
+            <span className="inline-flex items-center gap-2">
+              查重 <DedupBadge verdict={j.comparison.verdict} sm />
+            </span>
+          </H2>
+          <Hits hits={j.comparison.hits ?? []} />
+          {j.comparison.note && <p className="mt-1 text-[12.5px] text-muted">{j.comparison.note}</p>}
+
+          <H2>推荐理由</H2>
+          <ol className="m-0 space-y-1 pl-5 text-[13.5px] leading-relaxed">
+            <li>
+              <span className="text-muted">是什么：</span>
+              {t.what || '——'}
+            </li>
+            <li>
+              <span className="text-muted">为什么值得看：</span>
+              {t.why || '——'}
+            </li>
+            <li>
+              <span className="text-muted">依据：</span>
+              {t.grounds || '——'}
+            </li>
+          </ol>
+          {j.novelty?.kind && (
+            <p className="mt-1 text-[12.5px] text-muted">
+              看点类型：{NOVELTY[j.novelty.kind] ?? j.novelty.kind}
+              {j.novelty.prior_evidence && `（旧款依据：${j.novelty.prior_evidence}）`}
+            </p>
+          )}
+
+          {j.check_flags.length > 0 && (
+            <>
+              <H2>留痕</H2>
+              <ul className="m-0 space-y-0.5 pl-5 text-[13px] text-warn">
+                {j.check_flags.map((f, i) => (
+                  <li key={i}>{f}</li>
+                ))}
+              </ul>
+              <p className="mt-1 text-[12.5px] text-muted">
+                「【口径】」开头的是代码按口径改过或删过的地方；其余是 Jev 核过材料后认为「材料不支持」的依据。
+                <b>标出来给人看，不自动淘汰。</b>
+                {j.rejudged && ' 这一条因口径违例退回重判过一次。'}
+              </p>
+            </>
+          )}
+
+          <Fold title="六维依据（值得推荐的价值是核心，其余为支撑）">
+            <Table
+              head={
+                <tr>
+                  <Th>维度</Th>
+                  <Th>成立吗</Th>
+                  <Th>依据</Th>
+                </tr>
+              }
+            >
+              {j.dims.map(([dim, dj]) => (
+                <tr key={dim} className="border-t border-rule align-top">
+                  <Td>{DIMS[dim]?.full ?? dim}</Td>
+                  <Td>
+                    <span
+                      className={
+                        dj.verdict === 'yes' ? 'text-ok' : dj.verdict === 'no' ? 'text-dim' : 'text-muted'
+                      }
+                    >
+                      {{ yes: '成立', no: '不成立', unclear: '不明' }[dj.verdict] ?? dj.verdict}
+                    </span>
+                  </Td>
+                  <Td className="text-[12.5px]">{dj.basis}</Td>
+                </tr>
+              ))}
+            </Table>
+          </Fold>
+
+          <Fold title="制作条件、影响成稿的缺口与表达边界">
+            <p className="mt-0 text-[12.5px] text-muted">
+              事实来源 {FACT_SOURCE[j.readiness?.fact_source ?? 'unknown'] ?? '不详'} · 可作配图{' '}
+              {j.readiness?.usable_images ?? 0} 张 · 资料{j.readiness?.material_complete ? '齐' : '未齐'}
+              {j.readiness?.note && ` · ${j.readiness.note}`}（不参与定档）
+            </p>
+            <GapList gaps={rest} empty="没有。" />
+          </Fold>
+
+          <Fold title="热度与实图所见">
+            <p className="m-0 text-[12.5px]">热度：{j.heat_note || '——'}（是输入的呈现，不是维度）</p>
+            {j.look && <p className="mb-0 mt-1 text-[12.5px]">实图所见：{j.look}</p>}
+          </Fold>
+        </>
+      )}
+
+      {d.refetches.length > 0 && (
+        <Fold title={`定点补读（${d.refetches.length} 个外链）`}>
+          <ul className="m-0 space-y-0.5 pl-5 text-[12.5px]">
+            {d.refetches.map(([u, st], i) => (
+              <li key={i}>
+                <span className="mono break-all">{u}</span>：{REFETCH_CN[st] ?? st}
+              </li>
+            ))}
+          </ul>
+        </Fold>
+      )}
+
+      <Fold title={`图片描述（${d.images.length} 张，辅助核查用）`}>
+        {d.images.length === 0 ? (
+          <Empty>这一条没有图，或者图还没下下来。</Empty>
+        ) : (
+          <Table
+            head={
+              <tr>
+                <Th>序</Th>
+                <Th>类型</Th>
+                <Th>画面里有什么</Th>
+                <Th>对应正文</Th>
+                <Th>可作配图</Th>
+              </tr>
+            }
+          >
+            {d.images.map((m) => (
+              <tr key={`${m.blake3}-${m.ordinal}`} className="border-t border-rule align-top">
+                <Td className="tnum">{m.ordinal + 1}</Td>
+                <Td>
+                  {m.failed ? (
+                    <span className="text-bad">没识别成</span>
+                  ) : (
+                    (KIND_CN[m.kind] ?? m.kind ?? '——')
+                  )}
+                </Td>
+                <Td className="text-[12.5px]">{m.content || '——'}</Td>
+                <Td className="text-[12.5px] text-muted">
+                  {m.matches_text || '——'}
+                  {m.missing_from_text && (
+                    <div className="text-warn">正文提到但画面没有：{m.missing_from_text}</div>
+                  )}
+                </Td>
+                <Td>{m.failed ? '——' : m.usable_as_figure ? '是' : '否'}</Td>
+              </tr>
+            ))}
+          </Table>
+        )}
+      </Fold>
+
+      {d.overrides.length > 0 && (
+        <Fold title={`改档历史（${d.overrides.length} 次）`} open>
           <Table
             head={
               <tr>
@@ -211,15 +295,15 @@ export function Item() {
           >
             {d.overrides.map((o, i) => (
               <tr key={i} className="border-t border-rule">
-                <Td>{o.from_tier}</Td>
-                <Td>{o.to_tier}</Td>
+                <Td>{TIER_LABEL[o.from_tier] ?? o.from_tier}</Td>
+                <Td>{TIER_LABEL[o.to_tier] ?? o.to_tier}</Td>
                 <Td>{o.reason}</Td>
                 <Td>{o.actor}</Td>
                 <Td className="tnum">{bj(o.created_at)}</Td>
               </tr>
             ))}
           </Table>
-        </>
+        </Fold>
       )}
 
       {d.marks.length > 0 && (
@@ -238,8 +322,7 @@ export function Item() {
       )}
 
       {d.deepcheck && (
-        <>
-          <H2>深核</H2>
+        <Fold title="深核">
           <div className="rounded-[var(--r)] border border-rule bg-surface px-3 py-2 text-[12.5px]">
             <div>
               状态：{d.deepcheck.status} · {bj(d.deepcheck.started_at)} →{' '}
@@ -249,12 +332,11 @@ export function Item() {
               {JSON.stringify(d.deepcheck.result, null, 2)}
             </pre>
           </div>
-        </>
+        </Fold>
       )}
 
       {d.model_calls.length > 0 && (
-        <>
-          <H2>这一轮的模型调用（最近 {d.model_calls.length} 次）</H2>
+        <Fold title={`这一轮的模型调用（最近 ${d.model_calls.length} 次）`}>
           <Table
             head={
               <tr>
@@ -284,7 +366,7 @@ export function Item() {
               </tr>
             ))}
           </Table>
-        </>
+        </Fold>
       )}
 
       {j && (

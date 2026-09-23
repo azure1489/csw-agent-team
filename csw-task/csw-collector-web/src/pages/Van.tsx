@@ -5,14 +5,17 @@
  *
  * - **只给推荐与备选。** 手机上翻三百条不是在帮她；要看全部去判断台账，
  *   那是主编的页面。
- * - **每条只给三句话与一张图。** 六维、依据、对照材料是主编核的东西，
- *   给她看只会让她在一屏里找那三句话。
+ * - **每个选题一张卡：大图 + 具体对象与一句推荐理由 + 三句话。** 同一产品、同一事件的
+ *   多帖只出一张卡（09-22 反馈第五项），其余帖子挂在卡底。她要**直接看图**判断外观与设计，
+ *   图片描述代替不了（第六项）。六维依据、对照材料是主编核的东西，这里只给查重结论与关键缺口。
  * - **勾选只写本地。** 进不进评选由主编在引擎上代录并附她的原话——
  *   这一页替她按下「采用」，流程上那一步就被绕过去了。
  */
 import { useState } from 'react'
 
 import { Empty, ErrorBox, Head, Loading, TierBadge } from '@/components/Bits'
+import { DedupBadge, Gallery } from '@/components/Judged'
+import { mediaUrl, three } from '@/lib/judgement'
 import { useVanMark, useVanToday } from '@/lib/queries'
 import type { VanItem } from '@/lib/types'
 
@@ -30,7 +33,7 @@ export function Van() {
         title="今天的"
         desc={
           today.data?.round_id
-            ? `推荐 ${items.filter((i) => i.tier === 'recommend').length} 条、备选 ${items.filter((i) => i.tier === 'alternate').length} 条`
+            ? `推荐 ${items.filter((i) => i.tier === 'recommend').length} 个选题、备选 ${items.filter((i) => i.tier === 'alternate').length} 个选题（同一产品或事件的多帖合成一张卡）`
             : undefined
         }
       />
@@ -70,22 +73,67 @@ function Item({
 }) {
   const [noteOpen, setNoteOpen] = useState(false)
   const [note, setNote] = useState('')
+  const [allPics, setAllPics] = useState(false)
   const has = (m: string) => it.marks.includes(m)
+  const t = three(it.three_sentences)
+  const rest = it.images.filter((h) => h !== it.cover)
 
   return (
-    <article className="rounded-[var(--r-md)] border border-rule bg-surface p-3.5">
-      <div className="mb-1.5 flex items-center gap-2">
+    <article className="overflow-hidden rounded-[var(--r-md)] border border-rule bg-surface">
+      {it.cover && (
+        <img
+          src={mediaUrl(it.cover)}
+          alt={it.title}
+          loading="lazy"
+          className="block max-h-[420px] w-full bg-surface-2 object-contain"
+        />
+      )}
+      <div className="p-3.5">
+      <div className="mb-1.5 flex flex-wrap items-center gap-2">
         <TierBadge tier={it.tier} sm />
         <span className="text-[12px] text-muted">{it.brand}</span>
+        <DedupBadge verdict={it.dedup} sm />
         {it.heat_note && <span className="ml-auto text-[11.5px] text-dim">{it.heat_note}</span>}
       </div>
       <h3 className="m-0 text-[15px] font-semibold leading-snug">{it.title}</h3>
       <ol className="mb-0 mt-2 space-y-1 pl-4 text-[13.5px] leading-relaxed">
-        <li>{it.three_sentences.what_changed}</li>
-        <li>{it.three_sentences.why_it_matters}</li>
-        <li>{it.three_sentences.how_different}</li>
+        <li>{t.what}</li>
+        <li>{t.why}</li>
+        <li>{t.grounds}</li>
       </ol>
-      {it.look && <p className="mb-0 mt-2 text-[12.5px] text-muted">图里：{it.look}</p>}
+      {it.decision_gaps.length > 0 && (
+        <p className="mb-0 mt-2 text-[12.5px] text-warn">还没确认：{it.decision_gaps.join('；')}</p>
+      )}
+      {rest.length > 0 && (
+        <div className="mt-2">
+          {allPics ? (
+            <Gallery hashes={it.images} size={96} />
+          ) : (
+            <button
+              onClick={() => setAllPics(true)}
+              className="rounded-[var(--r-sm)] border border-rule bg-surface px-2 py-1 text-[12.5px] text-accent"
+            >
+              看全部 {it.images.length} 张图
+            </button>
+          )}
+        </div>
+      )}
+      {it.also.length > 0 && (
+        <p className="mb-0 mt-2 text-[12px] text-muted">
+          同一选题还有 {it.also.length} 帖：
+          {it.also.map((a) => (
+            <a
+              key={a.candidate_key}
+              href={a.url}
+              target="_blank"
+              rel="noreferrer"
+              className="ml-1.5 text-accent no-underline"
+            >
+              {a.candidate_key}
+            </a>
+          ))}
+        </p>
+      )}
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <MarkButton on={has('like')} label="要这条" onClick={() => onMark('like', '', has('like'))} />
@@ -128,6 +176,7 @@ function Item({
         </div>
       )}
       {has('note') && <p className="mb-0 mt-2 text-[12.5px] text-van">已经写过一句</p>}
+      </div>
     </article>
   )
 }
