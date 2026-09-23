@@ -142,7 +142,7 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
         }
         let now_min = schedule::now_minute();
         for name in schedule::due(&jobs, prev_min, now_min) {
-            run_job(name, cfg, &conn, &svc, now_min).await;
+            run_job(name, cfg, &conn, &svc, &engine, now_min).await;
         }
         // 工作台排进来的活。**一次只做一件**：这个循环是单线程的，
         // 取两件也只能一件一件做，而多出来的那件会在 running 上挂着假装在跑。
@@ -331,6 +331,7 @@ async fn run_job(
     cfg: &Config,
     conn: &rusqlite::Connection,
     svc: &services::Services,
+    engine: &EngineClient,
     now_min: u32,
 ) {
     // 安静窗口里把 GPU 让给正式轮：两边抢卡会把双方都拖到四倍延迟，
@@ -345,7 +346,7 @@ async fn run_job(
     }
     tracing::info!(活 = name, "定时的活开始");
     let r = match name {
-        "kb_sync_1" | "kb_sync_2" => kb_sync_job(cfg, conn, svc).await,
+        "kb_sync_1" | "kb_sync_2" => kb_sync_job(cfg, conn, svc, engine).await,
         "lance_backup" => backup_job(cfg).await,
         "prefetch" => prefetch_job(cfg, conn, svc).await,
         other => Err(anyhow::anyhow!("不认识的定时活：{other}")),
@@ -443,11 +444,52 @@ async fn backup_job(cfg: &Config) -> Result<String> {
     Ok(format!("备到了 {}", dest.display()))
 }
 
+/// 知识库定时同步：**先从引擎和贴文库拉新材料，再算向量**。
+///
+/// 09-24 查到这里原先只算向量、从不拉数据——知识库停在最后一次手动 `kb sync`，
+/// 选题记忆从没同步到本地（本地 0 条），判断拿不到新发的文章、新的 03 决定和 Van 的案例。
+/// 各路各报各的：一路失败不让其余几路也不跑。
 async fn kb_sync_job(
     cfg: &Config,
     conn: &rusqlite::Connection,
     svc: &services::Services,
+    engine: &EngineClient,
 ) -> Result<String> {
+    use csw_collector_kb::sync;
+    let mut notes: Vec<String> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
+    for (name, r) in [
+        (
+            "发布记录",
+            sync::sync_ledger_posts(conn, engine, &svc.tok, false).await,
+        ),
+        (
+            "历史决定",
+            sync::sync_decisions(conn, engine, &svc.tok, false).await,
+        ),
+        (
+            "已生成贴文",
+            sync::sync_generated(conn, &svc.csw, &svc.tok, &svc.brands).await,
+        ),
+    ] {
+        match r {
+            Ok(r) => notes.push(format!(
+                "{name} 取 {} 新 {} 变 {}",
+                r.fetched, r.inserted, r.changed
+            )),
+            Err(e) => failed.push(format!("{name}：{e:#}")),
+        }
+    }
+    match sync::sync_memory(conn, engine).await {
+        Ok((rules, cases)) => notes.push(format!("选题记忆 准则 {rules} 案例 {cases}")),
+        Err(e) => failed.push(format!("选题记忆：{e:#}")),
+    }
+    if let Err(e) = csw_collector_kb::fts::optimize(conn) {
+        tracing::warn!(原因 = %format!("{e:#}"), "整理全文索引失败");
+    }
+    for f in &failed {
+        tracing::warn!("知识库同步有一路失败：{f}");
+    }
     let rep = csw_collector_kb::sync::embed_pending(
         conn,
         &svc.store,
@@ -460,10 +502,19 @@ async fn kb_sync_job(
     if let Err(e) = svc.store.optimize().await {
         tracing::warn!(原因 = %format!("{e:#}"), "整理向量库失败");
     }
-    Ok(format!(
-        "算了 {} 条向量、失败 {}、还剩 {}",
-        rep.embedded, rep.failed, rep.remaining
-    ))
+    let msg = format!(
+        "{}；算了 {} 条向量、失败 {}、还剩 {}",
+        notes.join("、"),
+        rep.embedded,
+        rep.failed,
+        rep.remaining
+    );
+    if failed.is_empty() {
+        Ok(msg)
+    } else {
+        // 有一路没拉到就报失败，让告警与日志都看得见；拉到的那几路已经落库了
+        anyhow::bail!("{msg}；失败的：{}", failed.join("；"))
+    }
 }
 
 /// 轮询一次。
