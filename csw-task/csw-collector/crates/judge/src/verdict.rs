@@ -43,7 +43,7 @@ pub const BATCH: usize = 6;
 /// 每条候选送几张实图缩略。0.4 实测的配置就是 3。
 pub const IMAGES_PER_CANDIDATE: usize = 3;
 /// 提示词版本。**改提示词就要改它**，否则旧结论会被当成还能用。
-pub const PROMPT_VERSION: &str = "judge/v1";
+pub const PROMPT_VERSION: &str = "judge/v2";
 /// 一批的输出上限。实测每条出 780 token，六条留三倍余量。
 const MAX_OUTPUT_TOKENS: u32 = 16000;
 
@@ -163,6 +163,17 @@ fn candidate_block(n: usize, item: &JudgeInput<'_>) -> String {
     );
     if let Some(t) = c.posted_at {
         s.push_str(&format!("发布时间：{t}\n"));
+    }
+    // 作业标准要求按首次入库时间（first_seen_at）核窗口。不给它，模型就如实说
+    // 「缺 first_seen_at，无法核定窗口」并落待核——09-23 演练 100 条里 80 条待核，
+    // 头一条缺口多半是这句。窗口其实已经由代码按它筛过了，这里说清楚。
+    match c.ingested_at {
+        Some(t) => s.push_str(&format!(
+            "首次入库时间（first_seen_at）：{t}（采集窗口已由代码按它核过，本条在本期窗口内）\n"
+        )),
+        None => s.push_str(
+            "首次入库时间（first_seen_at）：平台没给（多为 Van 点名补的链接，不按窗口筛）\n",
+        ),
     }
     s.push_str(&format!("热度：{}\n", item.heat_note));
     if !c.tags.is_empty() || !c.hashtags.is_empty() {
@@ -732,6 +743,24 @@ mod tests {
         assert!(s.contains("只有新配色"));
         // worth 不进提示词：它是内部排序键，0.7 实测当闸不可用
         assert!(!s.contains("0.46"), "总判 worth 不该露给判断模型");
+    }
+
+    #[test]
+    fn 首次入库时间进提示词() {
+        let mut c = cand();
+        c.ingested_at = Some("2026-09-22T10:00:00Z".parse().unwrap());
+        let item = JudgeInput {
+            candidate: &c,
+            descriptions: &[],
+            images_b64: vec![],
+            materials: &[],
+            triage: None,
+            heat_note: String::new(),
+        };
+        let s = candidate_block(1, &item);
+        assert!(s.contains("first_seen_at"), "{s}");
+        assert!(s.contains("2026-09-22T10:00:00Z"), "{s}");
+        assert!(s.contains("本期窗口内"), "{s}");
     }
 }
 
