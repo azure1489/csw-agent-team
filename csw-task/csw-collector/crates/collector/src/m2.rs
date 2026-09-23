@@ -53,6 +53,10 @@ pub struct Opts {
     pub fetch: bool,
     /// 报告写到哪
     pub out: PathBuf,
+    /// 覆盖配置里的重排段数（`limits.rerank_per_candidate`），比较取舍用
+    pub rerank_max: Option<usize>,
+    /// 覆盖配置里的每段字数（`limits.rerank_snippet_chars`）
+    pub snippet_chars: Option<usize>,
 }
 
 /// 一条考题。
@@ -196,6 +200,9 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
         vec![None; cases.len()]
     };
 
+    let rerank_max = o.rerank_max.unwrap_or(cfg.limits.rerank_per_candidate);
+    let snippet_chars = o.snippet_chars.unwrap_or(cfg.limits.rerank_snippet_chars);
+    println!("重排段数上限 {rerank_max}、每段 {snippet_chars} 字");
     let t = std::time::Instant::now();
     let mut results = Vec::with_capacity(cases.len());
     for (c, v) in cases.iter().zip(&vectors) {
@@ -205,6 +212,8 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
             exclude_post_id: None,
             limit: FINAL_MAX,
             backfill_kinds: false,
+            rerank_max,
+            snippet_chars,
         };
         let ids = retriever.vector_route(&q).await?;
         let mut r = retriever.recall(&conn, &q, &ids)?;
@@ -226,10 +235,11 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
         }
         results.push(out);
     }
+    let secs = t.elapsed().as_secs_f64();
     println!(
-        "检索 {} 条用时 {:.1}s\n",
+        "检索 {} 条用时 {secs:.1}s（每条 {:.2}s）\n",
         cases.len(),
-        t.elapsed().as_secs_f64()
+        secs / cases.len().max(1) as f64
     );
 
     let report = render(

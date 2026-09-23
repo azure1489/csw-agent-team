@@ -160,8 +160,11 @@ pub struct Limits {
     pub download_concurrency: usize,
     /// 识别一次发几张图
     pub recognize_batch: usize,
-    /// rerank 每条候选排几段
+    /// rerank 每条候选排几段（送进重排的召回上限）
     pub rerank_per_candidate: usize,
+    /// rerank 每段截多少字。重排按字数计费似的线性变慢：P40 上中文 300 字每段
+    /// 约 257 ms、200 字约 190 ms（09-23 实测）。**调它先跑 `m2 --rerank` 看命中率**。
+    pub rerank_snippet_chars: usize,
     /// 磁盘占用告警与拒开新轮的水位
     pub disk_warn_pct: u8,
     pub disk_block_pct: u8,
@@ -357,6 +360,7 @@ impl Default for Config {
                 download_concurrency: 8,
                 recognize_batch: 6,
                 rerank_per_candidate: 24,
+                rerank_snippet_chars: 300,
                 disk_warn_pct: 88,
                 disk_block_pct: 92,
             },

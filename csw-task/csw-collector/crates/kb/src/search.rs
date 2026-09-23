@@ -50,7 +50,7 @@ pub const RERANK_MAX: usize = 24;
 /// 最终给判断那一步的条数上限
 pub const FINAL_MAX: usize = 8;
 /// 送进 rerank 的每段截多长。太长既费时间又让重点被稀释。
-const SNIPPET_CHARS: usize = 300;
+pub const SNIPPET_CHARS: usize = 300;
 
 /// 告诉重排器什么叫「相关」。空着的话它只会按字面相似度排，
 /// 而我们要的是「能用来判断这条新贴文值不值得做」。
@@ -151,6 +151,10 @@ pub struct Query<'a> {
     /// 某一类整体缺席会把条目卡成待核；而检索工具被问「有没有关于 X 的」时，
     /// 补齐会让答案永远是「有」——那不是回答，是糊弄。
     pub backfill_kinds: bool,
+    /// 送进重排的召回上限。默认 [`RERANK_MAX`]；正式一轮取配置 `limits.rerank_per_candidate`
+    pub rerank_max: usize,
+    /// 重排每段截多少字。默认 [`SNIPPET_CHARS`]；正式一轮取配置 `limits.rerank_snippet_chars`
+    pub snippet_chars: usize,
 }
 
 impl Default for Query<'_> {
@@ -162,6 +166,8 @@ impl Default for Query<'_> {
             limit: FINAL_MAX,
             // 默认不补：补齐是判断那一步的特殊需要，不是检索的常态
             backfill_kinds: false,
+            rerank_max: RERANK_MAX,
+            snippet_chars: SNIPPET_CHARS,
         }
     }
 }
@@ -275,9 +281,10 @@ impl Retriever<'_> {
         // ── 合并 ──
         let mut ids = merge_order(&routes, [vector_ids, &brand_order, &fts_order]);
         counts.merged = ids.len();
-        if ids.len() > RERANK_MAX {
-            counts.truncated = ids.len() - RERANK_MAX;
-            ids.truncate(RERANK_MAX);
+        let cap = q.rerank_max.max(1);
+        if ids.len() > cap {
+            counts.truncated = ids.len() - cap;
+            ids.truncate(cap);
         }
 
         let found = docs::get_many(conn, &ids)?;
@@ -309,9 +316,10 @@ impl Retriever<'_> {
         if scored.is_empty() || q.text.trim().is_empty() {
             return;
         }
-        let snippets: Vec<String> = scored.iter().map(|s| snippet(&s.doc)).collect();
+        let n = q.snippet_chars.max(1);
+        let snippets: Vec<String> = scored.iter().map(|s| snippet(&s.doc, n)).collect();
         match rr
-            .rerank(&snippet_text(q.text), &snippets, RERANK_INSTRUCTION)
+            .rerank(&snippet_text(q.text, n), &snippets, RERANK_INSTRUCTION)
             .await
         {
             Ok(items) => {
@@ -537,16 +545,16 @@ fn is_distinctive(t: &str) -> bool {
     }
 }
 
-fn snippet(doc: &KbDoc) -> String {
-    snippet_text(&doc.text())
+fn snippet(doc: &KbDoc, n: usize) -> String {
+    snippet_text(&doc.text(), n)
 }
 
-fn snippet_text(s: &str) -> String {
+fn snippet_text(s: &str, n: usize) -> String {
     let t = s.trim();
-    if t.chars().count() <= SNIPPET_CHARS {
+    if t.chars().count() <= n {
         return t.to_string();
     }
-    t.chars().take(SNIPPET_CHARS).collect()
+    t.chars().take(n).collect()
 }
 
 #[cfg(test)]
@@ -858,6 +866,7 @@ mod tests {
                     exclude_post_id: Some("p-self".into()),
                     limit: 8,
                     backfill_kinds: false,
+                    ..Default::default()
                 },
             )
             .await
@@ -1008,8 +1017,11 @@ mod tests {
     fn 截断按字符不按字节() {
         let long = "山".repeat(SNIPPET_CHARS + 50);
         // 按字节截会把一个汉字劈成半个，重排看到的就是乱码
-        assert_eq!(snippet_text(&long).chars().count(), SNIPPET_CHARS);
-        assert_eq!(snippet_text("  短的  "), "短的");
+        assert_eq!(
+            snippet_text(&long, SNIPPET_CHARS).chars().count(),
+            SNIPPET_CHARS
+        );
+        assert_eq!(snippet_text("  短的  ", SNIPPET_CHARS), "短的");
     }
 
     #[test]

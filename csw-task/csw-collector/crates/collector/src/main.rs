@@ -143,6 +143,12 @@ enum Command {
         /// 明细报告写到哪
         #[arg(long, default_value = "/tmp/m2.md")]
         out: String,
+        /// 覆盖重排段数上限（默认取配置 limits.rerank_per_candidate）
+        #[arg(long)]
+        rerank_max: Option<usize>,
+        /// 覆盖重排每段字数（默认取配置 limits.rerank_snippet_chars）
+        #[arg(long)]
+        snippet_chars: Option<usize>,
     },
     /// 导出契约 JSON Schema（阶段 1 的契约冻结产物）
     Schema {
@@ -401,6 +407,8 @@ async fn main() -> anyhow::Result<()> {
             rerank,
             no_fetch,
             out,
+            rerank_max,
+            snippet_chars,
         } => {
             let cfg =
                 csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
@@ -414,6 +422,8 @@ async fn main() -> anyhow::Result<()> {
                     rerank,
                     fetch: !no_fetch,
                     out: out.into(),
+                    rerank_max,
+                    snippet_chars,
                 },
             )
             .await

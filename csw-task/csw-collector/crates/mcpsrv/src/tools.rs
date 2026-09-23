@@ -78,6 +78,7 @@ impl KbContext {
                 limit: limit.clamp(1, MAX_LIMIT),
                 // 检索工具不补齐：被问「有没有关于 X 的」时，补齐会让答案永远是「有」
                 backfill_kinds: false,
+                ..Default::default()
             },
         )
         .await?;

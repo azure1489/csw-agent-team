@@ -1244,6 +1244,7 @@ async fn kb_search(
         limit: q.limit.clamp(1, 50),
         // 检索工具不补齐：被问「有没有关于 X 的」时，补齐会让答案永远是「有」
         backfill_kinds: false,
+        ..Default::default()
     };
     let r = csw_collector_kb::search::Retriever {
         store: &svc.store,
@@ -1291,6 +1292,7 @@ async fn kb_similar(
         exclude_post_id: Some(post_id),
         limit: q.limit.clamp(1, 50),
         backfill_kinds: false,
+        ..Default::default()
     };
     let r = csw_collector_kb::search::Retriever {
         store: &svc.store,

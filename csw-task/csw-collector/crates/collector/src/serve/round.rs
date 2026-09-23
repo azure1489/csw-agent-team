@@ -730,6 +730,8 @@ async fn judge_items<'a>(
                 limit: csw_collector_kb::search::FINAL_MAX,
                 // 判断受「五类缺一不判」约束，某一类整体缺席会把条目卡成待核
                 backfill_kinds: true,
+                rerank_max: cfg.limits.rerank_per_candidate,
+                snippet_chars: cfg.limits.rerank_snippet_chars,
             },
         )
         .await
