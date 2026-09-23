@@ -237,8 +237,10 @@ impl JevClient {
     }
 
     /// 只负责发请求拿 JSON。录制层要的是这一层。
+    ///
+    /// 地址见 [`endpoint`]。
     async fn ask_http(&self, body: &Value) -> Result<Value> {
-        let url = format!("{}/v1/systemone", self.cfg.base_url.trim_end_matches('/'));
+        let url = endpoint(&self.cfg.base_url);
         let _permit = self.sem.acquire().await?;
         let mut last = String::new();
         for attempt in 0..self.cfg.max_attempts {
@@ -292,6 +294,17 @@ fn fastrand_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| u64::from(d.subsec_nanos() % 1000))
         .unwrap_or(0)
+}
+
+/// 接口地址。`base_url` 写主机名或写到 `/v1/systemone` 都认。
+///
+/// 配置默认值曾写成完整地址，这里又拼一次，实际请求的是
+/// `/v1/systemone/v1/systemone`——**线上 Jev 从 09-22 起每次都 404**，初评一直被跳过、
+/// 排除规则一直没法判，只在日志里一行 WARN。09-23 M3 回测时看出来的。
+fn endpoint(base_url: &str) -> String {
+    let b = base_url.trim_end_matches('/');
+    let b = b.strip_suffix("/v1/systemone").unwrap_or(b);
+    format!("{b}/v1/systemone")
 }
 
 #[cfg(test)]
@@ -446,5 +459,21 @@ mod tests {
     #[test]
     fn 空密钥直接拒绝构造() {
         assert!(JevClient::new(JevConfig::default(), "   ").is_err());
+    }
+
+    #[test]
+    fn 地址写主机名或写全都只拼一次() {
+        for b in [
+            "https://api.typesafe.ai",
+            "https://api.typesafe.ai/",
+            "https://api.typesafe.ai/v1/systemone",
+            "https://api.typesafe.ai/v1/systemone/",
+        ] {
+            assert_eq!(endpoint(b), "https://api.typesafe.ai/v1/systemone", "{b}");
+        }
+        assert_eq!(
+            endpoint(&crate::Config::default().jev.base_url),
+            "https://api.typesafe.ai/v1/systemone"
+        );
     }
 }

@@ -328,7 +328,7 @@ impl Default for Config {
             },
             jev: Jev {
                 enabled: true,
-                base_url: "https://api.typesafe.ai/v1/systemone".into(),
+                base_url: "https://api.typesafe.ai".into(),
                 model: "jev-latest".into(),
                 concurrency: 8,
                 same_event_threshold: 0.5,
