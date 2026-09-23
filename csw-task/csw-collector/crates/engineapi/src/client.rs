@@ -281,7 +281,7 @@ impl EngineClient {
                 .map_err(|e| EngineError::Transport(e.to_string()))?;
             let mut form = reqwest::multipart::Form::new()
                 .part("file", part)
-                .text("kind", input.kind.clone());
+                .text("kind", input.kind.as_str());
             if !input.note.is_empty() {
                 form = form.text("note", input.note.clone());
             }

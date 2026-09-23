@@ -232,6 +232,7 @@ pub async fn run(items: &[Item<'_>], deps: &Deps<'_>) -> Outcome {
         ))
         .await;
 
+    let mut failed: Vec<Vec<usize>> = Vec::new();
     for (idx, r) in results {
         match r {
             Ok(js) => {
@@ -242,8 +243,44 @@ pub async fn run(items: &[Item<'_>], deps: &Deps<'_>) -> Outcome {
                 out.judgements.extend(filled);
             }
             Err(e) => {
-                // 一批失败只影响一批。仍失败的标「未判」并计数，不算判过也不算淘汰。
-                tracing::warn!(条数 = idx.len(), 原因 = %format!("{e:#}"), "这一批判断失败");
+                tracing::warn!(条数 = idx.len(), 原因 = %format!("{e:#}"), "这一批判断失败，最后再试一次");
+                failed.push(idx);
+            }
+        }
+    }
+
+    // 失败的批**并发跑完之后按顺序再试一次**。失败多半是网关并发超限（429）——
+    // 大家一起跑时撞上，等并发的那一波过去、一批一批地发，大多能过。
+    // 09-23 演练时 P5 同时占着网关，4 批 24 条就是这么掉的，一次都没重试过。
+    // 仍失败的标「未判」并计数，不算判过也不算淘汰。
+    for idx in failed {
+        let inputs: Vec<JudgeInput<'_>> = idx
+            .iter()
+            .map(|i| {
+                let it = &items[*i];
+                JudgeInput {
+                    candidate: it.candidate,
+                    descriptions: it.descriptions,
+                    images_b64: it.images_b64.clone(),
+                    materials: &it.materials,
+                    triage: out
+                        .triages
+                        .iter()
+                        .find(|t| t.candidate_key == it.candidate.candidate_key),
+                    heat_note: it.heat_note.clone(),
+                }
+            })
+            .collect();
+        match verdict::judge_batch(deps.model, &inputs, deps.work_standard).await {
+            Ok(js) => {
+                let filled = attach(js, &idx, items, deps.work_standard);
+                if let Some(cb) = deps.on_batch {
+                    cb(&filled);
+                }
+                out.judgements.extend(filled);
+            }
+            Err(e) => {
+                tracing::warn!(条数 = idx.len(), 原因 = %format!("{e:#}"), "重试后这一批仍判断失败");
                 out.unjudged.extend(
                     idx.iter()
                         .map(|i| items[*i].candidate.candidate_key.clone()),
@@ -856,5 +893,55 @@ mod tests {
         // 仍失败的标「未判」并计数——不算判过，也不算淘汰
         assert!(out.judgements.is_empty());
         assert_eq!(out.unjudged, ["k1"]);
+    }
+
+    #[tokio::test]
+    async fn 撞上429的批最后再试一次() {
+        let server = wiremock::MockServer::start().await;
+        // 第一次 429（网关并发超限），之后正常
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(wiremock::ResponseTemplate::new(429).set_body_json(json!({
+                "error": {"code": "gateway_concurrency_limit"}
+            })))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        let payload = json!({"judgements": [one_recommend("k1")]});
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "output": [{"content": [{"type": "output_text", "text": payload.to_string()}]}],
+                "usage": {"input_tokens": 10, "output_tokens": 5}
+            })))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        let m = ModelClient::new(ModelConfig {
+            base_url: server.uri(),
+            api_key: "k".into(),
+            model: "m".into(),
+            fallback_model: String::new(),
+            concurrency: 2,
+            timeout: std::time::Duration::from_secs(5),
+            // 客户端自己不重试：钉的是流水线那一次补跑
+            max_attempts: 1,
+        })
+        .unwrap();
+        let c = cand("k1", "甲");
+        let ds = [desc()];
+        let out = run(
+            &[item(&c, &ds, vec![])],
+            &Deps {
+                model: &m,
+                jev: None,
+                work_standard: "标准",
+                batch_concurrency: 1,
+                on_batch: None,
+                cached: None,
+            },
+        )
+        .await;
+        assert!(out.unjudged.is_empty(), "{:?}", out.unjudged);
+        assert_eq!(out.judgements.len(), 1);
     }
 }

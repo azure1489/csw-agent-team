@@ -363,12 +363,36 @@ pub struct RunItems {
     pub gap: i64,
 }
 
+/// 交付物的种类。**线上的值是英文**：`output` / `supplement` / `edit`。
+///
+/// 规范文档里说「产出 / 补件 / 定点编辑」，这里曾照着写成中文字符串，
+/// 引擎一律 400 `bad_kind`——09-23 切换后第一次真提交才撞上（此前只对 mock 提交过，
+/// mock 不校验这个字段）。做成枚举，写错就编不过。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliverableKind {
+    /// 产出
+    Output,
+    /// 补件：挂在已通过的任务上，要带 `affects_deliverable_id`
+    Supplement,
+    /// 主编定点编辑（工作台用不到，留着对齐引擎）
+    Edit,
+}
+
+impl DeliverableKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Output => "output",
+            Self::Supplement => "supplement",
+            Self::Edit => "edit",
+        }
+    }
+}
+
 /// 交付物提交的入参。zip **只构建一次**，字节先落盘，重试只发已落盘的那一份。
 #[derive(Debug, Clone)]
 pub struct SubmitInput {
     pub task_id: i64,
-    /// 产出 | 补件 | 定点编辑
-    pub kind: String,
+    pub kind: DeliverableKind,
     pub zip_path: std::path::PathBuf,
     pub file_name: String,
     /// 幂等键。**一旦写下就不许换**——引擎的 Idempotency-Key 只对 POST 生效，

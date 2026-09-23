@@ -118,11 +118,12 @@ pub fn item_inputs(js: &[Judgement], by_key: impl Fn(&str) -> Option<Candidate>)
                     .and_then(|c| c.posted_at)
                     .map(|t| t.to_string())
                     .unwrap_or_default(),
-                status: if j.tier == Tier::Recommend {
-                    "candidate".into()
-                } else {
-                    "alternate".into()
-                },
+                // 引擎的条目状态只有 candidate / pending_check / shortlisted / dropped，
+                // 没有「备选」。v9 01 的口径是「判断过就不许留在 candidate」——推荐与备选
+                // 都是判过、成形的，登记成 shortlisted（成熟）；两者的区别在判断台账的档位里。
+                // 这里原先写的是 candidate / alternate，09-23 演练时引擎 400 bad_item_status
+                //（mock 不校验这个字段）。
+                status: "shortlisted".into(),
                 ..Default::default()
             }
         })
@@ -302,8 +303,9 @@ mod tests {
         // 不推荐的是「看过并判了」，不是「要做的条目」；
         // 待核还没定论，登记了下游会以为可以开工
         assert_eq!(keys, ["k1", "k2"]);
-        assert_eq!(items[0].status, "candidate");
-        assert_eq!(items[1].status, "alternate");
+        // 引擎只认四个值，推荐与备选都是 shortlisted
+        assert_eq!(items[0].status, "shortlisted");
+        assert_eq!(items[1].status, "shortlisted");
         assert_eq!(items[0].title, "换了背板结构");
         assert_eq!(items[0].published_at, "2026-09-17T08:00:00Z");
     }

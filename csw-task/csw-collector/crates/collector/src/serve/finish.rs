@@ -404,7 +404,7 @@ pub async fn submit(
     let step = rounds::begin_step(conn, round.id, StepCode::Submit, &built.sha256)?;
     let input = SubmitInput {
         task_id,
-        kind: "产出".into(),
+        kind: csw_collector_engineapi::types::DeliverableKind::Output,
         zip_path: built.path.clone(),
         file_name: built
             .path

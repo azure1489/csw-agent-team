@@ -222,3 +222,43 @@ fn judgement(key: &str) -> csw_collector_engineapi::JudgementInput {
         carried: false,
     }
 }
+
+#[tokio::test]
+async fn 提交的kind用引擎认的英文值() {
+    use csw_collector_engineapi::{DeliverableKind, SubmitInput};
+    use wiremock::matchers::body_string_contains;
+
+    let srv = MockServer::start().await;
+    // 引擎只认 output / supplement / edit。中文「产出」会被 400 bad_kind 挡回——
+    // 09-23 切换后第一次真提交就是这么失败的，mock 当时不看这个字段
+    Mock::given(method("POST"))
+        .and(path("/tasks/9/deliverables"))
+        .and(body_string_contains("name=\"kind\"\r\n\r\noutput"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": 1})))
+        .mount(&srv)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(
+            serde_json::json!({"code": "bad_kind", "message": "kind 须为 output / supplement / edit"}),
+        ))
+        .mount(&srv)
+        .await;
+
+    let zip = std::env::temp_dir().join(format!("csw-submit-{}.zip", std::process::id()));
+    std::fs::write(&zip, b"PK\x05\x06\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0").unwrap();
+    let r = client(&srv.uri())
+        .submit(&SubmitInput {
+            task_id: 9,
+            kind: DeliverableKind::Output,
+            zip_path: zip.clone(),
+            file_name: "x.zip".into(),
+            idem_key: "submit-9-x".into(),
+            note: String::new(),
+            affects_deliverable_id: None,
+            item_key: String::new(),
+        })
+        .await;
+    let _ = std::fs::remove_file(&zip);
+    assert!(r.is_ok(), "{r:?}");
+    assert_eq!(DeliverableKind::Supplement.as_str(), "supplement");
+}
