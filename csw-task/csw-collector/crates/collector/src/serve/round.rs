@@ -362,7 +362,9 @@ async fn harvest_and_judge(
     svc: &super::services::Services,
     standard: &str,
     caches: Caches,
-    backtest: Option<&[String]>,
+    links: Option<&[String]>,
+    // 回测：藏起每条自己那条决定、不带选题记忆、不补读（要可复现）
+    hide_self: bool,
 ) -> Result<Judged> {
     // 二、采集媒体信息
     let (prepared, sweeps) = harvest(
@@ -373,7 +375,7 @@ async fn harvest_and_judge(
         &svc.downloader,
         &svc.model,
         &svc.vector,
-        backtest.unwrap_or(&[]),
+        links.unwrap_or(&[]),
         caches,
     )
     .await?;
@@ -385,38 +387,29 @@ async fn harvest_and_judge(
         StepCode::Materials,
         &round.instructions_hash,
     )?;
-    let items = match judge_items(
-        conn,
-        round.id,
-        &prepared,
-        svc,
-        cfg,
-        backtest.is_some(),
-        Some(mat.id),
-    )
-    .await
-    {
-        Ok(items) => {
-            rounds::end_step(
-                conn,
-                mat.id,
-                StepStatus::Succeeded,
-                &serde_json::json!({ "条": items.len() }),
-                "",
-            )?;
-            items
-        }
-        Err(e) => {
-            rounds::end_step(
-                conn,
-                mat.id,
-                StepStatus::Failed,
-                &serde_json::json!({}),
-                &format!("{e:#}"),
-            )?;
-            return Err(e);
-        }
-    };
+    let items =
+        match judge_items(conn, round.id, &prepared, svc, cfg, hide_self, Some(mat.id)).await {
+            Ok(items) => {
+                rounds::end_step(
+                    conn,
+                    mat.id,
+                    StepStatus::Succeeded,
+                    &serde_json::json!({ "条": items.len() }),
+                    "",
+                )?;
+                items
+            }
+            Err(e) => {
+                rounds::end_step(
+                    conn,
+                    mat.id,
+                    StepStatus::Failed,
+                    &serde_json::json!({}),
+                    &format!("{e:#}"),
+                )?;
+                return Err(e);
+            }
+        };
     // 三、五：合并与逐条判断在同一个流水线里做，合并不单独成步（页面上标「随判断」）
     let step = rounds::begin_step(conn, round.id, StepCode::Judge, &round.instructions_hash)?;
     // 判之前先把 Van 否过的同一件事挡掉。挡下来的不进模型，单独出一行台账。
@@ -443,7 +436,7 @@ async fn harvest_and_judge(
 
     // 定点补读：关键内容在外链、没读到的，抓一次外链正文再重判。
     // 回测要可复现，不补读。
-    let refetch = if backtest.is_none() && cfg.limits.refetch_per_round > 0 {
+    let refetch = if !hide_self && cfg.limits.refetch_per_round > 0 {
         refetch_and_rejudge(
             conn,
             round,
@@ -773,7 +766,17 @@ pub async fn run_intake(
     svc: &super::services::Services,
 ) -> Result<(RoundCounts, Finished)> {
     let standard = work_standard(detail);
-    let j = harvest_and_judge(conn, round, cfg, svc, &standard, Caches::default(), None).await?;
+    let j = harvest_and_judge(
+        conn,
+        round,
+        cfg,
+        svc,
+        &standard,
+        Caches::default(),
+        None,
+        false,
+    )
+    .await?;
     if j.reused_recognition > 0 || j.reused_judgements > 0 {
         tracing::info!(
             复用识别 = j.reused_recognition,
@@ -897,7 +900,7 @@ async fn run_local(
             "{label}：还没接过 01 的单，用空作业标准跑——描述与向量能省，判断那一段省不了"
         );
     }
-    let j = harvest_and_judge(conn, round, cfg, svc, &standard, caches, None).await?;
+    let j = harvest_and_judge(conn, round, cfg, svc, &standard, caches, None, false).await?;
     let counts = count_round(conn, round.id, &j.prepared)?;
     tracing::info!(
         候选 = counts.candidates,
@@ -922,7 +925,36 @@ pub async fn run_backtest(
     links: &[String],
 ) -> Result<Vec<Judgement>> {
     let standard = mirror::latest_work_standard(conn, "intake")?.unwrap_or_default();
-    let j = harvest_and_judge(conn, round, cfg, svc, &standard, caches, Some(links)).await?;
+    let j = harvest_and_judge(conn, round, cfg, svc, &standard, caches, Some(links), true).await?;
+    Ok(j.judgements)
+}
+
+/// 重判：把某一轮的候选按**现在的**口径再走一遍第 2–5 步（含选题记忆、上一轮台账、补读、选题层）。
+///
+/// 与回测不同，它不藏任何材料——要看的正是「新口径在真实条件下会判成什么样」。
+/// 只写本地一个新轮，**不写引擎**。
+pub async fn run_rejudge(
+    conn: &Connection,
+    round: &Round,
+    cfg: &Config,
+    svc: &super::services::Services,
+    links: &[String],
+) -> Result<Vec<Judgement>> {
+    let standard = mirror::latest_work_standard(conn, "intake")?.unwrap_or_default();
+    let j = harvest_and_judge(
+        conn,
+        round,
+        cfg,
+        svc,
+        &standard,
+        Caches {
+            descriptions: true,
+            judgements: false,
+        },
+        Some(links),
+        false,
+    )
+    .await?;
     Ok(j.judgements)
 }
 

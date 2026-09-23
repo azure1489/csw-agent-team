@@ -127,8 +127,24 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
             }
         })
         .collect();
-    let report = render(&rows, first.id, second.id);
+    let mut report = render(&rows, first.id, second.id);
     print!("{}", summary(&rows));
+    // 口径兜底各触发几次（第一次那一轮）：看新口径在 Van 拍过板的题上改了多少
+    let stats = crate::rejudge::rule_stats(&conn, first.id)?;
+    let line = if stats.is_empty() {
+        "口径兜底：一次都没触发".to_string()
+    } else {
+        format!(
+            "口径兜底：{}",
+            stats
+                .iter()
+                .map(|(k, v)| format!("{k} {v}"))
+                .collect::<Vec<_>>()
+                .join("、")
+        )
+    };
+    println!("{line}");
+    report.push_str(&format!("\n{line}\n"));
     std::fs::write(&o.out, report).with_context(|| format!("写报告 {}", o.out.display()))?;
     println!("\n明细：{}", o.out.display());
     Ok(())

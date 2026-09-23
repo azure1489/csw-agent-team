@@ -13,6 +13,7 @@
 //!   m1                    M1 验收：对真数据跑一遍采集媒体信息
 //!   m2                    M2 验收：知识库检索命中率
 //!   m3                    M3 回测：Van 拍过板的贴文判到哪一档、两次判断一致不一致
+//!   rejudge               按现在的口径重判某一轮，对照新旧结论（只写本地）
 
 mod authprobe;
 mod bff;
@@ -24,6 +25,7 @@ mod m3;
 mod mcp;
 mod p5;
 mod p5_distill;
+mod rejudge;
 mod schema;
 mod serve;
 mod xcheck;
@@ -162,6 +164,17 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         dropped: usize,
         #[arg(long, default_value = "/tmp/m3.md")]
+        out: String,
+    },
+    /// 按现在的口径重判某一轮的候选，对照新旧结论。**要花模型钱**（识别复用，判断重来）。只写本地
+    Rejudge {
+        /// 重判哪一轮
+        #[arg(long)]
+        round: i64,
+        /// 关注哪几条：条目键或账号里含这些字样的，逗号分隔
+        #[arg(long, value_delimiter = ',')]
+        focus: Vec<String>,
+        #[arg(long, default_value = "/tmp/rejudge.md")]
         out: String,
     },
     /// 导出契约 JSON Schema（阶段 1 的契约冻结产物）
@@ -456,6 +469,21 @@ async fn main() -> anyhow::Result<()> {
                 m3::Opts {
                     limit,
                     dropped,
+                    out: out.into(),
+                },
+            )
+            .await
+        }
+        Command::Rejudge { round, focus, out } => {
+            let cfg =
+                csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
+            let secrets = csw_collector_core::Secrets::from_env();
+            rejudge::run(
+                &cfg,
+                &secrets,
+                rejudge::Opts {
+                    round,
+                    focus,
                     out: out.into(),
                 },
             )
