@@ -213,6 +213,20 @@ pub fn begin_step(
     .context("刚插的步读不回来")
 }
 
+/// 一步还在跑时报进度：把 `counts_json` 换成当下的数。收步时 [`end_step`] 会覆盖它。
+///
+/// 页面上「在走但慢」与「卡死了」要一眼分得出，只写日志的话只有能 ssh 的人看得见。
+pub fn set_progress(conn: &Connection, step_id: i64, done: usize, total: usize) -> Result<()> {
+    conn.execute(
+        "UPDATE round_steps SET counts_json = ?2 WHERE id = ?1 AND status = 'running'",
+        params![
+            step_id,
+            serde_json::json!({ "进度": done, "共": total }).to_string()
+        ],
+    )?;
+    Ok(())
+}
+
 /// 收一步。
 pub fn end_step(
     conn: &Connection,

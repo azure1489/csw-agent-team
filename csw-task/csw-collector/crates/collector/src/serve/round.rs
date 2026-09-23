@@ -128,6 +128,10 @@ pub async fn harvest(
     }
 
     let cache = DescCache { conn };
+    let report = |done: usize, total: usize| {
+        // 进度写不进去不影响这一轮，只是页面上看不到走到哪了
+        let _ = rounds::set_progress(conn, step.id, done, total);
+    };
     let (prepared, stats) = pipeline::prepare(
         cands,
         &pipeline::Deps {
@@ -141,6 +145,7 @@ pub async fn harvest(
                 .descriptions
                 .then_some(&cache as &dyn pipeline::Descriptions),
             image_vectors: cfg.features.image_vectors,
+            progress: Some(&report),
         },
     )
     .await;
@@ -350,9 +355,38 @@ async fn harvest_and_judge(
     )
     .await?;
 
-    // 三～五、合并、对照、逐条判断
+    // 四、对照：每条检索 + 重排。一期里最慢的一段之一（重排全局串行），单独记一步、报进度
+    let mat = rounds::begin_step(
+        conn,
+        round.id,
+        StepCode::Materials,
+        &round.instructions_hash,
+    )?;
+    let items = match judge_items(conn, &prepared, svc, cfg, backtest.is_some(), Some(mat.id)).await
+    {
+        Ok(items) => {
+            rounds::end_step(
+                conn,
+                mat.id,
+                StepStatus::Succeeded,
+                &serde_json::json!({ "条": items.len() }),
+                "",
+            )?;
+            items
+        }
+        Err(e) => {
+            rounds::end_step(
+                conn,
+                mat.id,
+                StepStatus::Failed,
+                &serde_json::json!({}),
+                &format!("{e:#}"),
+            )?;
+            return Err(e);
+        }
+    };
+    // 三、五：合并与逐条判断在同一个流水线里做，合并不单独成步（页面上标「随判断」）
     let step = rounds::begin_step(conn, round.id, StepCode::Judge, &round.instructions_hash)?;
-    let items = judge_items(conn, &prepared, svc, cfg, backtest.is_some()).await?;
     // 判之前先把 Van 否过的同一件事挡掉。挡下来的不进模型，单独出一行台账。
     let (items, excluded) = apply_exclusions(conn, round, svc, items).await;
     let cache = JudgeCache { conn };
@@ -728,11 +762,16 @@ async fn judge_items<'a>(
     svc: &'a super::services::Services,
     cfg: &Config,
     hide_self: bool,
+    progress_step: Option<i64>,
 ) -> Result<Vec<csw_collector_judge::pipeline::Item<'a>>> {
     use csw_collector_kb::search::{Query, Retriever};
 
     let mut out = Vec::with_capacity(prepared.len());
-    for p in prepared {
+    let total = prepared.len();
+    for (i, p) in prepared.iter().enumerate() {
+        if let Some(id) = progress_step {
+            let _ = rounds::set_progress(conn, id, i, total);
+        }
         let text = judge_text(p);
         let own_url = [p.candidate.url.clone()];
         let retrieved = Retriever {

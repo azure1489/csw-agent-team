@@ -94,9 +94,13 @@ export function Overview() {
           <H2>十步</H2>
           <div className="flex flex-wrap gap-2">
             {STEPS.map(([code, label]) => {
-              // 只看最后一次 attempt：前几次是历史，要看去轮次详情
-              const rows = (steps.data ?? []).filter((s) => s.step === code)
+              // 只看最后一次 attempt：前几次是历史，要看去轮次详情。
+              // 合并与判断在同一个流水线里做，不单独成步——跟着判断那一格走
+              const src = code === 'merge' ? 'judge' : code
+              const rows = (steps.data ?? []).filter((s) => s.step === src)
               const last = rows[rows.length - 1]
+              const done = Number(last?.counts?.['进度'])
+              const total = Number(last?.counts?.['共'])
               return (
                 <div
                   key={code}
@@ -106,6 +110,22 @@ export function Overview() {
                   <div className="mt-1">
                     {last ? <StepBadge status={last.status} sm /> : <span className="text-[12px] text-dim">未开始</span>}
                   </div>
+                  {last?.status === 'running' && total > 0 && (
+                    <div className="mt-1.5">
+                      <div className="h-1 overflow-hidden rounded-full bg-surface-2">
+                        <div
+                          className="h-full rounded-full bg-accent transition-[width] duration-500"
+                          style={{ width: `${Math.min(100, (done / total) * 100)}%` }}
+                        />
+                      </div>
+                      <div className="mt-1 text-[11px] text-dim tnum">
+                        {done}/{total}
+                      </div>
+                    </div>
+                  )}
+                  {code === 'merge' && last && (
+                    <div className="mt-1 text-[11px] text-dim">随判断</div>
+                  )}
                   {last && last.attempt > 1 && (
                     <div className="mt-1 text-[11px] text-dim">第 {last.attempt} 次</div>
                   )}

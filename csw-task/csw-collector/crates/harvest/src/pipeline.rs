@@ -164,6 +164,8 @@ pub struct Deps<'a> {
     /// 开关留着不是为了以后「可能有用」——是为了做以图搜图那天，
     /// 打开它就有数据，不用再改这一段。
     pub image_vectors: bool,
+    /// 每条做完报一次（已完成, 总数）。编排层拿它写进度给页面看
+    pub progress: Option<&'a dyn Fn(usize, usize)>,
 }
 
 /// 已经识别过的图从哪儿取。预取轮把描述写进库，正式轮靠它把识别整段跳过。
@@ -286,6 +288,9 @@ pub async fn prepare(candidates: Vec<Candidate>, deps: &Deps<'_>) -> (Vec<Prepar
         let t = std::time::Instant::now();
         let p = prepare_one(c, by_url, failed_urls, deps).await;
         let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if let Some(f) = deps.progress {
+            f(n, total);
+        }
         tracing::info!(
             进度 = format!("{n}/{total}"),
             候选 = %key,
@@ -1011,6 +1016,7 @@ mod tests {
                 concurrency: 2,
                 cache: Some(&cache),
                 image_vectors: false,
+                progress: None,
             },
         )
         .await;
@@ -1130,6 +1136,7 @@ mod tests {
             concurrency: 2,
             cache: None,
             image_vectors,
+            progress: None,
         };
 
         // 数的是**总条数**不是批次数：客户端会按 batch_weight 自己分批，

@@ -44,6 +44,8 @@ export const useRounds = (params?: { kind?: string; status?: string; limit?: num
   useQuery({
     queryKey: ['rounds', params],
     queryFn: () => get<RoundBrief[]>('/rounds', params),
+    // 一轮要跑四十分钟，页面要能看见它动。只在有轮次在跑时轮询
+    refetchInterval: (q) => (q.state.data?.some((r) => r.status === 'running') ? 10_000 : false),
   })
 
 export const useRound = (id?: number) =>
@@ -51,6 +53,7 @@ export const useRound = (id?: number) =>
     queryKey: ['rounds', id],
     queryFn: () => get<RoundDetail>(`/rounds/${id}`),
     enabled: !!id,
+    refetchInterval: (q) => (q.state.data?.status === 'running' ? 10_000 : false),
   })
 
 export const useSteps = (id?: number) =>
@@ -58,6 +61,9 @@ export const useSteps = (id?: number) =>
     queryKey: ['steps', id],
     queryFn: () => get<StepRow[]>(`/rounds/${id}/steps`),
     enabled: !!id,
+    // 进度数字在步里，跟着轮次一起刷；步都收了就停
+    refetchInterval: (q) =>
+      !q.state.data || q.state.data.some((s) => s.status === 'running') ? 10_000 : false,
   })
 
 export const useCoverage = (id?: number) =>
@@ -84,6 +90,8 @@ export const useJudgements = (id?: number, params?: { tier?: string; has_gap?: b
     queryKey: ['judgements', id, params],
     queryFn: () => get<JudgementRow[]>(`/rounds/${id}/judgements`, { ...params, limit: 1000 }),
     enabled: !!id,
+    // 判断是分批落库的，跑的时候台账会一点点长出来
+    refetchInterval: 30_000,
   })
 
 export const useJudgementDetail = (id?: number, key?: string) =>

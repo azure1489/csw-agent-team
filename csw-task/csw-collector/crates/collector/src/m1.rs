@@ -169,6 +169,7 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
             cache: None,
             // M1 要量的是**真实一轮**的耗时，所以这里也跟着配置走
             image_vectors: cfg.features.image_vectors,
+            progress: None,
         },
     )
     .await;

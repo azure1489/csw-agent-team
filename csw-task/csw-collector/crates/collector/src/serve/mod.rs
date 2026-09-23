@@ -727,6 +727,20 @@ async fn start_round(
     // 接单与心跳在 `tick` 里已经做了——见那儿的模块注释，
     // 放在这里会让同一批的第二个任务在第一个跑完前连 ack 都发不出去
     tracing::info!(任务 = t.task.id, 轮次 = r.id, 窗口 = %format!("{} ~ {}", r.window_start, r.window_end), "开工");
+    // 「接单」这一步记一笔：ack 在 tick 里已经发了，这里只是让十步的第一格有着落——
+    // 不记的话页面上它永远是「未开始」，看的人会以为连单都没接到
+    if is_new
+        && let Ok(st) =
+            rounds::begin_step(conn, r.id, csw_collector_core::types::StepCode::Intake, "")
+    {
+        let _ = rounds::end_step(
+            conn,
+            st.id,
+            csw_collector_core::types::StepStatus::Succeeded,
+            &serde_json::json!({ "任务": t.task.id, "引擎状态": format!("{:?}", t.task.status) }),
+            "",
+        );
+    }
 
     // 05／11 走的是另一条短得多的路：条目取单条 → 原图 → 识别 → 交付（0 闸）。
     // **不走合并、对照、判断、深核**——那件事 01 已经做过，而且是 Van 拍的板。
