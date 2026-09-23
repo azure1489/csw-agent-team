@@ -215,6 +215,12 @@ func (e *Engine) Reopen(ctx context.Context, hub domain.Agent, role domain.Role,
 		if !domain.CanReopen(task.Status) {
 			return domain.Conflict("cannot_reopen", "仅失败、已取消或已通过的任务可重开，当前："+string(task.Status))
 		}
+		// 已作废的一期不能从里面重开任务：作废就是中枢说「这一期到此为止」。
+		// 放行的话会出现「作废的 run 里挂着一个待审任务」——09-23 真出过：
+		// 重开、派工、提交都过了，登记才被 run_not_active 挡下，主编那边多了一条审不了的待审。
+		if run.Status == domain.RunAborted {
+			return domain.Conflict("run_aborted", "这一期已作废，不能重开其中的任务；要重做请触发新的一期")
+		}
 		depIDs, err := q.TaskDepIDs(ctx, taskID)
 		if err != nil {
 			return err

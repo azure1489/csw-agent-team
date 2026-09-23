@@ -284,3 +284,33 @@ func TestAbortRunForEmptyRun(t *testing.T) {
 		wantCode(t, err, "run_not_active")
 	}
 }
+
+func TestReopenRefusedInAbortedRun(t *testing.T) {
+	e, st := setup(t)
+	ctx := context.Background()
+	buildFlow(t, st, "auto", []fxStage{{code: "a", role: "collector"}})
+	editor, editorRole := who(t, st, "editor")
+	collector, _ := who(t, st, "collector")
+
+	res, err := e.Trigger(ctx, editor, editorRole, "t_flow", "s1", "", "")
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	a := taskByCode(t, st, res.Run.ID, "a")
+	if _, err := e.Fail(ctx, collector, a.ID, "做不了"); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	if _, err := e.Cancel(ctx, editor, editorRole, a.ID, "收尾"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if _, err := e.AbortRun(ctx, editor, editorRole, res.Run.ID, "这一期作废"); err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+	// 作废之后不能从里面重开，也不能派工（09-23 真出过：重开、派工、提交都过了）
+	_, err = e.Reopen(ctx, editor, editorRole, a.ID, "再试一次")
+	wantCode(t, err, "run_aborted")
+	_, err = e.Dispatch(ctx, editor, editorRole, a.ID, "", nil)
+	if err == nil {
+		t.Fatal("作废的一期里不该能派工")
+	}
+}

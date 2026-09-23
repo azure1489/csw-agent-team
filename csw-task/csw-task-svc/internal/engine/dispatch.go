@@ -37,6 +37,9 @@ func (e *Engine) Dispatch(ctx context.Context, hub domain.Agent, role domain.Rol
 		if role.Code != wf.HubRoleCode {
 			return domain.Forbidden("not_hub", "仅中枢角色可派工")
 		}
+		if run.Status == domain.RunAborted {
+			return domain.Conflict("run_aborted", "这一期已作废，不能派工")
+		}
 		if task.Status != domain.TaskReady {
 			return domain.Conflict("task_not_ready", "仅 ready 任务可派工，当前："+string(task.Status))
 		}
