@@ -304,13 +304,23 @@ fn live_judgement(key: &str, tier: &str, image_seen: bool) -> JudgementInput {
             "change": dim, "use": dim, "gain": dim,
             "compare": dim, "explain": dim, "csw": dim
         }),
-        three_sentences: serde_json::json!({"what_changed":"a","why_it_matters":"b","how_different":"c"}),
-        comparison: serde_json::json!({"verdict":"unrelated","against":"","note":""}),
+        three_sentences: serde_json::json!({
+            "what": "a", "why_worth": "b", "grounds": "c",
+            "headline": "品牌 背包｜侧袋结构值得解释",
+            "novelty": {"kind": "explainable_design", "basis": "第 2 张图", "prior_evidence": ""}
+        }),
+        comparison: serde_json::json!({
+            "verdict": "unconfirmed", "against": "", "note": "",
+            "hits": [{"ref_no": "M1", "title": "旧文", "url": "", "state": "published",
+                      "published_at": "", "body_available": false, "dup_fact": ""}],
+            "readiness": {"fact_source": "primary", "usable_images": 2, "material_complete": false, "note": ""}
+        }),
         heat_note: String::new(),
-        gaps: serde_json::json!([]),
+        gaps: serde_json::json!([{"level": "decision", "what": "正文缺失", "owner": "editor",
+                                  "tried": "对照材料里只有标题", "next": "核对正文"}]),
         hits: serde_json::json!({}),
         jev: serde_json::json!({}),
-        rubric_version: "v9".into(),
+        rubric_version: "van-rubric/v2".into(),
         image_seen,
         carried: false,
     }

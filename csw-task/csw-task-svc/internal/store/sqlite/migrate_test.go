@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -437,5 +438,54 @@ func TestMigrateRollback(t *testing.T) {
 	}
 	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='intake_judgements'`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("重上后 intake_judgements 应当回来，count=%d err=%v", n, err)
+	}
+}
+
+// TestDailyNewsV10Draft 验证 0041：v10 从最新版本（v9）复制、只是 draft、01 换成新口径。
+func TestDailyNewsV10Draft(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	if err := Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	var status, intake string
+	if err := db.QueryRow(`SELECT w.status, s.instructions FROM workflows w
+		JOIN workflow_stages s ON s.workflow_id = w.id AND s.code = 'intake'
+		WHERE w.wf_key='daily_news' AND w.version = 10`).Scan(&status, &intake); err != nil {
+		t.Fatalf("v10: %v", err)
+	}
+	if status != "draft" {
+		t.Fatalf("v10 必须停在 draft，got %s", status)
+	}
+	for _, want := range []string{"值不值得推荐给中国户外潮流读者", "查重未确认", "不写「从……变成……」", "影响选题判断", "推荐位按选题算"} {
+		if !strings.Contains(intake, want) {
+			t.Fatalf("v10 的 01 少了「%s」", want)
+		}
+	}
+	// 从 v9 复制：阶段数与依赖数一样
+	var n9, n10, d9, d10 int
+	q := func(v int, sql string) int {
+		var n int
+		if err := db.QueryRow(sql, v).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	stages := `SELECT COUNT(*) FROM workflow_stages WHERE workflow_id=(SELECT id FROM workflows WHERE wf_key='daily_news' AND version=?)`
+	deps := `SELECT COUNT(*) FROM workflow_stage_deps WHERE workflow_id=(SELECT id FROM workflows WHERE wf_key='daily_news' AND version=?)`
+	n9, n10, d9, d10 = q(9, stages), q(10, stages), q(9, deps), q(10, deps)
+	if n9 == 0 || n9 != n10 || d9 != d10 {
+		t.Fatalf("v10 应照 v9 复制：阶段 %d/%d，依赖 %d/%d", n9, n10, d9, d10)
+	}
+	var shortlist string
+	if err := db.QueryRow(`SELECT s.instructions FROM workflow_stages s JOIN workflows w ON w.id=s.workflow_id
+		WHERE w.wf_key='daily_news' AND w.version=10 AND s.code='shortlist'`).Scan(&shortlist); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(shortlist, "读判断台账（v10 起）") {
+		t.Fatal("02 少了读台账那一段")
 	}
 }

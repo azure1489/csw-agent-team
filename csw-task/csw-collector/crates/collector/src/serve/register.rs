@@ -711,7 +711,19 @@ mod tests {
                 .map(|k| (k.to_string(), cand(k)))
                 .collect();
         let lookup = |k: &str| by_key.get(k).cloned();
-        let items = item_inputs(&judgements, lookup);
+        // a、b 同一选题：只登记一个条目，两帖的判断都挂在它上面
+        let topics = csw_collector_judge::topic::build(
+            &[csw_collector_core::types::EventGroup {
+                event_key: "a-000001".into(),
+                primary: "a-000001".into(),
+                members: vec!["a-000001".into(), "b-000002".into()],
+                merge_note: String::new(),
+            }],
+            &judgements,
+        );
+        let items = item_inputs_by_topic(&judgements, &topics, lookup);
+        assert_eq!(items.len(), 1);
+        let item_of = registered_item_of(&topics);
         let sweeps = sweep_inputs(
             &[SweepCount {
                 in_window: 4,
@@ -722,7 +734,17 @@ mod tests {
             ("2026-09-23T00:00:00Z", "2026-09-24T00:00:00Z"),
             |_| (4, 0),
         );
-        let jis = judgement_inputs(&judgements, lookup, &Default::default(), "v9").unwrap();
+        // v10 的形状（分级缺口、查重 hits、标题与看点类型）照样过引擎的校验
+        judgements[2].gaps = vec![csw_collector_core::types::Gap::decision("未读到实图")];
+        let jis = judgement_inputs_with_items(
+            &judgements,
+            lookup,
+            &Default::default(),
+            "van-rubric/v2",
+            |k| item_of.get(k).cloned(),
+        )
+        .unwrap();
+        assert_eq!(jis[1].item_key, "a-000001");
 
         let r1 = c.put_items(run_id, &items).await;
         let r2 = c.put_sweeps(run_id, &sweeps).await;

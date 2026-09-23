@@ -76,15 +76,15 @@ func TestWorkflowActivateArchivesOld(t *testing.T) {
 	ctx := context.Background()
 	q := st.Q()
 
-	// seed: daily_news v1–v7 archived，v8 active，v9 draft（0040 插的工作台版，刻意不激活）。
-	// 所以新建草稿是 v10，不是 v9——版本号跟着 MAX(version) 走。
+	// seed: daily_news v1–v7 archived，v8 active，v9、v10 draft（0040 / 0041 插的工作台版，刻意不激活）。
+	// 所以新建草稿是 v11——版本号跟着 MAX(version) 走。
 	v2, err := q.CreateWorkflowDraft(ctx, "daily_news", "资讯日更", "editor", "manual", "editor,scheduler")
 	if err != nil {
 		t.Fatalf("create draft: %v", err)
 	}
 	wf2, _ := q.GetWorkflow(ctx, v2)
-	if wf2.Version != 10 || wf2.Status != domain.WfDraft {
-		t.Fatalf("new draft want version=10 draft, got v%d %s", wf2.Version, wf2.Status)
+	if wf2.Version != 11 || wf2.Status != domain.WfDraft {
+		t.Fatalf("new draft want version=11 draft, got v%d %s", wf2.Version, wf2.Status)
 	}
 
 	// 激活 v2：先归档同 key 其他 active，再置 active（uq_wf_active 不冲突）。
