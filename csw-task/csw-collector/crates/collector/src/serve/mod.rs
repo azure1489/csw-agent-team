@@ -942,10 +942,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("csw-tick-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let cfg = Config {
+        let mut cfg = Config {
             data_dir: dir.clone(),
             ..Config::default()
         };
+        // 磁盘水位闸读的是真机器的磁盘：开发机一满（09-23 用到 92%）这类测试就
+        // 因「拒开新轮」挂掉，测的却是接单与续跑。水位闸另有自己的测试，这里关掉它
+        cfg.limits.disk_warn_pct = 101;
+        cfg.limits.disk_block_pct = 101;
         let secrets = Secrets {
             csw_api_key: "k".into(),
             sub2api_key: "k".into(),
@@ -1029,10 +1033,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("csw-cont-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let cfg = Config {
+        let mut cfg = Config {
             data_dir: dir.clone(),
             ..Config::default()
         };
+        // 磁盘水位闸读的是真机器的磁盘：开发机一满（09-23 用到 92%）这类测试就
+        // 因「拒开新轮」挂掉，测的却是接单与续跑。水位闸另有自己的测试，这里关掉它
+        cfg.limits.disk_warn_pct = 101;
+        cfg.limits.disk_block_pct = 101;
         let secrets = Secrets {
             csw_api_key: "k".into(),
             sub2api_key: "k".into(),

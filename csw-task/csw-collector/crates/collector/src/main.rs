@@ -12,6 +12,7 @@
 //!   schema                导出契约的 JSON Schema，给前端生成 TS 类型
 //!   m1                    M1 验收：对真数据跑一遍采集媒体信息
 //!   m2                    M2 验收：知识库检索命中率
+//!   m3                    M3 回测：Van 拍过板的贴文判到哪一档、两次判断一致不一致
 
 mod authprobe;
 mod bff;
@@ -19,6 +20,7 @@ mod codexprobe;
 mod kb;
 mod m1;
 mod m2;
+mod m3;
 mod mcp;
 mod p5;
 mod p5_distill;
@@ -149,6 +151,18 @@ enum Command {
         /// 覆盖重排每段字数（默认取配置 limits.rerank_snippet_chars）
         #[arg(long)]
         snippet_chars: Option<usize>,
+    },
+    /// M3 回测：Van 采用 / 否决过的贴文当新候选再判，看落哪一档；同一批判两次看一致率。
+    /// **要花模型钱**（识别一次、判断两次）。只写本地
+    M3 {
+        /// 每类最多出几题。0 = 全部
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
+        /// 另拿几条流程淘汰出题（不算验收）
+        #[arg(long, default_value_t = 0)]
+        dropped: usize,
+        #[arg(long, default_value = "/tmp/m3.md")]
+        out: String,
     },
     /// 导出契约 JSON Schema（阶段 1 的契约冻结产物）
     Schema {
@@ -424,6 +438,25 @@ async fn main() -> anyhow::Result<()> {
                     out: out.into(),
                     rerank_max,
                     snippet_chars,
+                },
+            )
+            .await
+        }
+        Command::M3 {
+            limit,
+            dropped,
+            out,
+        } => {
+            let cfg =
+                csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
+            let secrets = csw_collector_core::Secrets::from_env();
+            m3::run(
+                &cfg,
+                &secrets,
+                m3::Opts {
+                    limit,
+                    dropped,
+                    out: out.into(),
                 },
             )
             .await

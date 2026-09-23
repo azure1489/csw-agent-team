@@ -124,7 +124,7 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
     let mut from_local = 0;
     let mut from_csw = 0;
     for c in decisions.iter_mut() {
-        if let Some(t) = local.get(&norm_url(&c.label)) {
+        if let Some(t) = local.get(&csw_collector_kb::docs::norm_url(&c.label)) {
             c.query = t.clone();
             from_local += 1;
             continue;
@@ -214,6 +214,7 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
             backfill_kinds: false,
             rerank_max,
             snippet_chars,
+            ..Default::default()
         };
         let ids = retriever.vector_route(&q).await?;
         let mut r = retriever.recall(&conn, &q, &ids)?;
@@ -281,7 +282,7 @@ fn decision_cases(conn: &Connection, since: &str) -> Result<Vec<Case>> {
     let mut by_url: Vec<Case> = Vec::new();
     let mut idx: HashMap<String, usize> = HashMap::new();
     for (id, url, brand, title) in rows {
-        let key = norm_url(&url);
+        let key = csw_collector_kb::docs::norm_url(&url);
         match idx.get(&key) {
             Some(&i) => by_url[i].targets.push(id),
             None => {
@@ -345,7 +346,7 @@ fn local_texts(conn: &Connection) -> Result<HashMap<String, String>> {
     Ok(rows
         .into_iter()
         .filter(|(_, t, tr)| !t.trim().is_empty() || !tr.trim().is_empty())
-        .map(|(u, t, tr)| (norm_url(&u), join_text(&t, &tr)))
+        .map(|(u, t, tr)| (csw_collector_kb::docs::norm_url(&u), join_text(&t, &tr)))
         .collect())
 }
 
@@ -354,20 +355,6 @@ fn join_text(text: &str, translated: &str) -> String {
         text.to_string()
     } else {
         format!("{text}\n{translated}")
-    }
-}
-
-/// 链接比对用：去掉查询串、片段与末尾斜杠，主机名小写。`/reel/` 与 `/p/` 指同一条，统一成 `/p/`。
-fn norm_url(u: &str) -> String {
-    let u = u.trim();
-    let u = u.split(['?', '#']).next().unwrap_or(u);
-    let u = u.trim_end_matches('/');
-    let lower = u.to_lowercase();
-    match short_code(u) {
-        Some(code) if lower.contains("instagram.com/") => {
-            format!("https://www.instagram.com/p/{code}")
-        }
-        _ => lower,
     }
 }
 
@@ -607,13 +594,13 @@ mod tests {
     #[test]
     fn reel与p算同一条链接() {
         assert_eq!(
-            norm_url("https://www.instagram.com/reel/DdTaFVyzaB0/"),
-            norm_url("https://instagram.com/p/DdTaFVyzaB0?igsh=abc")
+            csw_collector_kb::docs::norm_url("https://www.instagram.com/reel/DdTaFVyzaB0/"),
+            csw_collector_kb::docs::norm_url("https://instagram.com/p/DdTaFVyzaB0?igsh=abc")
         );
         // 短码区分大小写：不能被小写化成同一条
         assert_ne!(
-            norm_url("https://www.instagram.com/p/AbC/"),
-            norm_url("https://www.instagram.com/p/abc/")
+            csw_collector_kb::docs::norm_url("https://www.instagram.com/p/AbC/"),
+            csw_collector_kb::docs::norm_url("https://www.instagram.com/p/abc/")
         );
     }
 

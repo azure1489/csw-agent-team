@@ -256,6 +256,26 @@ pub fn get_many(conn: &Connection, ids: &[i64]) -> Result<Vec<KbDoc>> {
         .collect())
 }
 
+/// 链接比对用：去掉查询串、片段与末尾斜杠，主机名小写；Instagram 的 `/reel/`、`/tv/`
+/// 与 `/p/` 指同一条，统一成 `/p/{短码}`。**短码区分大小写**，不小写。
+pub fn norm_url(u: &str) -> String {
+    let u = u.trim();
+    let u = u
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(u)
+        .trim_end_matches('/');
+    if let Some(rest) = u.split("instagram.com/").nth(1) {
+        let mut parts = rest.split('/').filter(|s| !s.is_empty());
+        if let (Some(kind), Some(code)) = (parts.next(), parts.next())
+            && matches!(kind, "p" | "reel" | "reels" | "tv")
+        {
+            return format!("https://www.instagram.com/p/{code}");
+        }
+    }
+    u.to_lowercase()
+}
+
 /// 品牌召回路：这个品牌下最近的若干条。
 ///
 /// 按发布时间倒序，**没有发布时间的排在最后**——`published_at` 为空的多是范例

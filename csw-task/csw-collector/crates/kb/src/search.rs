@@ -151,6 +151,12 @@ pub struct Query<'a> {
     /// 某一类整体缺席会把条目卡成待核；而检索工具被问「有没有关于 X 的」时，
     /// 补齐会让答案永远是「有」——那不是回答，是糊弄。
     pub backfill_kinds: bool,
+    /// 这些链接的文档一条都不要（按 [`docs::norm_url`] 比）。
+    ///
+    /// **只有回测用**：把一条判过的贴文当新候选再判时，要藏起它自己那条决定——
+    /// 否则模型看见「Van 否过这条」，回测就成了抄答案。正式一轮不藏：
+    /// 昨天判过今天又冒出来的，看见自己的旧结论正是对的。
+    pub exclude_urls: &'a [String],
     /// 送进重排的召回上限。默认 [`RERANK_MAX`]；正式一轮取配置 `limits.rerank_per_candidate`
     pub rerank_max: usize,
     /// 重排每段截多少字。默认 [`SNIPPET_CHARS`]；正式一轮取配置 `limits.rerank_snippet_chars`
@@ -166,6 +172,7 @@ impl Default for Query<'_> {
             limit: FINAL_MAX,
             // 默认不补：补齐是判断那一步的特殊需要，不是检索的常态
             backfill_kinds: false,
+            exclude_urls: &[],
             rerank_max: RERANK_MAX,
             snippet_chars: SNIPPET_CHARS,
         }
@@ -288,6 +295,7 @@ impl Retriever<'_> {
         }
 
         let found = docs::get_many(conn, &ids)?;
+        let found: Vec<KbDoc> = found.into_iter().filter(|d| !is_hidden(q, d)).collect();
         let mut scored: Vec<Scored> = found
             .into_iter()
             .map(|doc| Scored {
@@ -420,7 +428,7 @@ impl Retriever<'_> {
         for brand in self.brands.hits(q.text).keys() {
             let hit = docs::by_brand(conn, brand, BRAND_PER_BRAND)?
                 .into_iter()
-                .find(|d| d.kind == kind);
+                .find(|d| d.kind == kind && !is_hidden(q, d));
             if hit.is_some() {
                 return Ok(hit);
             }
@@ -434,10 +442,19 @@ impl Retriever<'_> {
             .filter_map(Result::ok)
             .next();
         match id {
-            Some(id) => docs::get(conn, id),
+            Some(id) => Ok(docs::get(conn, id)?.filter(|d| !is_hidden(q, d))),
             None => Ok(None),
         }
     }
+}
+
+/// 这条文档的链接在 [`Query::exclude_urls`] 里吗
+fn is_hidden(q: &Query<'_>, d: &KbDoc) -> bool {
+    !q.exclude_urls.is_empty()
+        && !d.url.is_empty()
+        && q.exclude_urls
+            .iter()
+            .any(|u| docs::norm_url(u) == docs::norm_url(&d.url))
 }
 
 /// 同一类里同一条贴文只留一条。`post_id` 为空的不参与去重——
@@ -1047,5 +1064,27 @@ mod tests {
         // 向量路按相似度截：最像的 123 留着，最不像的 101 被截掉
         assert!(ids.contains(&123));
         assert!(!ids.contains(&101));
+    }
+
+    #[test]
+    fn 藏起自己那条决定_reel与p算同一条() {
+        let q = Query {
+            exclude_urls: &["https://www.instagram.com/reel/AbC1/?igsh=x".to_string()],
+            ..Default::default()
+        };
+        let mk = |u: &str| KbDoc {
+            url: u.into(),
+            ..Default::default()
+        };
+        assert!(is_hidden(&q, &mk("https://www.instagram.com/p/AbC1/")));
+        assert!(
+            !is_hidden(&q, &mk("https://www.instagram.com/p/abc1/")),
+            "短码区分大小写"
+        );
+        assert!(!is_hidden(&q, &mk("")));
+        assert!(!is_hidden(
+            &Query::default(),
+            &mk("https://www.instagram.com/p/AbC1/")
+        ));
     }
 }

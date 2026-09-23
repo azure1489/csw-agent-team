@@ -334,6 +334,7 @@ async fn harvest_and_judge(
     svc: &super::services::Services,
     standard: &str,
     caches: Caches,
+    backtest: Option<&[String]>,
 ) -> Result<Judged> {
     // 二、采集媒体信息
     let (prepared, sweeps) = harvest(
@@ -344,14 +345,14 @@ async fn harvest_and_judge(
         &svc.downloader,
         &svc.model,
         &svc.vector,
-        &[],
+        backtest.unwrap_or(&[]),
         caches,
     )
     .await?;
 
     // 三～五、合并、对照、逐条判断
     let step = rounds::begin_step(conn, round.id, StepCode::Judge, &round.instructions_hash)?;
-    let items = judge_items(conn, &prepared, svc, cfg).await?;
+    let items = judge_items(conn, &prepared, svc, cfg, backtest.is_some()).await?;
     // 判之前先把 Van 否过的同一件事挡掉。挡下来的不进模型，单独出一行台账。
     let (items, excluded) = apply_exclusions(conn, round, svc, items).await;
     let cache = JudgeCache { conn };
@@ -445,7 +446,7 @@ pub async fn run_intake(
     svc: &super::services::Services,
 ) -> Result<(RoundCounts, Finished)> {
     let standard = work_standard(detail);
-    let j = harvest_and_judge(conn, round, cfg, svc, &standard, Caches::default()).await?;
+    let j = harvest_and_judge(conn, round, cfg, svc, &standard, Caches::default(), None).await?;
     if j.reused_recognition > 0 || j.reused_judgements > 0 {
         tracing::info!(
             复用识别 = j.reused_recognition,
@@ -554,7 +555,7 @@ async fn run_local(
             "{label}：还没接过 01 的单，用空作业标准跑——描述与向量能省，判断那一段省不了"
         );
     }
-    let j = harvest_and_judge(conn, round, cfg, svc, &standard, caches).await?;
+    let j = harvest_and_judge(conn, round, cfg, svc, &standard, caches, None).await?;
     let counts = count_round(conn, round.id, &j.prepared)?;
     tracing::info!(
         候选 = counts.candidates,
@@ -564,6 +565,23 @@ async fn run_local(
         "{label}跑完，产物只在本地"
     );
     Ok(counts)
+}
+
+/// M3 回测：把这几条**已经判过**的贴文当新候选，走一遍第 2–5 步。
+///
+/// 与手动轮只差两处：候选来自给定的短码（窗口是空的），判断时**藏起每条自己那条决定**
+/// （见 [`csw_collector_kb::search::Query::exclude_urls`]）。只写本地，不写引擎。
+pub async fn run_backtest(
+    conn: &Connection,
+    round: &Round,
+    cfg: &Config,
+    svc: &super::services::Services,
+    caches: Caches,
+    links: &[String],
+) -> Result<Vec<Judgement>> {
+    let standard = mirror::latest_work_standard(conn, "intake")?.unwrap_or_default();
+    let j = harvest_and_judge(conn, round, cfg, svc, &standard, caches, Some(links)).await?;
+    Ok(j.judgements)
 }
 
 /// 把本地库当成识别缓存。
@@ -709,12 +727,14 @@ async fn judge_items<'a>(
     prepared: &'a [Prepared],
     svc: &'a super::services::Services,
     cfg: &Config,
+    hide_self: bool,
 ) -> Result<Vec<csw_collector_judge::pipeline::Item<'a>>> {
     use csw_collector_kb::search::{Query, Retriever};
 
     let mut out = Vec::with_capacity(prepared.len());
     for p in prepared {
         let text = judge_text(p);
+        let own_url = [p.candidate.url.clone()];
         let retrieved = Retriever {
             store: &svc.store,
             brands: &svc.brands,
@@ -730,6 +750,7 @@ async fn judge_items<'a>(
                 limit: csw_collector_kb::search::FINAL_MAX,
                 // 判断受「五类缺一不判」约束，某一类整体缺席会把条目卡成待核
                 backfill_kinds: true,
+                exclude_urls: if hide_self { &own_url } else { &[] },
                 rerank_max: cfg.limits.rerank_per_candidate,
                 snippet_chars: cfg.limits.rerank_snippet_chars,
             },
