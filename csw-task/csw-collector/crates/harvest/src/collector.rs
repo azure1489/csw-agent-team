@@ -47,6 +47,11 @@ pub trait Collector {
     fn required(&self) -> bool {
         false
     }
+    /// 取到的都要，不按窗口筛。只有「人点名要看的」才该开：
+    /// Van 补的链接常是几天前的贴文，按窗口筛就被悄悄丢掉了（09-23 M3 回测时发现）。
+    fn ignore_window(&self) -> bool {
+        false
+    }
     /// 窗口是 UTC 的左闭右开区间，按**首次入库时间**算
     async fn collect(&self, from: Timestamp, to: Timestamp) -> Outcome;
 }
@@ -106,6 +111,9 @@ impl Collector for VanLinks {
     }
     fn platform(&self) -> &'static str {
         "instagram"
+    }
+    fn ignore_window(&self) -> bool {
+        true
     }
 
     async fn collect(&self, _from: Timestamp, _to: Timestamp) -> Outcome {

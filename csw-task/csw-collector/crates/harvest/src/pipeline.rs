@@ -211,7 +211,7 @@ pub async fn collect_all(
                 let kept: Vec<_> = uniq
                     .into_iter()
                     .filter(|x| !image_only || x.is_image_only())
-                    .filter(|x| in_window(x, from, to))
+                    .filter(|x| c.ignore_window() || in_window(x, from, to))
                     .collect();
                 sc.in_window = kept.len() as i64;
                 all.extend(kept);
@@ -525,6 +525,7 @@ pub trait CollectorDyn {
     fn platform(&self) -> &'static str;
     fn source_key(&self) -> String;
     fn required(&self) -> bool;
+    fn ignore_window(&self) -> bool;
     fn collect_dyn(
         &self,
         from: Timestamp,
@@ -546,6 +547,9 @@ impl<T: Collector> CollectorDyn for T {
     }
     fn required(&self) -> bool {
         Collector::required(self)
+    }
+    fn ignore_window(&self) -> bool {
+        Collector::ignore_window(self)
     }
     fn collect_dyn(
         &self,
@@ -610,6 +614,24 @@ mod tests {
         out: std::sync::Mutex<Option<Outcome>>,
     }
 
+    /// 点名要看的链接：取到的都要
+    struct Named(Fake);
+
+    impl Collector for Named {
+        fn sweep_key(&self) -> String {
+            self.0.key.into()
+        }
+        fn platform(&self) -> &'static str {
+            "instagram"
+        }
+        fn ignore_window(&self) -> bool {
+            true
+        }
+        async fn collect(&self, a: Timestamp, b: Timestamp) -> Outcome {
+            self.0.collect(a, b).await
+        }
+    }
+
     impl Collector for Fake {
         fn sweep_key(&self) -> String {
             self.key.into()
@@ -667,6 +689,30 @@ mod tests {
         assert_eq!(s.fetched_unique, 3, "去重后 3 条");
         assert_eq!(s.in_window, 1, "只图文 + 窗口内 = 1");
         assert_eq!(s.result, "ok");
+    }
+
+    #[tokio::test]
+    async fn 点名的链接不按窗口筛_但照样只取图文() {
+        let from = ts("2026-09-22T00:00:00Z");
+        let to = ts("2026-09-23T00:00:00Z");
+        let c = Named(Fake {
+            key: "van-links",
+            required: false,
+            out: std::sync::Mutex::new(Some(ok(
+                vec![
+                    cand("old", Some("2026-09-15T02:00:00Z"), &[MediaKind::Photo]), // 窗口外，照收
+                    cand(
+                        "vid",
+                        Some("2026-09-15T02:00:00Z"),
+                        &[MediaKind::Photo, MediaKind::Video],
+                    ), // 夹视频，照样去掉
+                ],
+                2,
+            ))),
+        });
+        let (cands, sweeps, _) = collect_all(&[&c], from, to, true).await;
+        assert_eq!(cands.len(), 1, "{cands:?}");
+        assert_eq!(sweeps[0].in_window, 1);
     }
 
     #[tokio::test]
