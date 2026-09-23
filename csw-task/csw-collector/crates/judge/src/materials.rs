@@ -20,12 +20,14 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-use csw_collector_core::types::{Material, MaterialKind, Timestamp};
+use csw_collector_core::types::{HitState, Material, MaterialKind, Timestamp};
 use csw_collector_kb::docs::KbKind;
 use csw_collector_kb::search::Retrieved;
 
 /// 每一类最多给模型几条。给多了会把正文挤掉，也会拖慢判断。
 pub const PER_KIND: usize = 3;
+/// 已发与范例带多少字正文。**查重要看正文**，只给标题模型就只能猜。
+pub const BODY_EXCERPT_CHARS: usize = 400;
 
 /// 上一轮台账里的一行。它留在本地库、**不进参考库**——
 /// 否则系统自己的判断会被当成 Van 的口味证据。
@@ -113,7 +115,42 @@ pub fn kind_name(k: MaterialKind) -> &'static str {
         MaterialKind::GeneratedPost => "生成过文章的贴文",
         MaterialKind::Decision => "03 决定",
         MaterialKind::PriorLedger => "上一轮台账",
+        MaterialKind::Memory => "选题记忆（Van 的采用 / 否决案例）",
     }
+}
+
+/// 发布状态的中文名。**生成稿不是已发**——查重时它只能帮着复用资料。
+pub fn state_name(publish_state: &str) -> &'static str {
+    match hit_state(publish_state) {
+        HitState::Published => "正式发布",
+        HitState::Draft => "已推草稿箱",
+        HitState::Generated => "仅生成稿",
+        HitState::Decision => "03 决定",
+        HitState::Unknown => "",
+    }
+}
+
+pub fn hit_state(publish_state: &str) -> HitState {
+    match publish_state {
+        "published" => HitState::Published,
+        "draft" => HitState::Draft,
+        "generated" => HitState::Generated,
+        "decision" => HitState::Decision,
+        _ => HitState::Unknown,
+    }
+}
+
+/// 给每条材料编号（`M1`、`M2`…），按 [`grouped`] 的顺序。
+///
+/// 提示词里的编号与代码核对 `comparison.hits` / `memory_refs` 用的是**同一个函数**，
+/// 两边对不上的事不会发生。
+pub fn numbered(materials: &[Material]) -> Vec<(String, &Material)> {
+    grouped(materials)
+        .into_iter()
+        .flat_map(|(_, ms)| ms)
+        .enumerate()
+        .map(|(i, m)| (format!("M{}", i + 1), m))
+        .collect()
 }
 
 /// 一条候选的对照材料。前四类来自检索，第五类来自上一轮台账。
@@ -124,6 +161,18 @@ pub fn assemble(retrieved: &Retrieved, prior: &[PriorLedgerItem]) -> Vec<Materia
     let mut out = Vec::new();
     for (kind, hits) in retrieved.by_kind() {
         for s in hits.into_iter().take(PER_KIND) {
+            let has_body = matches!(
+                MaterialKind::from(kind),
+                MaterialKind::Published | MaterialKind::Example
+            );
+            // 生成稿与决定按类型定死：生成稿**永远不是**「已发」，哪怕库里带着别的状态
+            let publish_state = if s.doc.kind == KbKind::Decision.as_str() {
+                "decision".into()
+            } else if s.doc.kind == KbKind::GeneratedPost.as_str() {
+                "generated".into()
+            } else {
+                s.doc.publish_state.clone()
+            };
             out.push(Material {
                 kind: MaterialKind::from(kind),
                 ref_id: s.doc.ref_id.clone(),
@@ -140,7 +189,15 @@ pub fn assemble(retrieved: &Retrieved, prior: &[PriorLedgerItem]) -> Vec<Materia
                 } else {
                     String::new()
                 },
-                publish_state: s.doc.publish_state.clone(),
+                publish_state,
+                body_excerpt: if has_body {
+                    s.doc.body.trim().chars().take(BODY_EXCERPT_CHARS).collect()
+                } else {
+                    String::new()
+                },
+                // 只有已发与范例的正文是查重要用的；取不到就如实说「正文不可得」
+                body_available: !has_body || !s.doc.body.trim().is_empty(),
+                brand: s.doc.brand.clone(),
             });
         }
     }
@@ -153,15 +210,19 @@ pub fn assemble(retrieved: &Retrieved, prior: &[PriorLedgerItem]) -> Vec<Materia
             source: "上一轮台账".into(),
             quote: p.note.clone(),
             publish_state: p.tier.clone(),
+            body_excerpt: String::new(),
+            body_available: true,
+            brand: String::new(),
         });
     }
     out
 }
 
-/// 按五类分组，**每一类都在**，没有就是空数组。
+/// 按五类分组，**每一类都在**，没有就是空数组；第六类「选题记忆」排最后。
 pub fn grouped(materials: &[Material]) -> Vec<(MaterialKind, Vec<&Material>)> {
     MaterialKind::REQUIRED
         .into_iter()
+        .chain([MaterialKind::Memory])
         .map(|k| (k, materials.iter().filter(|m| m.kind == k).collect()))
         .collect()
 }
@@ -190,6 +251,8 @@ pub fn strip_van_quotes(materials: &mut [Material]) {
 
 pub fn as_prompt_block(materials: &[Material]) -> String {
     let mut s = String::new();
+    // 编号顺序与 [`numbered`] 相同：都是按 `grouped` 的顺序逐条数
+    let mut n = 0;
     for (kind, ms) in grouped(materials) {
         s.push_str(&format!("【{}】", kind_name(kind)));
         if ms.is_empty() {
@@ -203,14 +266,27 @@ pub fn as_prompt_block(materials: &[Material]) -> String {
                 .date
                 .map(|d| d.to_string())
                 .unwrap_or_else(|| "日期不详".into());
-            s.push_str(&format!("- {}（{date}", m.title));
+            n += 1;
+            s.push_str(&format!("- [M{n}] {}（{date}", m.title));
             if !m.source.is_empty() {
                 s.push_str(&format!("，{}", m.source));
             }
-            if !m.publish_state.is_empty() {
-                s.push_str(&format!("，{}", m.publish_state));
+            let state = match m.kind {
+                // 上一轮台账与选题记忆的 publish_state 放的是档位 / 结论，原样给
+                MaterialKind::PriorLedger | MaterialKind::Memory => m.publish_state.as_str(),
+                _ => state_name(&m.publish_state),
+            };
+            if !state.is_empty() {
+                s.push_str(&format!("，{state}"));
             }
             s.push_str(")\n");
+            if matches!(m.kind, MaterialKind::Published | MaterialKind::Example) {
+                if m.body_available && !m.body_excerpt.trim().is_empty() {
+                    s.push_str(&format!("  正文：{}\n", one_line(&m.body_excerpt)));
+                } else {
+                    s.push_str("  正文不可得（查重只能是「未确认」）\n");
+                }
+            }
             if !m.quote.trim().is_empty() {
                 // 决定类放的是一整段决定记录（结论、理由码，开关打开时才有原话），
                 // 叫「原话」会让模型把「结论：rejected」也当成她说的话
@@ -313,7 +389,7 @@ mod tests {
         for k in MaterialKind::REQUIRED {
             assert!(block.contains(kind_name(k)), "少了 {}", kind_name(k));
         }
-        assert_eq!(block.matches("查过，无相关").count(), 5);
+        assert_eq!(block.matches("查过，无相关").count(), 6);
     }
 
     #[test]
@@ -385,7 +461,47 @@ mod tests {
         assert!(block.contains("羽绒进城"));
         assert!(block.contains("2026-09-18"), "{block}");
         assert!(block.contains("https://example.com/k1"), "{block}");
-        assert!(block.contains("published"), "{block}");
+        assert!(block.contains("正式发布"), "{block}");
+        assert!(block.contains("[M1]"), "{block}");
+        assert!(block.contains("正文："), "查重要看正文：{block}");
+    }
+
+    #[test]
+    fn 已发正文缺失要明说不可得() {
+        let ms = assemble(
+            &retrieved(vec![
+                scored(KbKind::PublishedItem, "k1", "Dapple Born 桌板", "  "),
+                scored(KbKind::GeneratedPost, "g1", "生成稿", "x"),
+            ]),
+            &[],
+        );
+        let p = &ms[0];
+        assert!(!p.body_available);
+        let block = as_prompt_block(&ms);
+        assert!(block.contains("正文不可得"), "{block}");
+        // 生成稿没有发布状态时补成 generated，提示词里写「仅生成稿」
+        assert!(block.contains("仅生成稿"), "{block}");
+    }
+
+    #[test]
+    fn 编号与提示词里的一致() {
+        let ms = assemble(
+            &retrieved(vec![
+                scored(KbKind::Decision, "48#k1", "d", "结论：rejected"),
+                scored(KbKind::PublishedItem, "k1", "p", "正文"),
+            ]),
+            &[],
+        );
+        let nos = numbered(&ms);
+        // 按五类的顺序编：已发在决定前面
+        assert_eq!(nos[0].1.kind, MaterialKind::Published);
+        assert_eq!(nos[0].0, "M1");
+        assert_eq!(nos[1].0, "M2");
+        let block = as_prompt_block(&ms);
+        assert!(
+            block.find("[M1] p").unwrap() < block.find("[M2] d").unwrap(),
+            "{block}"
+        );
     }
 
     #[test]
@@ -422,6 +538,9 @@ mod tests {
             source: String::new(),
             quote: quote.into(),
             publish_state: String::new(),
+            body_excerpt: String::new(),
+            body_available: true,
+            brand: String::new(),
         }
     }
 
@@ -442,6 +561,9 @@ mod tests {
                 source: String::new(),
                 quote: "别的类不该被动".into(),
                 publish_state: String::new(),
+                body_excerpt: String::new(),
+                body_available: true,
+                brand: String::new(),
             },
         ];
         strip_van_quotes(&mut ms);

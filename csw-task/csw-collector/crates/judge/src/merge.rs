@@ -47,6 +47,68 @@ the same collaboration, the same store opening, the same exhibition? Two differe
 different accounts about one launch count as the same event. Two different products from one brand \
 do not.";
 
+/// 同品牌那一路问的是「同一款产品」。与 [`FRAME`] 分开问：`same_event` 的 0.5 阈值是
+/// 按原问法实测的，改问法会让那条回测作废。
+///
+/// 09-22 反馈第五项：同一款 SOUTH2 WEST8 × BEN MILLER 夹克三条贴文，向量粗筛没把它们
+/// 凑成对（文案、图各不相同），各占了一个推荐位。同品牌的两两问一次「是不是同一款」补上。
+const FRAME_PRODUCT: &str = "Do these two posts from the same brand show the SAME specific product \
+or the same collaboration item — for example one jacket photographed in different posts, or one \
+collaboration announced and then detailed? Different items from one brand, or one brand's general \
+lookbook versus a specific item, do not count.";
+
+/// 同品牌那一路每条最多问几对。
+pub const MAX_BRAND_PAIRS_PER_CANDIDATE: usize = 5;
+
+/// 同品牌配对：命中同一个品牌键的候选两两成对，已被粗筛选中的对不重复问。
+///
+/// `brand_keys[i]` 是第 i 条候选命中的品牌键。每条至多
+/// [`MAX_BRAND_PAIRS_PER_CANDIDATE`] 对，按下标顺序取，保证确定。
+pub fn brand_pairs(
+    brand_keys: &[&[String]],
+    already: &std::collections::HashSet<(usize, usize)>,
+) -> Vec<(usize, usize)> {
+    let mut used = vec![0usize; brand_keys.len()];
+    let mut out = Vec::new();
+    for i in 0..brand_keys.len() {
+        for j in (i + 1)..brand_keys.len() {
+            if used[i] >= MAX_BRAND_PAIRS_PER_CANDIDATE {
+                break;
+            }
+            if used[j] >= MAX_BRAND_PAIRS_PER_CANDIDATE || already.contains(&(i, j)) {
+                continue;
+            }
+            if brand_keys[i].iter().any(|k| brand_keys[j].contains(k)) {
+                used[i] += 1;
+                used[j] += 1;
+                out.push((i, j));
+            }
+        }
+    }
+    out
+}
+
+/// 问 Jev：同品牌的这两条是不是同一款产品。
+pub async fn same_product(jev: &JevClient, a: &Candidate, b: &Candidate) -> Result<f64> {
+    let state = json!({
+        "post_a": {"account": a.account, "caption": a.text},
+        "post_b": {"account": b.account, "caption": b.text},
+    });
+    let q = BTreeMap::from([(
+        "same_product".to_string(),
+        Question::noul(
+            FRAME_PRODUCT,
+            "Same specific product or collaboration item.",
+            "Different items.",
+        ),
+    )]);
+    Ok(jev
+        .ask(&state, &q)
+        .await?
+        .noul("same_product")
+        .unwrap_or(0.0))
+}
+
 /// 一条候选进合并时要带的。向量为 None 的条目**不参与合并**，各自成组——
 /// 向量化失败时合不了是事实，不该拿别的信号硬凑。
 pub struct MergeInput<'a> {
@@ -119,7 +181,7 @@ pub fn group(items: &[MergeInput<'_>], merged: &[(usize, usize, f64)]) -> Vec<Ev
             .entry(find(&mut parent, *i))
             .or_default()
             .push(format!(
-                "{} 与 {} 同一事件 {prob:.2}",
+                "{} 与 {} 同一件事 {prob:.2}",
                 items[*i].candidate.candidate_key, items[*j].candidate.candidate_key
             ));
     }
@@ -447,5 +509,27 @@ mod tests {
         .unwrap();
         let (a, b) = (cand("a", "acc1", "甲", 1), cand("b", "acc2", "乙", 1));
         assert_eq!(same_event(&jev, &a, &b).await.unwrap(), 0.97);
+    }
+
+    #[test]
+    fn 同品牌两两配对且不重复已选的对() {
+        let a = vec!["south2west8".to_string()];
+        let b = vec!["south2west8".to_string(), "benmiller".to_string()];
+        let c = vec!["norda".to_string()];
+        let d = vec!["south2west8".to_string()];
+        let keys: Vec<&[String]> = vec![&a, &b, &c, &d];
+        let already = std::collections::HashSet::from([(0, 1)]);
+        assert_eq!(brand_pairs(&keys, &already), [(0, 3), (1, 3)]);
+    }
+
+    #[test]
+    fn 同品牌配对有上限() {
+        let k = vec!["x".to_string()];
+        let keys: Vec<&[String]> = (0..20).map(|_| k.as_slice()).collect();
+        let pairs = brand_pairs(&keys, &Default::default());
+        for i in 0..20 {
+            let n = pairs.iter().filter(|(a, b)| *a == i || *b == i).count();
+            assert!(n <= MAX_BRAND_PAIRS_PER_CANDIDATE);
+        }
     }
 }

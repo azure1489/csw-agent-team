@@ -460,8 +460,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use csw_collector_core::types::{
-        Candidate, Comparison, ComparisonVerdict, Dim, DimJudgement, Judgement, MediaKind,
-        MediaRef, Platform, RoundKind, RoundTrigger, ThreeSentences, Unanswered, Verdict,
+        Candidate, Judgement, MediaKind, MediaRef, Platform, RoundKind, RoundTrigger, Verdict,
     };
     use csw_collector_core::{ledger, rounds};
     use tower::ServiceExt;
@@ -562,43 +561,12 @@ mod tests {
     }
 
     fn judgement(key: &str) -> Judgement {
-        Judgement {
-            candidate_key: key.into(),
-            tier: Tier::NotRecommend,
-            dims: Dim::ALL
-                .into_iter()
-                .map(|d| {
-                    (
-                        d,
-                        DimJudgement {
-                            verdict: Verdict::No,
-                            basis: "正文第一句".into(),
-                        },
-                    )
-                })
-                .collect(),
-            three_sentences: ThreeSentences {
-                what_changed: "甲".into(),
-                why_it_matters: "乙".into(),
-                how_different: "丙".into(),
-            },
-            unanswered: Unanswered::None,
-            comparison: Comparison {
-                verdict: ComparisonVerdict::Unrelated,
-                against: String::new(),
-                note: String::new(),
-            },
-            heat_note: String::new(),
-            look: String::new(),
-            image_seen: true,
-            gaps: vec![],
-            priority_hits: vec![],
-            lower_hits: vec![],
-            jev_disagreement: String::new(),
-            kb_refs: vec![],
-            memory_refs: vec![],
-            inputs_hash: "ih".into(),
+        let mut j = Judgement::fixture(key, Tier::NotRecommend);
+        for (_, d) in &mut j.dims {
+            d.verdict = Verdict::No;
         }
+        j.inputs_hash = "ih".into();
+        j
     }
 
     /// 带会话与 CSRF 的请求

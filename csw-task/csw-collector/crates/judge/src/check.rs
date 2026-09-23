@@ -140,10 +140,7 @@ fn key(d: Dim) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use csw_collector_core::types::{
-        Comparison, ComparisonVerdict, DimJudgement, ImageKind, MediaKind, MediaRef, Platform,
-        ThreeSentences, Tier, Unanswered, Verdict,
-    };
+    use csw_collector_core::types::{ImageKind, MediaKind, MediaRef, Platform, Tier};
 
     fn cand() -> Candidate {
         Candidate {
@@ -175,44 +172,11 @@ mod tests {
     }
 
     fn judgement(bases: [&str; 6]) -> Judgement {
-        Judgement {
-            candidate_key: "k".into(),
-            tier: Tier::Recommend,
-            dims: Dim::ALL
-                .into_iter()
-                .zip(bases)
-                .map(|(d, b)| {
-                    (
-                        d,
-                        DimJudgement {
-                            verdict: Verdict::Yes,
-                            basis: b.into(),
-                        },
-                    )
-                })
-                .collect(),
-            three_sentences: ThreeSentences {
-                what_changed: String::new(),
-                why_it_matters: String::new(),
-                how_different: String::new(),
-            },
-            unanswered: Unanswered::None,
-            comparison: Comparison {
-                verdict: ComparisonVerdict::Unrelated,
-                against: String::new(),
-                note: String::new(),
-            },
-            heat_note: String::new(),
-            look: String::new(),
-            image_seen: true,
-            gaps: vec![],
-            priority_hits: vec![],
-            lower_hits: vec![],
-            jev_disagreement: String::new(),
-            kb_refs: vec![],
-            memory_refs: vec![],
-            inputs_hash: "h".into(),
+        let mut j = Judgement::fixture("k", Tier::Recommend);
+        for ((_, d), b) in j.dims.iter_mut().zip(bases) {
+            d.basis = b.into();
         }
+        j
     }
 
     #[test]

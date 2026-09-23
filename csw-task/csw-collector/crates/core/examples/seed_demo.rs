@@ -502,16 +502,23 @@ fn excluded(key: &str, why: &str) -> Judgement {
                 )
             })
             .collect(),
-        three_sentences: ThreeSentences {
-            what_changed: String::new(),
-            why_it_matters: String::new(),
-            how_different: String::new(),
-        },
+        headline: format!("{key}｜被硬性排除"),
+        three_sentences: ThreeSentences::default(),
+        novelty: Novelty::default(),
+        readiness: Readiness::default(),
         unanswered: Unanswered::None,
         comparison: Comparison {
             verdict: ComparisonVerdict::SameFactNoGain,
             against: "某品牌秋季新色帐篷".into(),
             note: why.into(),
+            hits: vec![ComparisonHit {
+                ref_no: "D1".into(),
+                title: "某品牌秋季新色帐篷".into(),
+                state: HitState::Decision,
+                body_available: true,
+                dup_fact: why.into(),
+                ..Default::default()
+            }],
         },
         heat_note: String::new(),
         look: String::new(),
@@ -547,10 +554,22 @@ fn judgement(key: &str, tier: Tier, image_seen: bool, text: &str) -> Judgement {
                 )
             })
             .collect(),
+        headline: format!("{}｜示例推荐理由", &text[..text.len().min(24)]),
         three_sentences: ThreeSentences {
-            what_changed: text.into(),
-            why_it_matters: "读者出门前会关心的那一类改动".into(),
-            how_different: "与上一代相比，差别在可量的那一处".into(),
+            what: text.into(),
+            why_worth: "读者出门前会关心的那一类设计".into(),
+            grounds: "正文写明了结构与用途".into(),
+        },
+        novelty: Novelty {
+            kind: NoveltyKind::ExplainableDesign,
+            basis: "正文第二句".into(),
+            prior_evidence: String::new(),
+        },
+        readiness: Readiness {
+            fact_source: FactSource::Primary,
+            usable_images: if image_seen { 2 } else { 0 },
+            material_complete: tier == Tier::Recommend,
+            note: String::new(),
         },
         unanswered: if tier == Tier::PendingCheck {
             Unanswered::MissingMaterial
@@ -561,6 +580,15 @@ fn judgement(key: &str, tier: Tier, image_seen: bool, text: &str) -> Judgement {
             verdict: ComparisonVerdict::Unrelated,
             against: "近 30 天已发的同品牌条目".into(),
             note: "同品牌上次发的是另一个系列，角度不重合".into(),
+            hits: vec![ComparisonHit {
+                ref_no: "M1".into(),
+                title: "and wander 秋季系列".into(),
+                url: "https://mp.weixin.qq.com/s/demo".into(),
+                state: HitState::Published,
+                published_at: "2026-08-14".into(),
+                body_available: true,
+                dup_fact: String::new(),
+            }],
         },
         heat_note: "点赞是该账号近 90 天中位的 2.4 倍".into(),
         look: if image_seen {
@@ -570,9 +598,21 @@ fn judgement(key: &str, tier: Tier, image_seen: bool, text: &str) -> Judgement {
         },
         image_seen,
         gaps: if image_seen {
-            vec![]
+            vec![Gap {
+                level: GapLevel::Production,
+                what: "发售价格未写".into(),
+                owner: GapOwner::Collector,
+                tried: "正文与图片都没有".into(),
+                next: "深核查官网".into(),
+            }]
         } else {
-            vec!["两张图都下载失败，没读到实图".into()]
+            vec![Gap {
+                level: GapLevel::Decision,
+                what: "两张图都下载失败，没读到实图".into(),
+                owner: GapOwner::Collector,
+                tried: "下载重试 3 次".into(),
+                next: "下一轮重新下载后重判".into(),
+            }]
         },
         priority_hits: vec!["具体的产品改动".into()],
         lower_hits: vec![],

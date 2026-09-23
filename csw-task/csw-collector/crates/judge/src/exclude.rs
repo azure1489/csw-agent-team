@@ -36,8 +36,8 @@ use serde_json::json;
 use csw_collector_core::exclusion::{Exclusion, THRESHOLD};
 use csw_collector_core::jev::{JevClient, Question};
 use csw_collector_core::types::{
-    Candidate, Comparison, ComparisonVerdict, Dim, DimJudgement, Judgement, ThreeSentences, Tier,
-    Unanswered, Verdict,
+    Candidate, Comparison, ComparisonHit, ComparisonVerdict, Dim, DimJudgement, HitState,
+    Judgement, Novelty, Readiness, ThreeSentences, Tier, Unanswered, Verdict,
 };
 
 /// 「确实没有新料」的线。**不是 `1 - THRESHOLD`**——它和同一事实那条线各管一头，
@@ -201,16 +201,24 @@ pub fn excluded_judgement(c: &Candidate, rule: &Exclusion, m: &Match) -> Judgeme
                 )
             })
             .collect(),
-        three_sentences: ThreeSentences {
-            what_changed: String::new(),
-            why_it_matters: String::new(),
-            how_different: String::new(),
-        },
+        headline: format!("{}｜同一事实已被 Van 否决", rule.title),
+        three_sentences: ThreeSentences::default(),
+        novelty: Novelty::default(),
+        readiness: Readiness::default(),
         unanswered: Unanswered::None,
         // 排除本来就是一次对照的结论，写在它该在的地方
         comparison: Comparison {
             verdict: ComparisonVerdict::SameFactNoGain,
             against: rule.title.clone(),
+            hits: vec![ComparisonHit {
+                ref_no: rule.decision_ref.clone(),
+                title: rule.title.clone(),
+                url: rule.source_url.clone(),
+                state: HitState::Decision,
+                published_at: rule.decided_at.clone(),
+                body_available: true,
+                dup_fact: why.clone(),
+            }],
             note: why,
         },
         heat_note: String::new(),
@@ -375,7 +383,8 @@ mod tests {
         assert_eq!(j.comparison.verdict, ComparisonVerdict::SameFactNoGain);
         assert_eq!(j.comparison.against, r.title);
         // 没被判过，三句话编不出来
-        assert!(j.three_sentences.what_changed.is_empty());
+        assert!(j.three_sentences.what.is_empty());
+        assert_eq!(j.comparison.hits[0].state, HitState::Decision);
     }
 
     #[test]

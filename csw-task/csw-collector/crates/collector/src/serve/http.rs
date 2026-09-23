@@ -72,6 +72,9 @@ pub fn api_router(state: Arc<AppState>, auth: Arc<AuthState>) -> Router {
         .route("/api/rounds/{id}/judgements/{key}", get(judgement_detail))
         .route("/api/rounds/{id}/coverage", get(coverage))
         .route("/api/rounds/{id}/media", get(round_media))
+        .route("/api/rounds/{id}/topics", get(round_topics))
+        // 本地存的实图。Van 要直接看图判断外观与设计，图片描述代替不了（09-22 反馈第六项）
+        .route("/api/media/{hash}", get(media_bytes))
         .route("/api/van/today", get(van_today))
         .route("/api/rubric", get(rubric))
         .route("/api/memory/rules", get(memory_rules))
@@ -398,6 +401,10 @@ struct RoundDetail {
     kb_snapshot: String,
     instructions_hash: String,
     tiers: Vec<(String, usize)>,
+    /// 按**有效档**（叠加人工改档）的计数：页面上的数字以它为准
+    effective_tiers: Vec<(String, usize)>,
+    /// 推荐贴文数与独立选题数分开统计（09-22 反馈第五项）
+    topics: serde_json::Value,
     candidates: usize,
     carried: usize,
     unjudged: usize,
@@ -443,6 +450,8 @@ async fn round_detail(
         kb_snapshot,
         instructions_hash,
         tiers: ledger::tier_counts(&conn, id).map_err(ApiError::any)?,
+        effective_tiers: ledger::effective_tier_counts(&conn, id).map_err(ApiError::any)?,
+        topics: topic_counts(&conn, id)?,
         candidates,
         carried,
         unjudged: ledger::unjudged_keys(&conn, id)
@@ -523,6 +532,37 @@ struct JudgementRow {
     check_flags: serde_json::Value,
     account: String,
     url: String,
+    /// 「具体对象｜一句推荐理由」
+    headline: String,
+    novelty: serde_json::Value,
+    readiness: serde_json::Value,
+    /// 代表图（能当配图的第一张，没有就第一张）。取图走 `/api/media/{hash}`
+    cover: Option<String>,
+    /// 所属选题；与自己相同说明自己就是代表帖
+    topic_key: Option<String>,
+    /// 原始披露时间
+    posted_at: Option<String>,
+    /// 影响判断的缺口条数（只有这一级能让条目落待核）
+    decision_gaps: usize,
+}
+
+/// 一条候选的代表图：能当配图的第一张，没有就第一张；下载失败的不算。
+const COVER_SQL: &str = "(SELECT m.blake3 FROM media m
+     LEFT JOIN media_descriptions d ON d.blake3 = m.blake3 AND d.candidate_key = m.candidate_key
+     WHERE m.candidate_key = j.candidate_key AND m.failed = 0
+     ORDER BY COALESCE(d.usable_as_figure, 0) DESC, m.ordinal LIMIT 1)";
+
+fn decision_gap_count(gaps: &serde_json::Value) -> usize {
+    gaps.as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|g| {
+                    // 旧行是纯字符串：按「影响判断」算（与读回时的兜底一致）
+                    g.is_string() || g.get("level").and_then(|l| l.as_str()) == Some("decision")
+                })
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 async fn judgements(
@@ -534,12 +574,13 @@ async fn judgements(
     // 生效档 = 最后一次改档改到的那一档，没改过就是原判。
     // **筛选与排序都按生效档**：主编把一条捞回成备选之后，台账还把它排在
     // 不推荐那一组里的话，那次捞回等于没发生。
-    let mut sql = String::from(
+    let sql = String::from(
         "SELECT j.candidate_key, j.tier, j.dims_json, j.three_json, j.comparison_json,
                 j.heat_note, j.image_seen, j.gaps_json, j.check_flags_json,
                 COALESCE(c.account,''), COALESCE(c.url,''),
                 COALESCE(o.to_tier, j.tier), COALESCE(o.reason,''), COALESCE(o.actor,''),
-                COALESCE(rc.first_batch, 0)
+                COALESCE(rc.first_batch, 0), j.headline, j.novelty_json, j.readiness_json,
+                {COVER}, rc.event_key, c.posted_at
          FROM judgements j
          LEFT JOIN candidates c ON c.candidate_key = j.candidate_key
          LEFT JOIN round_candidates rc
@@ -549,6 +590,7 @@ async fn judgements(
                            WHERE round_id = j.round_id AND candidate_key = j.candidate_key)
          WHERE j.round_id = ?",
     );
+    let mut sql = sql.replace("{COVER}", COVER_SQL);
     let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(id)];
     if let Some(t) = &q.tier {
         sql.push_str(" AND COALESCE(o.to_tier, j.tier) = ?");
@@ -571,7 +613,15 @@ async fn judgements(
             rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())),
             |r| {
                 let j = |s: String| serde_json::from_str(&s).unwrap_or_default();
+                let gaps: serde_json::Value = j(r.get(7)?);
                 Ok(JudgementRow {
+                    decision_gaps: decision_gap_count(&gaps),
+                    headline: r.get(15)?,
+                    novelty: j(r.get(16)?),
+                    readiness: j(r.get(17)?),
+                    cover: r.get(18)?,
+                    topic_key: r.get(19)?,
+                    posted_at: r.get(20)?,
                     candidate_key: r.get(0)?,
                     tier: r.get(1)?,
                     effective_tier: r.get(11)?,
@@ -583,7 +633,7 @@ async fn judgements(
                     comparison: j(r.get(4)?),
                     heat_note: r.get(5)?,
                     image_seen: r.get::<_, i64>(6)? == 1,
-                    gaps: j(r.get(7)?),
+                    gaps,
                     check_flags: j(r.get(8)?),
                     account: r.get(9)?,
                     url: r.get(10)?,
@@ -632,12 +682,200 @@ async fn outbox(
     Ok(Json(rows.filter_map(Result::ok).collect()))
 }
 
+#[derive(Serialize)]
+struct PendingRow {
+    candidate_key: String,
+    round_id: i64,
+    headline: String,
+    account: String,
+    url: String,
+    cover: Option<String>,
+    /// 这条挂在待核里已经几轮了（连续的最新几轮都是待核）
+    rounds_pending: usize,
+    first_pending_at: String,
+    /// 影响判断的缺口：缺什么、谁处理、已尝试什么、下一步
+    gaps: serde_json::Value,
+    /// 最近一次补读了哪些地址、结果如何
+    refetches: Vec<(String, String)>,
+}
+
 /// 跨轮未结的待核。**待核不是淘汰**，补齐材料后重评。
-async fn pending_check(State(st): State<Arc<AppState>>) -> Result<Json<Vec<String>>, ApiError> {
+///
+/// 每条都要说清缺什么、谁处理、已尝试什么、下一步（09-22 反馈第八项）——
+/// 只挂一句「补齐后重跑」，最后还是要 Van 来安排和催。
+async fn pending_check(State(st): State<Arc<AppState>>) -> Result<Json<Vec<PendingRow>>, ApiError> {
+    let conn = st.conn.lock().await;
+    let keys = ledger::open_pending_checks(&conn, 500).map_err(ApiError::any)?;
+    let mut out = Vec::with_capacity(keys.len());
+    for key in keys {
+        let row = conn
+            .query_row(
+                &format!(
+                    "SELECT j.round_id, j.headline, j.gaps_json, COALESCE(c.account,''),
+                            COALESCE(c.url,''), {COVER_SQL}
+                     FROM judgements j LEFT JOIN candidates c ON c.candidate_key = j.candidate_key
+                     WHERE j.candidate_key = ?1 ORDER BY j.round_id DESC LIMIT 1"
+                ),
+                [&key],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, Option<String>>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(ApiError::db)?;
+        let Some((round_id, headline, gaps, account, url, cover)) = row else {
+            continue;
+        };
+        // 从最新一轮往回数，连续是待核的有几轮
+        let mut st_hist = conn
+            .prepare(
+                "SELECT tier, created_at FROM judgements WHERE candidate_key = ?1
+                 ORDER BY round_id DESC",
+            )
+            .map_err(ApiError::db)?;
+        let hist: Vec<(String, String)> = st_hist
+            .query_map([&key], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(ApiError::db)?
+            .filter_map(Result::ok)
+            .collect();
+        let streak: Vec<&(String, String)> = hist
+            .iter()
+            .take_while(|(t, _)| t == "pending_check")
+            .collect();
+        let gaps: serde_json::Value = serde_json::from_str(&gaps).unwrap_or_default();
+        let decision: Vec<serde_json::Value> = gaps
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|g| {
+                        if let Some(s) = g.as_str() {
+                            // 旧行：只有一句话
+                            return Some(serde_json::json!({
+                                "level": "decision", "what": s, "owner": "collector",
+                                "tried": "", "next": ""
+                            }));
+                        }
+                        (g.get("level").and_then(|l| l.as_str()) == Some("decision"))
+                            .then(|| g.clone())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.push(PendingRow {
+            refetches: csw_collector_core::topics::refetch_summary(&conn, &key)
+                .map_err(ApiError::any)?,
+            candidate_key: key,
+            round_id,
+            headline,
+            account,
+            url,
+            cover,
+            rounds_pending: streak.len().max(1),
+            first_pending_at: streak.last().map(|(_, at)| at.clone()).unwrap_or_default(),
+            gaps: serde_json::Value::Array(decision),
+        });
+    }
+    Ok(Json(out))
+}
+
+/// 这一轮的选题。
+async fn round_topics(
+    State(st): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Result<Json<Vec<csw_collector_core::types::Topic>>, ApiError> {
     let conn = st.conn.lock().await;
     Ok(Json(
-        ledger::open_pending_checks(&conn, 500).map_err(ApiError::any)?,
+        csw_collector_core::topics::topics(&conn, id).map_err(ApiError::any)?,
     ))
+}
+
+/// 推荐 / 备选各多少帖、多少个独立选题（按有效档）。
+fn topic_counts(conn: &rusqlite::Connection, round: i64) -> Result<serde_json::Value, ApiError> {
+    let topics = csw_collector_core::topics::topics(conn, round).map_err(ApiError::any)?;
+    let eff: std::collections::HashMap<String, String> = {
+        let sql = format!(
+            "SELECT j.candidate_key, {} FROM judgements j WHERE j.round_id = ?1",
+            ledger::EFFECTIVE_TIER_SQL
+        );
+        let mut st = conn.prepare(&sql).map_err(ApiError::db)?;
+        st.query_map([round], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(ApiError::db)?
+            .filter_map(Result::ok)
+            .collect()
+    };
+    let posts = |t: &str| eff.values().filter(|v| v.as_str() == t).count();
+    // 选题的有效档 = 成员有效档里最高的
+    let rank = |t: &str| match t {
+        "recommend" => 0,
+        "alternate" => 1,
+        "pending_check" => 2,
+        _ => 3,
+    };
+    let topic_tier = |t: &csw_collector_core::types::Topic| {
+        t.members
+            .iter()
+            .filter_map(|m| eff.get(m))
+            .min_by_key(|x| rank(x))
+            .cloned()
+            .unwrap_or_default()
+    };
+    let tps = |t: &str| topics.iter().filter(|x| topic_tier(x) == t).count();
+    Ok(serde_json::json!({
+        "recommend_posts": posts("recommend"),
+        "recommend_topics": tps("recommend"),
+        "alternate_posts": posts("alternate"),
+        "alternate_topics": tps("alternate"),
+        "topics": topics.len(),
+    }))
+}
+
+/// 本地存的实图，按内容哈希取。
+///
+/// **只认 64 位小写十六进制、且在 `media` 表里登记过的哈希**：路径由代码按哈希拼，
+/// 不接受任何外部给的路径片段，走不出图片目录；没登记过的哈希一律 404，
+/// 不给人拿接口探测盘上有什么。挂在会话守卫下面，未登录拿不到。
+async fn media_bytes(
+    State(st): State<Arc<AppState>>,
+    Path(hash): Path<String>,
+) -> Result<Response, ApiError> {
+    if hash.len() != 64 || !hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "图片编号不对".into()));
+    }
+    let known = {
+        let conn = st.conn.lock().await;
+        conn.query_row(
+            "SELECT 1 FROM media WHERE blake3 = ?1 AND failed = 0",
+            [&hash],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(ApiError::db)?
+        .is_some()
+    };
+    if !known {
+        return Err(ApiError(StatusCode::NOT_FOUND, "没有这张图".into()));
+    }
+    let path = csw_collector_harvest::download::blob_path(&st.cfg.blob_dir(), &hash);
+    let bytes = tokio::fs::read(&path)
+        .await
+        // 登记过但文件不在：多半是过了 120 天被清理了
+        .map_err(|_| ApiError(StatusCode::NOT_FOUND, "这张图已经清理掉了".into()))?;
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, "image/jpeg"),
+            (axum::http::header::CACHE_CONTROL, "private, max-age=86400"),
+            (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 #[derive(Serialize)]
@@ -703,6 +941,10 @@ struct JudgementDetail {
     deepcheck: Option<serde_json::Value>,
     model_calls: Vec<ModelCallRow>,
     first_batch: bool,
+    /// 所属选题（成员不止自己时才有意义）
+    topic: Option<csw_collector_core::types::Topic>,
+    /// 补读了哪些外链、结果如何（不含正文）
+    refetches: Vec<(String, String)>,
 }
 
 #[derive(Serialize)]
@@ -747,7 +989,7 @@ async fn judgement_detail(
             "SELECT tier, dims_json, three_json, unanswered, comparison_json, heat_note, look,
                     image_seen, gaps_json, priority_hits_json, lower_hits_json, jev_disagreement,
                     check_flags_json, kb_refs_json, memory_refs_json, inputs_hash, model,
-                    rubric_version, created_at
+                    rubric_version, created_at, headline, novelty_json, readiness_json, rejudged
              FROM judgements WHERE round_id=?1 AND candidate_key=?2",
             rusqlite::params![id, key],
             |r| {
@@ -775,6 +1017,10 @@ async fn judgement_detail(
                     "model": r.get::<_, String>(16)?,
                     "rubric_version": r.get::<_, String>(17)?,
                     "created_at": r.get::<_, String>(18)?,
+                    "headline": r.get::<_, String>(19)?,
+                    "novelty": j(20),
+                    "readiness": j(21),
+                    "rejudged": r.get::<_, i64>(22)? == 1,
                 }))
             },
         )
@@ -869,7 +1115,15 @@ async fn judgement_detail(
     let all_ovr =
         csw_collector_core::workbench::latest_overrides(&conn, id).map_err(ApiError::any)?;
 
+    let topic = csw_collector_core::topics::topics(&conn, id)
+        .map_err(ApiError::any)?
+        .into_iter()
+        .find(|t| t.members.iter().any(|m| m == &key));
+    let refetches =
+        csw_collector_core::topics::refetch_summary(&conn, &key).map_err(ApiError::any)?;
     Ok(Json(JudgementDetail {
+        topic,
+        refetches,
         effective_tier: csw_collector_core::workbench::effective_tier(&conn, id, &key)
             .map_err(ApiError::any)?
             .unwrap_or_default(),
@@ -999,6 +1253,16 @@ struct VanItem {
     /// 代表图（第一张能当配图的）的内容描述
     look: String,
     marks: Vec<String>,
+    /// 查重结论：unrelated / same_brand_with_gain / same_fact_no_gain / unconfirmed
+    dedup: String,
+    /// 影响判断的缺口
+    decision_gaps: Vec<String>,
+    /// 代表图与全部实图（内容哈希，经 `/api/media/{hash}` 取）
+    cover: Option<String>,
+    images: Vec<String>,
+    topic_key: Option<String>,
+    /// 同一选题的其余帖子：不另占卡片
+    also: Vec<serde_json::Value>,
 }
 
 async fn van_today(State(st): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, ApiError> {
@@ -1016,52 +1280,112 @@ async fn van_today(State(st): State<Arc<AppState>>) -> Result<Json<serde_json::V
         return Ok(Json(serde_json::json!({ "round_id": null, "items": [] })));
     };
     let marks = csw_collector_core::workbench::van_marks(&conn, round).map_err(ApiError::any)?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT j.candidate_key, COALESCE(o.to_tier, j.tier), j.three_json, j.heat_note,
-                    j.look, COALESCE(c.account,''), COALESCE(c.url,'')
-             FROM judgements j
-             LEFT JOIN candidates c ON c.candidate_key = j.candidate_key
-             LEFT JOIN judgement_overrides o
-                    ON o.id = (SELECT MAX(id) FROM judgement_overrides
-                               WHERE round_id = j.round_id AND candidate_key = j.candidate_key)
-             WHERE j.round_id = ?1 AND COALESCE(o.to_tier, j.tier) IN ('recommend','alternate')
-             ORDER BY CASE COALESCE(o.to_tier, j.tier) WHEN 'recommend' THEN 0 ELSE 1 END,
-                      j.candidate_key",
-        )
-        .map_err(ApiError::db)?;
-    let items: Vec<VanItem> = stmt
+    let sql = format!(
+        "SELECT j.candidate_key, COALESCE(o.to_tier, j.tier), j.three_json, j.heat_note,
+                j.look, COALESCE(c.account,''), COALESCE(c.url,''), j.headline,
+                j.comparison_json, j.gaps_json, {COVER_SQL}, rc.event_key
+         FROM judgements j
+         LEFT JOIN candidates c ON c.candidate_key = j.candidate_key
+         LEFT JOIN round_candidates rc
+                ON rc.round_id = j.round_id AND rc.candidate_key = j.candidate_key
+         LEFT JOIN judgement_overrides o
+                ON o.id = (SELECT MAX(id) FROM judgement_overrides
+                           WHERE round_id = j.round_id AND candidate_key = j.candidate_key)
+         WHERE j.round_id = ?1 AND COALESCE(o.to_tier, j.tier) IN ('recommend','alternate')
+         ORDER BY CASE COALESCE(o.to_tier, j.tier) WHEN 'recommend' THEN 0 ELSE 1 END,
+                  j.candidate_key"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(ApiError::db)?;
+    let rows: Vec<VanItem> = stmt
         .query_map([round], |r| {
             let key: String = r.get(0)?;
             let three: serde_json::Value =
                 serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or_default();
+            let headline: String = r.get(7)?;
+            let comparison: serde_json::Value =
+                serde_json::from_str(&r.get::<_, String>(8)?).unwrap_or_default();
+            let gaps: serde_json::Value =
+                serde_json::from_str(&r.get::<_, String>(9)?).unwrap_or_default();
             Ok(VanItem {
-                title: three
-                    .get("what_changed")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                title: if headline.trim().is_empty() {
+                    // 旧行没有标题：用「是什么」那句顶上（旧键名也认）
+                    three
+                        .get("what")
+                        .or_else(|| three.get("what_changed"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string()
+                } else {
+                    headline
+                },
                 tier: r.get(1)?,
                 three_sentences: three,
                 heat_note: r.get(3)?,
                 look: r.get(4)?,
                 brand: r.get(5)?,
                 url: r.get(6)?,
+                dedup: comparison
+                    .get("verdict")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                decision_gaps: gaps
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter(|g| g.get("level").and_then(|l| l.as_str()) == Some("decision"))
+                            .filter_map(|g| g.get("what").and_then(|w| w.as_str()))
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                cover: r.get(10)?,
+                topic_key: r.get(11)?,
+                images: vec![],
+                also: vec![],
                 marks: vec![],
                 candidate_key: key,
             })
         })
         .map_err(ApiError::db)?
         .filter_map(Result::ok)
-        .map(|mut it| {
-            it.marks = marks
-                .iter()
-                .filter(|m| m.candidate_key == it.candidate_key)
-                .map(|m| m.mark.clone())
-                .collect();
-            it
-        })
         .collect();
+
+    // 按选题收拢：同一选题只出一张卡（代表帖），其余帖子挂在 `also` 里，不占推荐位
+    let mut items: Vec<VanItem> = Vec::new();
+    for mut it in rows {
+        it.marks = marks
+            .iter()
+            .filter(|m| m.candidate_key == it.candidate_key)
+            .map(|m| m.mark.clone())
+            .collect();
+        let mut st_img = conn
+            .prepare(
+                "SELECT blake3 FROM media WHERE candidate_key = ?1 AND failed = 0 ORDER BY ordinal",
+            )
+            .map_err(ApiError::db)?;
+        it.images = st_img
+            .query_map([&it.candidate_key], |r| r.get(0))
+            .map_err(ApiError::db)?
+            .filter_map(Result::ok)
+            .collect();
+        let topic = it
+            .topic_key
+            .clone()
+            .unwrap_or_else(|| it.candidate_key.clone());
+        if let Some(host) = items.iter_mut().find(|x| {
+            x.topic_key
+                .clone()
+                .unwrap_or_else(|| x.candidate_key.clone())
+                == topic
+        }) {
+            host.also.push(serde_json::json!({
+                "candidate_key": it.candidate_key, "url": it.url, "title": it.title,
+            }));
+        } else {
+            items.push(it);
+        }
+    }
     Ok(Json(
         serde_json::json!({ "round_id": round, "items": items }),
     ))
@@ -1208,6 +1532,20 @@ async fn kb_status(State(st): State<Arc<AppState>>) -> Result<Json<serde_json::V
         .filter_map(Result::ok)
         .collect();
     let one = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap_or(0) };
+    let examples_missing: Vec<String> = {
+        let mut st = conn
+            .prepare(
+                "SELECT DISTINCT post_id FROM kb_docs d WHERE is_reference = 1 AND post_id <> ''
+                   AND NOT EXISTS (SELECT 1 FROM kb_docs e
+                                   WHERE e.kind = 'example' AND e.post_id = d.post_id)
+                 ORDER BY post_id",
+            )
+            .map_err(ApiError::db)?;
+        st.query_map([], |r| r.get::<_, String>(0))
+            .map_err(ApiError::db)?
+            .filter_map(Result::ok)
+            .collect()
+    };
     Ok(Json(serde_json::json!({
         "cursors": cursors,
         "docs": one("SELECT COUNT(*) FROM kb_docs"),
@@ -1226,6 +1564,12 @@ async fn kb_status(State(st): State<Arc<AppState>>) -> Result<Json<serde_json::V
                 |r| r.get::<_, i64>(0),
             )
             .unwrap_or(0),
+        // 范例「应有」按被标成范例的篇数算（它的拆条也带着范例标记），「实有」按整篇入库的范例算。
+        // 两个数对不上说明有范例篇没整篇入库（正文为空、读取失败或与已发记录合并了）
+        "examples_expected": one(
+            "SELECT COUNT(DISTINCT post_id) FROM kb_docs WHERE is_reference = 1 AND post_id <> ''"
+        ),
+        "examples_missing": examples_missing,
         "品牌": one("SELECT COUNT(*) FROM brands"),
         "别名": one("SELECT COUNT(*) FROM brand_aliases"),
         "embed_model": st.cfg.vector.embed_model,
@@ -1538,9 +1882,8 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use csw_collector_core::types::{
-        Candidate, Comparison, ComparisonVerdict, Dim, DimJudgement, Judgement, MediaDescription,
-        MediaKind, MediaRef, Platform, RoundKind, RoundTrigger, ThreeSentences, Tier, Unanswered,
-        Verdict,
+        Candidate, Judgement, MediaDescription, MediaKind, MediaRef, Platform, RoundKind,
+        RoundTrigger, Tier,
     };
     use csw_collector_core::{media, rounds, workbench};
     use tower::ServiceExt;
@@ -1672,43 +2015,15 @@ mod tests {
     }
 
     fn judgement(key: &str, tier: Tier) -> Judgement {
-        Judgement {
-            candidate_key: key.into(),
-            tier,
-            dims: Dim::ALL
-                .into_iter()
-                .map(|d| {
-                    (
-                        d,
-                        DimJudgement {
-                            verdict: Verdict::Yes,
-                            basis: "正文第一句".into(),
-                        },
-                    )
-                })
-                .collect(),
-            three_sentences: ThreeSentences {
-                what_changed: format!("{key} 换了结构"),
-                why_it_matters: "背得更稳".into(),
-                how_different: "上一代是软背板".into(),
-            },
-            unanswered: Unanswered::None,
-            comparison: Comparison {
-                verdict: ComparisonVerdict::Unrelated,
-                against: String::new(),
-                note: String::new(),
-            },
-            heat_note: "369 赞".into(),
-            look: "灰色主体".into(),
-            image_seen: true,
-            gaps: vec![],
-            priority_hits: vec![],
-            lower_hits: vec![],
-            jev_disagreement: String::new(),
-            kb_refs: vec![],
-            memory_refs: vec![],
-            inputs_hash: "ih".into(),
-        }
+        let mut j = Judgement::fixture(key, tier);
+        j.headline = format!("{key}｜背得更稳");
+        j.three_sentences.what = format!("{key} 的背板结构");
+        j.three_sentences.why_worth = "背得更稳".into();
+        j.three_sentences.grounds = "正文写明换成铝合金背板".into();
+        j.heat_note = "369 赞".into();
+        j.look = "灰色主体".into();
+        j.inputs_hash = "ih".into();
+        j
     }
 
     /// 台账、审计、Van 的原话，一条都不能匿名读出去。
@@ -1929,9 +2244,118 @@ mod tests {
         // 手机上翻三百条不是在帮她
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["candidate_key"], "k1");
-        assert_eq!(items[0]["title"], "k1 换了结构");
+        assert_eq!(items[0]["title"], "k1｜背得更稳");
         assert_eq!(items[0]["marks"], serde_json::json!(["like"]));
-        assert_eq!(items[0]["three_sentences"]["why_it_matters"], "背得更稳");
+        assert_eq!(items[0]["three_sentences"]["why_worth"], "背得更稳");
+        // 手机上直接看图：代表图与全部实图的哈希都给
+        assert!(items[0]["images"].is_array());
+    }
+
+    #[tokio::test]
+    async fn 实图按哈希取且只认登记过的() {
+        let (_, st) = app();
+        let dir = std::env::temp_dir().join(format!("csw-media-{}", std::process::id()));
+        let hash = "ab".repeat(32);
+        let cfg = csw_collector_core::Config {
+            data_dir: dir.clone(),
+            ..Default::default()
+        };
+        let path = csw_collector_harvest::download::blob_path(&cfg.blob_dir(), &hash);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"\xff\xd8jpeg").unwrap();
+        {
+            let conn = st.conn.lock().await;
+            conn.execute(
+                "INSERT INTO media(blake3, candidate_key, ordinal, kind, url, failed)
+                 VALUES (?1, 'k2', 0, 'photo', 'u', 0)",
+                [&hash],
+            )
+            .unwrap();
+        }
+        let conn = std::mem::replace(
+            &mut *st.conn.lock().await,
+            csw_collector_core::store::open_in_memory().unwrap(),
+        );
+        let state = Arc::new(AppState {
+            conn: tokio::sync::Mutex::new(conn),
+            cfg,
+            started: std::time::Instant::now(),
+            svc: None,
+        });
+        let app = api_router(state, auth_with("viewer"));
+        let raw = |uri: String, sid: Option<&'static str>| {
+            let app = app.clone();
+            async move {
+                let mut b = Request::builder().uri(uri);
+                if let Some(sid) = sid {
+                    b = b.header(
+                        axum::http::header::COOKIE,
+                        format!("{}={sid}", crate::bff::SESSION_COOKIE),
+                    );
+                }
+                app.oneshot(b.body(Body::empty()).unwrap()).await.unwrap()
+            }
+        };
+        let ok = raw(format!("/api/media/{hash}"), Some(SID)).await;
+        assert_eq!(ok.status(), StatusCode::OK);
+        assert_eq!(ok.headers()["content-type"], "image/jpeg");
+        assert_eq!(ok.headers()["x-content-type-options"], "nosniff");
+        // 没登录拿不到
+        assert_eq!(
+            raw(format!("/api/media/{hash}"), None).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        // 不是 64 位小写十六进制：连库都不查
+        for bad in ["..%2F..%2Fetc%2Fpasswd", "AB", &"AB".repeat(32)] {
+            assert_eq!(
+                raw(format!("/api/media/{bad}"), Some(SID)).await.status(),
+                StatusCode::BAD_REQUEST,
+                "{bad}"
+            );
+        }
+        // 格式对但没登记过：不给探测盘上有什么
+        assert_eq!(
+            raw(format!("/api/media/{}", "cd".repeat(32)), Some(SID))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn 待核逐条说清缺什么谁处理下一步() {
+        let (app, st) = app();
+        {
+            let conn = st.conn.lock().await;
+            ledger::upsert_candidate(&conn, &cand("k3")).unwrap();
+            ledger::attach_candidate(&conn, 1, "k3", "csw-window", false).unwrap();
+            let mut j = judgement("k3", Tier::PendingCheck);
+            j.gaps = vec![
+                csw_collector_core::types::Gap {
+                    level: csw_collector_core::types::GapLevel::Decision,
+                    what: "完整内容在主页外链".into(),
+                    owner: csw_collector_core::types::GapOwner::Editor,
+                    tried: "补读 https://e.com/a：访问失败".into(),
+                    next: "人工打开外链".into(),
+                },
+                csw_collector_core::types::Gap {
+                    level: csw_collector_core::types::GapLevel::Production,
+                    ..csw_collector_core::types::Gap::decision("缺价格")
+                },
+            ];
+            ledger::put_judgement(&conn, 1, &j, &[], "m", "v").unwrap();
+        }
+        let (code, v) = get(&app, "/api/pending-check").await;
+        assert_eq!(code, StatusCode::OK);
+        let row = &v.as_array().unwrap()[0];
+        assert_eq!(row["candidate_key"], "k3");
+        assert_eq!(row["rounds_pending"], 1);
+        // 只列影响判断的缺口；影响成稿的不让它挂在待核里
+        let gaps = row["gaps"].as_array().unwrap();
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0]["owner"], "editor");
+        assert_eq!(gaps[0]["next"], "人工打开外链");
     }
 
     #[tokio::test]

@@ -14,7 +14,9 @@ use anyhow::Result;
 use rusqlite::Connection;
 
 use csw_collector_core::outbox::{self, NewEntry};
-use csw_collector_core::types::{Candidate, Dim, Judgement, OutboxKind, Tier};
+use std::collections::HashMap;
+
+use csw_collector_core::types::{Candidate, Dim, Judgement, OutboxKind, Tier, Topic};
 use csw_collector_engineapi::types::{ItemInput, JudgementInput, SweepInput};
 use csw_collector_harvest::pipeline::SweepCount;
 
@@ -103,19 +105,50 @@ fn dims_object(j: &Judgement) -> serde_json::Value {
     serde_json::Value::Object(m)
 }
 
-/// 判断 → 引擎格式。
+/// 判断 → 引擎格式（不挂条目）。
+#[cfg(test)]
 pub fn judgement_inputs(
     js: &[Judgement],
     by_key: impl Fn(&str) -> Option<Candidate>,
     carried: &std::collections::HashSet<String>,
     rubric_version: &str,
 ) -> Result<Vec<JudgementInput>> {
+    judgement_inputs_with_items(js, by_key, carried, rubric_version, |_| None)
+}
+
+/// 三句话连同标题与看点类型一起放进引擎的 `three_sentences` 列（引擎原样存 JSON，
+/// 不改表）；查重连同制作条件放进 `comparison` 列。
+fn engine_three(j: &Judgement) -> Result<serde_json::Value> {
+    let mut v = serde_json::to_value(&j.three_sentences)?;
+    if let Some(o) = v.as_object_mut() {
+        o.insert("headline".into(), serde_json::json!(j.headline));
+        o.insert("novelty".into(), serde_json::to_value(&j.novelty)?);
+    }
+    Ok(v)
+}
+
+fn engine_comparison(j: &Judgement) -> Result<serde_json::Value> {
+    let mut v = serde_json::to_value(&j.comparison)?;
+    if let Some(o) = v.as_object_mut() {
+        o.insert("readiness".into(), serde_json::to_value(&j.readiness)?);
+    }
+    Ok(v)
+}
+
+/// 判断 → 引擎格式。`item_of` 给出这条候选挂在哪个已登记的条目（选题）上。
+pub fn judgement_inputs_with_items(
+    js: &[Judgement],
+    by_key: impl Fn(&str) -> Option<Candidate>,
+    carried: &std::collections::HashSet<String>,
+    rubric_version: &str,
+    item_of: impl Fn(&str) -> Option<String>,
+) -> Result<Vec<JudgementInput>> {
     js.iter()
         .map(|j| {
             let c = by_key(&j.candidate_key);
             Ok(JudgementInput {
                 candidate_key: j.candidate_key.clone(),
-                item_key: String::new(),
+                item_key: item_of(&j.candidate_key).unwrap_or_default(),
                 platform: c
                     .as_ref()
                     .map(|c| c.platform.to_string())
@@ -127,8 +160,8 @@ pub fn judgement_inputs(
                     .unwrap_or("pending_check")
                     .to_string(),
                 dims: dims_object(j),
-                three_sentences: serde_json::to_value(&j.three_sentences)?,
-                comparison: serde_json::to_value(&j.comparison)?,
+                three_sentences: engine_three(j)?,
+                comparison: engine_comparison(j)?,
                 heat_note: j.heat_note.clone(),
                 gaps: serde_json::to_value(&j.gaps)?,
                 hits: serde_json::json!({
@@ -147,15 +180,44 @@ pub fn judgement_inputs(
 /// 条目登记。**只登记推荐与备选**——不推荐的进台账不进 `run_items`，
 /// 它们是「看过并判了」，不是「要做的条目」。待核也不登记：
 /// 它还没定论，登记了下游就会以为可以开工。
+#[cfg(test)]
 pub fn item_inputs(js: &[Judgement], by_key: impl Fn(&str) -> Option<Candidate>) -> Vec<ItemInput> {
-    js.iter()
-        .filter(|j| matches!(j.tier, Tier::Recommend | Tier::Alternate))
-        .map(|j| {
+    item_inputs_by_topic(js, &csw_collector_judge::topic::build(&[], js), by_key)
+}
+
+/// 按**选题**登记（09-22 反馈第五项）：同产品、同事件的多帖只占一个条目，
+/// 条目键取代表帖，其余帖子写进去重说明。逐帖判断照样全写进判断台账。
+pub fn item_inputs_by_topic(
+    js: &[Judgement],
+    topics: &[Topic],
+    by_key: impl Fn(&str) -> Option<Candidate>,
+) -> Vec<ItemInput> {
+    topics
+        .iter()
+        .filter(|t| matches!(t.tier, Some(Tier::Recommend | Tier::Alternate)))
+        .filter_map(|t| {
+            let j = js.iter().find(|j| j.candidate_key == t.primary_key)?;
             let c = by_key(&j.candidate_key);
-            ItemInput {
-                item_key: j.candidate_key.clone(),
-                title: j.three_sentences.what_changed.clone(),
-                brand: String::new(),
+            let others: Vec<String> = t
+                .members
+                .iter()
+                .filter(|m| **m != t.primary_key)
+                .map(|m| by_key(m).map(|c| c.url).unwrap_or_else(|| m.clone()))
+                .collect();
+            Some(ItemInput {
+                item_key: t.topic_key.clone(),
+                title: if t.headline.trim().is_empty() {
+                    j.headline.clone()
+                } else {
+                    t.headline.clone()
+                },
+                brand: c.as_ref().map(|c| c.account.clone()).unwrap_or_default(),
+                evidence_url: c.as_ref().map(|c| c.url.clone()).unwrap_or_default(),
+                dedup_note: if others.is_empty() {
+                    String::new()
+                } else {
+                    format!("同选题另有 {} 帖：{}", others.len(), others.join(" "))
+                },
                 product: String::new(),
                 source_url: c.as_ref().map(|c| c.url.clone()).unwrap_or_default(),
                 published_at: c
@@ -170,8 +232,17 @@ pub fn item_inputs(js: &[Judgement], by_key: impl Fn(&str) -> Option<Candidate>)
                 //（mock 不校验这个字段）。
                 status: "shortlisted".into(),
                 ..Default::default()
-            }
+            })
         })
+        .collect()
+}
+
+/// 候选 → 它所属、且已登记的选题条目键（推荐 / 备选的选题）。
+pub fn registered_item_of(topics: &[Topic]) -> HashMap<String, String> {
+    topics
+        .iter()
+        .filter(|t| matches!(t.tier, Some(Tier::Recommend | Tier::Alternate)))
+        .flat_map(|t| t.members.iter().map(|m| (m.clone(), t.topic_key.clone())))
         .collect()
 }
 
@@ -237,10 +308,7 @@ fn kind_slug(k: OutboxKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use csw_collector_core::types::{
-        Comparison, ComparisonVerdict, Dim, DimJudgement, MediaKind, MediaRef, Platform,
-        ThreeSentences, Unanswered, Verdict,
-    };
+    use csw_collector_core::types::{Dim, MediaKind, MediaRef, Platform};
 
     fn cand(key: &str) -> Candidate {
         Candidate {
@@ -272,43 +340,17 @@ mod tests {
     }
 
     fn j(key: &str, tier: Tier) -> Judgement {
-        Judgement {
-            candidate_key: key.into(),
-            tier,
-            dims: Dim::ALL
-                .into_iter()
-                .map(|d| {
-                    (
-                        d,
-                        DimJudgement {
-                            verdict: Verdict::Yes,
-                            basis: "b".into(),
-                        },
-                    )
-                })
-                .collect(),
-            three_sentences: ThreeSentences {
-                what_changed: "换了背板结构".into(),
-                why_it_matters: "乙".into(),
-                how_different: "丙".into(),
-            },
-            unanswered: Unanswered::None,
-            comparison: Comparison {
-                verdict: ComparisonVerdict::Unrelated,
-                against: String::new(),
-                note: String::new(),
-            },
-            heat_note: "369 赞".into(),
-            look: String::new(),
-            image_seen: tier != Tier::PendingCheck,
-            gaps: vec![],
-            priority_hits: vec!["老产品结构性改款".into()],
-            lower_hits: vec![],
-            jev_disagreement: String::new(),
-            kb_refs: vec![],
-            memory_refs: vec![],
-            inputs_hash: "ih".into(),
+        let mut j = Judgement::fixture(key, tier);
+        for (_, d) in &mut j.dims {
+            d.basis = "b".into();
         }
+        j.headline = format!("{key}｜背板结构值得解释");
+        j.three_sentences.what = "换了背板结构".into();
+        j.heat_note = "369 赞".into();
+        j.image_seen = tier != Tier::PendingCheck;
+        j.priority_hits = vec!["老产品结构性改款".into()];
+        j.inputs_hash = "ih".into();
+        j
     }
 
     fn sweep() -> SweepCount {
@@ -336,6 +378,51 @@ mod tests {
     }
 
     #[test]
+    fn 同一选题只登记一个条目其余帖子挂在它下面() {
+        let js = vec![
+            j("s2w8-a", Tier::Alternate),
+            j("s2w8-b", Tier::Recommend),
+            j("s2w8-c", Tier::Recommend),
+            j("x", Tier::NotRecommend),
+        ];
+        let groups = vec![csw_collector_core::types::EventGroup {
+            event_key: "s2w8-a".into(),
+            primary: "s2w8-a".into(),
+            members: vec!["s2w8-a".into(), "s2w8-b".into(), "s2w8-c".into()],
+            merge_note: String::new(),
+        }];
+        let topics = csw_collector_judge::topic::build(&groups, &js);
+        let items = item_inputs_by_topic(&js, &topics, |k| Some(cand(k)));
+        assert_eq!(items.len(), 1, "三帖一个选题，只占一个条目");
+        assert_eq!(items[0].item_key, "s2w8-b");
+        assert!(
+            items[0].dedup_note.starts_with("同选题另有 2 帖"),
+            "{}",
+            items[0].dedup_note
+        );
+        let item_of = registered_item_of(&topics);
+        let jis = judgement_inputs_with_items(
+            &js,
+            |k| Some(cand(k)),
+            &Default::default(),
+            "v2",
+            |k| item_of.get(k).cloned(),
+        )
+        .unwrap();
+        // 逐帖判断全写，同题的都挂到那个条目上；不推荐的不挂
+        assert_eq!(jis.len(), 4);
+        for ji in &jis[..3] {
+            assert_eq!(ji.item_key, "s2w8-b");
+        }
+        assert!(jis[3].item_key.is_empty());
+        // 标题、看点类型与制作条件随判断一起进引擎（引擎原样存 JSON，不改表）
+        assert!(jis[0].three_sentences.get("headline").is_some());
+        assert!(jis[0].three_sentences.get("novelty").is_some());
+        assert!(jis[0].comparison.get("readiness").is_some());
+        assert!(jis[0].comparison.get("hits").is_some());
+    }
+
+    #[test]
     fn 只登记推荐与备选() {
         let js = [
             j("k1", Tier::Recommend),
@@ -351,7 +438,7 @@ mod tests {
         // 引擎只认四个值，推荐与备选都是 shortlisted
         assert_eq!(items[0].status, "shortlisted");
         assert_eq!(items[1].status, "shortlisted");
-        assert_eq!(items[0].title, "换了背板结构");
+        assert_eq!(items[0].title, "k1｜背板结构值得解释");
         assert_eq!(items[0].published_at, "2026-09-17T08:00:00Z");
     }
 

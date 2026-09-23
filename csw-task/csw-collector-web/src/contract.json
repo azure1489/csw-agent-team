@@ -133,12 +133,18 @@
         "type": "object",
         "required": [
           "verdict",
-          "against",
           "note"
         ],
         "properties": {
           "against": {
-            "type": "string"
+            "type": "string",
+            "description": "兼容旧行：v1 只写一句「对照的是哪篇」"
+          },
+          "hits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ComparisonHit"
+            }
           },
           "note": {
             "type": "string"
@@ -148,17 +154,56 @@
           }
         }
       },
+      "ComparisonHit": {
+        "type": "object",
+        "description": "查重命中的一条历史材料。",
+        "required": [
+          "ref_no",
+          "title",
+          "url",
+          "state",
+          "published_at",
+          "body_available",
+          "dup_fact"
+        ],
+        "properties": {
+          "body_available": {
+            "type": "boolean"
+          },
+          "dup_fact": {
+            "type": "string",
+            "description": "具体重复了哪条事实；无重复写空"
+          },
+          "published_at": {
+            "type": "string"
+          },
+          "ref_no": {
+            "type": "string",
+            "description": "对照材料编号，如 `M3`"
+          },
+          "state": {
+            "$ref": "#/components/schemas/HitState"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
       "ComparisonVerdict": {
         "type": "string",
         "enum": [
           "same_fact_no_gain",
           "same_brand_with_gain",
-          "unrelated"
+          "unrelated",
+          "unconfirmed"
         ]
       },
       "Dim": {
         "type": "string",
-        "description": "Van 的六个维度。键固定，不增不减——改维度要她本人点头。",
+        "description": "Van 的六个维度。**键固定**（引擎按键名校验），含义以 `van-rubric/v2` 为准\n（09-23 Van 本人认可的新定义）。改维度要她本人点头。",
         "enum": [
           "change",
           "use",
@@ -213,6 +258,71 @@
           }
         }
       },
+      "FactSource": {
+        "type": "string",
+        "enum": [
+          "primary",
+          "reshared",
+          "brand_claim_only",
+          "unknown"
+        ]
+      },
+      "Gap": {
+        "type": "object",
+        "description": "一条缺口：缺什么、谁处理、已尝试什么、下一步。",
+        "required": [
+          "level",
+          "what",
+          "owner",
+          "tried",
+          "next"
+        ],
+        "properties": {
+          "level": {
+            "$ref": "#/components/schemas/GapLevel"
+          },
+          "next": {
+            "type": "string"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/GapOwner"
+          },
+          "tried": {
+            "type": "string"
+          },
+          "what": {
+            "type": "string"
+          }
+        }
+      },
+      "GapLevel": {
+        "type": "string",
+        "description": "缺口级别（09-22 反馈第八项）。",
+        "enum": [
+          "decision",
+          "production",
+          "boundary"
+        ]
+      },
+      "GapOwner": {
+        "type": "string",
+        "enum": [
+          "collector",
+          "editor",
+          "van"
+        ]
+      },
+      "HitState": {
+        "type": "string",
+        "description": "命中的历史材料的发布状态。生成稿**不是**「近期已发」的证据。",
+        "enum": [
+          "published",
+          "draft",
+          "generated",
+          "decision",
+          "unknown"
+        ]
+      },
       "ImageKind": {
         "type": "string",
         "enum": [
@@ -261,7 +371,7 @@
               "prefixItems": [
                 {
                   "type": "string",
-                  "description": "Van 的六个维度。键固定，不增不减——改维度要她本人点头。",
+                  "description": "Van 的六个维度。**键固定**（引擎按键名校验），含义以 `van-rubric/v2` 为准\n（09-23 Van 本人认可的新定义）。改维度要她本人点头。",
                   "enum": [
                     "change",
                     "use",
@@ -294,8 +404,12 @@
           "gaps": {
             "type": "array",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/Gap"
             }
+          },
+          "headline": {
+            "type": "string",
+            "description": "「具体对象｜一句推荐理由」，40 字以内。列表与 Van 模式的主信息。"
           },
           "heat_note": {
             "type": "string",
@@ -322,7 +436,7 @@
           },
           "look": {
             "type": "string",
-            "description": "实图里看到的外观与设计要点"
+            "description": "实图里看到的外观与设计要点（辅助核查，界面上折叠）"
           },
           "lower_hits": {
             "type": "array",
@@ -336,12 +450,18 @@
               "type": "string"
             }
           },
+          "novelty": {
+            "$ref": "#/components/schemas/Novelty"
+          },
           "priority_hits": {
             "type": "array",
             "items": {
               "type": "string"
             },
             "description": "命中的七类优先关注 / 七类降低优先级。是倾向，不是黑名单。"
+          },
+          "readiness": {
+            "$ref": "#/components/schemas/Readiness"
           },
           "three_sentences": {
             "$ref": "#/components/schemas/ThreeSentences"
@@ -365,6 +485,17 @@
           "publish_state"
         ],
         "properties": {
+          "body_available": {
+            "type": "boolean",
+            "description": "这条材料的正文取没取到。取不到时查重只能是「未确认」。"
+          },
+          "body_excerpt": {
+            "type": "string",
+            "description": "正文节选（已发、范例两类才有）。**查重要看正文**——只给标题，模型拿不到\n重复的事实，就会把「正文缺失」判成「无关」（09-22 反馈 Dapple Born）。"
+          },
+          "brand": {
+            "type": "string"
+          },
           "date": {
             "type": [
               "string",
@@ -403,7 +534,8 @@
           "example",
           "generated_post",
           "decision",
-          "prior_ledger"
+          "prior_ledger",
+          "memory"
         ]
       },
       "MediaDescription": {
@@ -496,6 +628,54 @@
           }
         }
       },
+      "MemberNote": {
+        "type": "object",
+        "required": [
+          "candidate_key",
+          "new_info",
+          "is_duplicate"
+        ],
+        "properties": {
+          "candidate_key": {
+            "type": "string"
+          },
+          "is_duplicate": {
+            "type": "boolean"
+          },
+          "new_info": {
+            "type": "string"
+          }
+        }
+      },
+      "Novelty": {
+        "type": "object",
+        "required": [
+          "kind",
+          "basis",
+          "prior_evidence"
+        ],
+        "properties": {
+          "basis": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/NoveltyKind"
+          },
+          "prior_evidence": {
+            "type": "string",
+            "description": "旧款 / 前代依据出自哪里。`EvidencedChange` 时必填。"
+          }
+        }
+      },
+      "NoveltyKind": {
+        "type": "string",
+        "description": "看点属于哪一种。**没有旧款证据就不许写「从……变成……」。**",
+        "enum": [
+          "existing_feature",
+          "evidenced_change",
+          "explainable_design"
+        ]
+      },
       "OutboxKind": {
         "type": "string",
         "description": "写引擎的动作。先落 outbox 再发，崩溃后可续、可幂等重放。",
@@ -527,6 +707,33 @@
           "xiaohongshu",
           "web"
         ]
+      },
+      "Readiness": {
+        "type": "object",
+        "description": "制作条件。与选题价值**分开记**，不参与定档（09-22 反馈第一项）。",
+        "required": [
+          "fact_source",
+          "usable_images",
+          "material_complete",
+          "note"
+        ],
+        "properties": {
+          "fact_source": {
+            "$ref": "#/components/schemas/FactSource"
+          },
+          "material_complete": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": "string"
+          },
+          "usable_images": {
+            "type": "integer",
+            "format": "int32",
+            "description": "可作配图的实图张数",
+            "minimum": 0
+          }
+        }
       },
       "RoundKind": {
         "type": "string",
@@ -580,19 +787,20 @@
       },
       "ThreeSentences": {
         "type": "object",
+        "description": "三句话（v2）：是什么 / 为什么值得看 / 依据是什么。\n\nv1 的键是 `what_changed` / `why_it_matters` / `how_different`——字段名本身就在逼\n模型找「变化」（09-22 反馈第二项）。旧行按别名读回。",
         "required": [
-          "what_changed",
-          "why_it_matters",
-          "how_different"
+          "what",
+          "why_worth",
+          "grounds"
         ],
         "properties": {
-          "how_different": {
+          "grounds": {
             "type": "string"
           },
-          "what_changed": {
+          "what": {
             "type": "string"
           },
-          "why_it_matters": {
+          "why_worth": {
             "type": "string"
           }
         }
@@ -606,6 +814,85 @@
           "not_recommend",
           "pending_check"
         ]
+      },
+      "Topic": {
+        "type": "object",
+        "description": "选题：同产品、同事件的多条贴文合成的一个报道对象（09-22 反馈第五项）。\n\n逐帖台账原样保留；选题是在它上面加的一层，推荐位按选题算，不按贴文算。",
+        "required": [
+          "topic_key",
+          "primary_key",
+          "members",
+          "merge_note",
+          "headline",
+          "synthesis"
+        ],
+        "properties": {
+          "headline": {
+            "type": "string"
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "含主帖，主帖在前"
+          },
+          "merge_note": {
+            "type": "string"
+          },
+          "primary_key": {
+            "type": "string"
+          },
+          "synthesis": {
+            "$ref": "#/components/schemas/TopicSynthesis"
+          },
+          "tier": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Tier",
+                "description": "组内最高的档（按代码给的档，不含人工改档——人工改档在页面上另算）"
+              }
+            ]
+          },
+          "topic_key": {
+            "type": "string",
+            "description": "= 主帖的 candidate_key"
+          }
+        }
+      },
+      "TopicSynthesis": {
+        "type": "object",
+        "required": [
+          "shared_facts",
+          "per_member",
+          "unsupported"
+        ],
+        "properties": {
+          "per_member": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemberNote"
+            },
+            "description": "每帖相对其余几帖新增了什么；只是重复的标 `is_duplicate`"
+          },
+          "shared_facts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "各帖共有的事实"
+          },
+          "unsupported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "新增信息在该帖材料里核不到的（Jev 支持度低于阈值），给人看"
+          }
+        }
       },
       "Triage": {
         "type": "object",
@@ -629,7 +916,7 @@
               "prefixItems": [
                 {
                   "type": "string",
-                  "description": "Van 的六个维度。键固定，不增不减——改维度要她本人点头。",
+                  "description": "Van 的六个维度。**键固定**（引擎按键名校验），含义以 `van-rubric/v2` 为准\n（09-23 Van 本人认可的新定义）。改维度要她本人点头。",
                   "enum": [
                     "change",
                     "use",

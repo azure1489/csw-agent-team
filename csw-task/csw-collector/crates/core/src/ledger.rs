@@ -163,8 +163,10 @@ pub fn put_judgement(
                                 comparison_json, heat_note, look, image_seen, gaps_json,
                                 priority_hits_json, lower_hits_json, jev_disagreement,
                                 check_flags_json, kb_refs_json, memory_refs_json,
-                                inputs_hash, model, rubric_version, created_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)
+                                inputs_hash, model, rubric_version, created_at,
+                                headline, novelty_json, readiness_json, rejudged)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,
+                 ?22,?23,?24,?25)
          ON CONFLICT(round_id, candidate_key) DO UPDATE SET
            tier=excluded.tier, dims_json=excluded.dims_json, three_json=excluded.three_json,
            unanswered=excluded.unanswered, comparison_json=excluded.comparison_json,
@@ -173,7 +175,9 @@ pub fn put_judgement(
            lower_hits_json=excluded.lower_hits_json, jev_disagreement=excluded.jev_disagreement,
            check_flags_json=excluded.check_flags_json, kb_refs_json=excluded.kb_refs_json,
            memory_refs_json=excluded.memory_refs_json, inputs_hash=excluded.inputs_hash,
-           model=excluded.model, rubric_version=excluded.rubric_version",
+           model=excluded.model, rubric_version=excluded.rubric_version,
+           headline=excluded.headline, novelty_json=excluded.novelty_json,
+           readiness_json=excluded.readiness_json, rejudged=excluded.rejudged",
         params![
             round_id,
             j.candidate_key,
@@ -198,11 +202,18 @@ pub fn put_judgement(
             model,
             rubric_version,
             jiff::Timestamp::now().to_string(),
+            j.headline,
+            serde_json::to_string(&j.novelty)?,
+            serde_json::to_string(&j.readiness)?,
+            i64::from(check_flags.iter().any(|f| f.starts_with(REJUDGED_FLAG))),
         ],
     )
     .context("写判断")?;
     Ok(conn.last_insert_rowid())
 }
+
+/// 口径违例后重判过的条目，在 check_flags 里以它开头留痕。
+pub const REJUDGED_FLAG: &str = "【口径·已重判】";
 
 /// 这一轮各档各多少条。给自查与总览用。
 pub fn tier_counts(conn: &Connection, round_id: i64) -> Result<Vec<(String, usize)>> {
@@ -262,7 +273,7 @@ pub fn judgement_by_hash(
         .query_row(
             "SELECT tier, dims_json, three_json, unanswered, comparison_json, heat_note, look,
                     image_seen, gaps_json, priority_hits_json, lower_hits_json, jev_disagreement,
-                    kb_refs_json, memory_refs_json
+                    kb_refs_json, memory_refs_json, headline, novelty_json, readiness_json
              FROM judgements WHERE candidate_key = ?1 AND inputs_hash = ?2
              ORDER BY round_id DESC LIMIT 1",
             params![candidate_key, inputs_hash],
@@ -273,6 +284,9 @@ pub fn judgement_by_hash(
                         .and_then(|s| serde_json::from_str(&s).ok())
                         .unwrap_or_default()
                 };
+                fn parse<T: serde::de::DeserializeOwned + Default>(s: &str) -> T {
+                    serde_json::from_str(s).unwrap_or_default()
+                }
                 // 每个字段的目标类型不同，闭包只能定型一次，所以逐个写开
                 let raw = |i: usize| r.get::<_, String>(i).unwrap_or_default();
                 Ok(Judgement {
@@ -280,22 +294,22 @@ pub fn judgement_by_hash(
                     tier: serde_json::from_value(serde_json::Value::String(r.get(0)?))
                         .unwrap_or(Tier::PendingCheck),
                     dims: serde_json::from_str(&raw(1)).unwrap_or_default(),
-                    three_sentences: serde_json::from_str(&raw(2)).unwrap_or(ThreeSentences {
-                        what_changed: String::new(),
-                        why_it_matters: String::new(),
-                        how_different: String::new(),
-                    }),
+                    headline: r.get(14)?,
+                    three_sentences: parse::<ThreeSentences>(&raw(2)),
+                    novelty: parse(&raw(15)),
+                    readiness: parse(&raw(16)),
                     unanswered: serde_json::from_value(serde_json::Value::String(r.get(3)?))
                         .unwrap_or(Unanswered::None),
                     comparison: serde_json::from_str(&raw(4)).unwrap_or(Comparison {
                         verdict: ComparisonVerdict::Unrelated,
                         against: String::new(),
                         note: String::new(),
+                        hits: vec![],
                     }),
                     heat_note: r.get(5)?,
                     look: r.get(6)?,
                     image_seen: r.get::<_, i64>(7)? != 0,
-                    gaps: js(8),
+                    gaps: parse(&raw(8)),
                     priority_hits: js(9),
                     lower_hits: js(10),
                     jev_disagreement: r.get(11)?,
@@ -332,16 +346,62 @@ pub fn prior_ledger(
         .collect())
 }
 
-/// 待核且还没结清的条目，跨轮。01 的任务详情要附这个。
-pub fn open_pending_checks(conn: &Connection, limit: usize) -> Result<Vec<String>> {
+/// 同一条候选在之前几轮（不含预取轮）的结论：第五类对照材料「上一轮台账」。
+///
+/// 返回 `(档, 判断时间, 标题)`，新的在前。
+pub fn prior_for(
+    conn: &Connection,
+    before_round_id: i64,
+    candidate_key: &str,
+    limit: usize,
+) -> Result<Vec<(String, String, String)>> {
     let mut st = conn.prepare(
-        "SELECT candidate_key, MAX(round_id) AS r FROM judgements
-         GROUP BY candidate_key
-         HAVING (SELECT tier FROM judgements j2
-                 WHERE j2.candidate_key = judgements.candidate_key AND j2.round_id = r)
-                = 'pending_check'
-         ORDER BY r DESC LIMIT ?1",
+        "SELECT j.tier, j.created_at, j.headline FROM judgements j
+         JOIN rounds r ON r.id = j.round_id
+         WHERE j.round_id < ?1 AND r.kind <> 'prefetch' AND j.candidate_key = ?2
+         ORDER BY j.round_id DESC LIMIT ?3",
     )?;
+    Ok(st
+        .query_map(params![before_round_id, candidate_key, limit as i64], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?
+        .filter_map(Result::ok)
+        .collect())
+}
+
+/// 一条判断的**有效档**：有人工改档就取最新一次改档，没有就取模型给的。
+/// 各处统计与待核结转都要看它——只看原始档，改过档的还会挂在待核里。
+pub const EFFECTIVE_TIER_SQL: &str = "COALESCE((SELECT o.to_tier FROM judgement_overrides o
+     WHERE o.round_id = j.round_id AND o.candidate_key = j.candidate_key
+     ORDER BY o.id DESC LIMIT 1), j.tier)";
+
+/// 这一轮按**有效档**各多少条。
+pub fn effective_tier_counts(conn: &Connection, round_id: i64) -> Result<Vec<(String, usize)>> {
+    let sql = format!(
+        "SELECT t, COUNT(*) FROM (SELECT {EFFECTIVE_TIER_SQL} AS t FROM judgements j
+         WHERE j.round_id=?1) GROUP BY t ORDER BY t"
+    );
+    let mut st = conn.prepare(&sql)?;
+    Ok(st
+        .query_map([round_id], |r| {
+            Ok((r.get(0)?, r.get::<_, i64>(1)? as usize))
+        })?
+        .filter_map(Result::ok)
+        .collect())
+}
+
+/// 待核且还没结清的条目，跨轮。01 的任务详情要附这个。
+///
+/// 看**最新一轮**的**有效档**：人工把待核改成别的档，就算结了。
+pub fn open_pending_checks(conn: &Connection, limit: usize) -> Result<Vec<String>> {
+    let sql = format!(
+        "SELECT j.candidate_key FROM judgements j
+         WHERE j.round_id = (SELECT MAX(j2.round_id) FROM judgements j2
+                             WHERE j2.candidate_key = j.candidate_key)
+           AND {EFFECTIVE_TIER_SQL} = 'pending_check'
+         ORDER BY j.round_id DESC, j.candidate_key LIMIT ?1"
+    );
+    let mut st = conn.prepare(&sql)?;
     Ok(st
         .query_map([limit as i64], |r| r.get(0))?
         .filter_map(Result::ok)
@@ -369,10 +429,7 @@ pub fn photo_count(c: &Candidate) -> usize {
 mod tests {
     use super::*;
     use crate::rounds::{NewRound, open_round};
-    use crate::types::{
-        Comparison, ComparisonVerdict, Dim, DimJudgement, MediaRef, Platform, RoundKind,
-        RoundTrigger, ThreeSentences, Unanswered, Verdict,
-    };
+    use crate::types::{Dim, Gap, MediaRef, Platform, RoundKind, RoundTrigger};
 
     fn setup(task_id: i64) -> (Connection, i64) {
         let c = crate::store::open_in_memory().unwrap();
@@ -436,43 +493,11 @@ mod tests {
     }
 
     fn judgement(key: &str, tier: Tier, image_seen: bool) -> Judgement {
-        Judgement {
-            candidate_key: key.into(),
-            tier,
-            dims: Dim::ALL
-                .into_iter()
-                .map(|d| {
-                    (
-                        d,
-                        DimJudgement {
-                            verdict: Verdict::Yes,
-                            basis: "正文第一句".into(),
-                        },
-                    )
-                })
-                .collect(),
-            three_sentences: ThreeSentences {
-                what_changed: "甲".into(),
-                why_it_matters: "乙".into(),
-                how_different: "丙".into(),
-            },
-            unanswered: Unanswered::None,
-            comparison: Comparison {
-                verdict: ComparisonVerdict::Unrelated,
-                against: String::new(),
-                note: String::new(),
-            },
-            heat_note: "369 赞".into(),
-            look: String::new(),
-            image_seen,
-            gaps: vec![],
-            priority_hits: vec![],
-            lower_hits: vec![],
-            jev_disagreement: String::new(),
-            kb_refs: vec![],
-            memory_refs: vec![],
-            inputs_hash: "ih".into(),
-        }
+        let mut j = Judgement::fixture(key, tier);
+        j.heat_note = "369 赞".into();
+        j.image_seen = image_seen;
+        j.inputs_hash = "ih".into();
+        j
     }
 
     #[test]
@@ -550,8 +575,8 @@ mod tests {
             .expect("该找得到");
         assert_eq!(got.tier, Tier::Recommend);
         assert_eq!(got.dims.len(), Dim::ALL.len());
-        assert_eq!(got.three_sentences.what_changed, "甲");
-        assert_eq!(got.gaps, ["价格未写"]);
+        assert_eq!(got.three_sentences.what, "甲");
+        assert_eq!(got.gaps, [Gap::decision("价格未写")]);
         assert_eq!(got.priority_hits, ["新品发布"]);
         assert_eq!(got.kb_refs, ["kb:published_item:42"]);
         assert_eq!(got.heat_note, "369 赞");
@@ -861,5 +886,35 @@ mod tests {
             Some("2026-09-17T08:00:00Z")
         );
         assert!(get_candidate(&c, "没这条").unwrap().is_none());
+    }
+
+    #[test]
+    fn 人工改档后不再挂在待核结转里() {
+        let (c, r) = setup(1);
+        upsert_candidate(&c, &cand("k1", 1)).unwrap();
+        upsert_candidate(&c, &cand("k2", 1)).unwrap();
+        put_judgement(
+            &c,
+            r,
+            &judgement("k1", Tier::PendingCheck, true),
+            &[],
+            "m",
+            "v",
+        )
+        .unwrap();
+        put_judgement(
+            &c,
+            r,
+            &judgement("k2", Tier::PendingCheck, true),
+            &[],
+            "m",
+            "v",
+        )
+        .unwrap();
+        crate::workbench::put_override(&c, r, "k1", Tier::Alternate, "正文已说明", "主编").unwrap();
+        assert_eq!(open_pending_checks(&c, 10).unwrap(), ["k2"]);
+        let counts = effective_tier_counts(&c, r).unwrap();
+        assert!(counts.contains(&("alternate".into(), 1)));
+        assert!(counts.contains(&("pending_check".into(), 1)));
     }
 }

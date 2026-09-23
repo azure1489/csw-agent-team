@@ -36,6 +36,7 @@ pub mod prompt;
 pub mod record;
 pub mod rounds;
 pub mod store;
+pub mod topics;
 pub mod types;
 pub mod vector;
 pub mod window;

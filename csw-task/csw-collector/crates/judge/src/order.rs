@@ -2,12 +2,11 @@
 //!
 //! # 排序由代码算，不由模型给
 //!
-//! 顺序是：**先按档，再按成立的维度数，再按相对账号基线的热度，最后按发布时间。**
+//! 顺序是：**先按档，再看核心维度 gain 成不成立，再按相对账号基线的热度，最后按发布时间。**
 //! 全是能复算的量，所以同样的输入永远排出同样的顺序——这一点对对账是必需的。
 //!
-//! **不打数字分、不设权重、没有综合分。** 打分本来想解决的两件事在这里各有别的解法：
-//! 「几百条要有个顺序」由四档加成立维度数解决；「判断要可核」由逐维依据解决，
-//! 一句指向正文或某张图的依据比一个 0.73 好核得多。
+//! **不按成立的维度数排**（v2，09-22 反馈第一项）：六维不是打勾表，「六项成立所以靠前」
+//! 正是要避免的机械判断。**不打数字分、不设权重、没有综合分**；「判断要可核」由逐维依据解决。
 //!
 //! # 热度是输入的呈现，不是维度
 //!
@@ -15,7 +14,7 @@
 //! 拼成一句话，原样交给模型与台账。它**不参与**六维判断，也不参与档位。
 //! 它只在同档内部排序时起作用——「这一档里哪条更值得先看」。
 
-use csw_collector_core::types::{Candidate, Judgement, Tier, Verdict};
+use csw_collector_core::types::{Candidate, Dim, Judgement, Tier, Verdict};
 
 /// 档位的先后。**只有这四档，没有分数。**
 fn tier_rank(t: Tier) -> u8 {
@@ -45,7 +44,7 @@ pub fn sort_key(
     c: Option<&Candidate>,
 ) -> (
     u8,
-    std::cmp::Reverse<usize>,
+    u8,
     std::cmp::Reverse<i64>,
     std::cmp::Reverse<i64>,
     String,
@@ -61,7 +60,8 @@ pub fn sort_key(
         .unwrap_or(0);
     (
         tier_rank(j.tier),
-        std::cmp::Reverse(yes_count(j)),
+        // 核心维度成立的在前；其余五维不参与排序
+        u8::from(j.dim(Dim::Gain).map(|d| d.verdict) != Some(Verdict::Yes)),
         std::cmp::Reverse(heat),
         std::cmp::Reverse(posted),
         // 最后按键定死，保证完全确定
@@ -123,53 +123,18 @@ pub fn heat_note(c: &Candidate, baseline_likes: Option<i64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use csw_collector_core::types::{
-        Comparison, ComparisonVerdict, Dim, DimJudgement, Platform, ThreeSentences, Unanswered,
-    };
+    use csw_collector_core::types::Platform;
 
     fn j(key: &str, tier: Tier, yes: usize) -> Judgement {
-        Judgement {
-            candidate_key: key.into(),
-            tier,
-            dims: Dim::ALL
-                .into_iter()
-                .enumerate()
-                .map(|(i, d)| {
-                    (
-                        d,
-                        DimJudgement {
-                            verdict: if i < yes {
-                                Verdict::Yes
-                            } else {
-                                Verdict::Unclear
-                            },
-                            basis: "b".into(),
-                        },
-                    )
-                })
-                .collect(),
-            three_sentences: ThreeSentences {
-                what_changed: String::new(),
-                why_it_matters: String::new(),
-                how_different: String::new(),
-            },
-            unanswered: Unanswered::None,
-            comparison: Comparison {
-                verdict: ComparisonVerdict::Unrelated,
-                against: String::new(),
-                note: String::new(),
-            },
-            heat_note: String::new(),
-            look: String::new(),
-            image_seen: true,
-            gaps: vec![],
-            priority_hits: vec![],
-            lower_hits: vec![],
-            jev_disagreement: String::new(),
-            kb_refs: vec![],
-            memory_refs: vec![],
-            inputs_hash: "h".into(),
+        let mut j = Judgement::fixture(key, tier);
+        for (i, (_, d)) in j.dims.iter_mut().enumerate() {
+            d.verdict = if i < yes {
+                Verdict::Yes
+            } else {
+                Verdict::Unclear
+            };
         }
+        j
     }
 
     fn cand(key: &str, likes: Option<i64>, ratio: Option<f64>) -> Candidate {
@@ -196,18 +161,24 @@ mod tests {
     }
 
     #[test]
-    fn 先按档再按成立维度数() {
+    fn 先按档再看核心维度不看成立个数() {
+        // d 六维里成立 2 个（不含 gain），c 只成立 3 个（含 gain）——c 在前：
+        // 六维不是打勾表，不按成立个数排
         let mut js = vec![
-            j("c", Tier::Recommend, 3),
+            j("d", Tier::Alternate, 2),
             j("a", Tier::NotRecommend, 6),
-            j("b", Tier::Recommend, 5),
+            j("c", Tier::Alternate, 3),
+            j("b", Tier::Recommend, 1),
         ];
+        let mut e = j("e", Tier::Alternate, 6);
+        e.dims[2].1.verdict = Verdict::No; // gain 不成立，其余五项再齐也在后
+        js.push(e);
         sort_ledger(&mut js, |_| None);
         assert_eq!(
             js.iter()
                 .map(|x| x.candidate_key.as_str())
                 .collect::<Vec<_>>(),
-            ["b", "c", "a"]
+            ["b", "c", "d", "e", "a"]
         );
     }
 

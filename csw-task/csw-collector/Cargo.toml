@@ -67,6 +67,7 @@ toml = "1"
 utoipa = "5"
 jieba-rs = "0.10"
 wiremock = "0.6"
+url = "2"
 tempdir = "0.3"
 rand = "0.9"
 

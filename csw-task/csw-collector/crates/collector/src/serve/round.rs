@@ -205,6 +205,7 @@ pub fn register_and_enqueue(
     round: &Round,
     run_id: i64,
     judgements: &[Judgement],
+    topics: &[csw_collector_core::types::Topic],
     sweeps: &[SweepCount],
     by_key: &HashMap<String, Candidate>,
     carried: &HashSet<String>,
@@ -218,7 +219,9 @@ pub fn register_and_enqueue(
         .collect();
     let lookup = |k: &str| by_key.get(k).cloned();
 
-    let items = register::item_inputs(judgements, lookup);
+    // 按选题登记：同产品、同事件的多帖只占一个条目
+    let items = register::item_inputs_by_topic(judgements, topics, lookup);
+    let item_of = register::registered_item_of(topics);
     // 每一路各算各的：这一路来的候选里，判了几条、没判几条
     let per = |sweep_key: &str| {
         let col = register::collector_of(sweep_key);
@@ -237,7 +240,10 @@ pub fn register_and_enqueue(
     };
     let sweep_inputs =
         register::sweep_inputs(sweeps, (&round.window_start, &round.window_end), per);
-    let jis = register::judgement_inputs(judgements, lookup, carried, RUBRIC_VERSION)?;
+    let jis =
+        register::judgement_inputs_with_items(judgements, lookup, carried, RUBRIC_VERSION, |k| {
+            item_of.get(k).cloned()
+        })?;
     let last = register::enqueue_registration(conn, round.id, run_id, &items, &sweep_inputs, &jis)?;
 
     rounds::end_step(
@@ -379,7 +385,16 @@ async fn harvest_and_judge(
         StepCode::Materials,
         &round.instructions_hash,
     )?;
-    let items = match judge_items(conn, &prepared, svc, cfg, backtest.is_some(), Some(mat.id)).await
+    let items = match judge_items(
+        conn,
+        round.id,
+        &prepared,
+        svc,
+        cfg,
+        backtest.is_some(),
+        Some(mat.id),
+    )
+    .await
     {
         Ok(items) => {
             rounds::end_step(
@@ -405,31 +420,56 @@ async fn harvest_and_judge(
     // 三、五：合并与逐条判断在同一个流水线里做，合并不单独成步（页面上标「随判断」）
     let step = rounds::begin_step(conn, round.id, StepCode::Judge, &round.instructions_hash)?;
     // 判之前先把 Van 否过的同一件事挡掉。挡下来的不进模型，单独出一行台账。
-    let (items, excluded) = apply_exclusions(conn, round, svc, items).await;
+    let (mut items, excluded) = apply_exclusions(conn, round, svc, items).await;
     let cache = JudgeCache { conn };
-    let outcome = csw_collector_judge::pipeline::run(
-        &items,
-        &csw_collector_judge::pipeline::Deps {
-            model: &svc.model,
-            jev: svc.jev.as_ref(),
-            work_standard: standard,
-            batch_concurrency: cfg.model.concurrency,
-            on_batch: None,
-            // 预取轮判过、且输入一点没变的，直接拿
-            cached: caches
-                .judgements
-                .then_some(&cache as &dyn csw_collector_judge::pipeline::Cached),
-        },
-    )
-    .await;
+    // 只送 Van 确认过的准则卡；没确认的一张都不送（09-23 用户拍板）
+    let confirmed_rules = csw_collector_judge::memory::confirmed_rules(conn).unwrap_or_else(|e| {
+        tracing::warn!("读准则卡失败，这一轮不带准则卡：{e:#}");
+        Vec::new()
+    });
+    let deps = csw_collector_judge::pipeline::Deps {
+        model: &svc.model,
+        jev: svc.jev.as_ref(),
+        work_standard: standard,
+        batch_concurrency: cfg.model.concurrency,
+        on_batch: None,
+        // 预取轮判过、且输入一点没变的，直接拿
+        cached: caches
+            .judgements
+            .then_some(&cache as &dyn csw_collector_judge::pipeline::Cached),
+        confirmed_rules: &confirmed_rules,
+    };
+    let mut outcome = csw_collector_judge::pipeline::run(&items, &deps).await;
+
+    // 定点补读：关键内容在外链、没读到的，抓一次外链正文再重判。
+    // 回测要可复现，不补读。
+    let refetch = if backtest.is_none() && cfg.limits.refetch_per_round > 0 {
+        refetch_and_rejudge(
+            conn,
+            round,
+            &mut items,
+            &mut outcome,
+            &deps,
+            cfg.limits.refetch_per_round,
+        )
+        .await
+    } else {
+        RefetchCounts::default()
+    };
 
     for j in outcome.judgements.iter().chain(excluded.iter()) {
-        let flags: Vec<String> = outcome
-            .flags
-            .iter()
-            .filter(|f| f.candidate_key == j.candidate_key)
-            .map(|f| f.note())
-            .collect();
+        let mut flags: Vec<String> = outcome
+            .rule_notes
+            .get(&j.candidate_key)
+            .cloned()
+            .unwrap_or_default();
+        flags.extend(
+            outcome
+                .flags
+                .iter()
+                .filter(|f| f.candidate_key == j.candidate_key)
+                .map(|f| f.note()),
+        );
         // 一条写不进去不该让整轮停下——它会留在「没判」里被自查抓到
         if let Err(e) =
             ledger::put_judgement(conn, round.id, j, &flags, &cfg.model.model, RUBRIC_VERSION)
@@ -437,6 +477,21 @@ async fn harvest_and_judge(
             tracing::warn!(候选 = %j.candidate_key, 原因 = %format!("{e:#}"), "这条判断没落库");
         }
     }
+
+    // 选题层：同产品、同事件的多帖合成一个选题，推荐位按选题算
+    let mut judgements = outcome.judgements;
+    judgements.extend(excluded.iter().cloned());
+    let by_key: HashMap<String, Candidate> = prepared
+        .iter()
+        .map(|p| (p.candidate.candidate_key.clone(), p.candidate.clone()))
+        .collect();
+    let topics = build_topics(svc, &outcome.groups, &judgements, &by_key).await;
+    if let Err(e) = csw_collector_core::topics::put_topics(conn, round.id, &topics) {
+        tracing::warn!("选题没落库：{e:#}");
+    }
+    let topic_counts = csw_collector_judge::topic::counts(&topics, &judgements);
+
+    let notes: usize = outcome.rule_notes.values().map(Vec::len).sum();
     rounds::end_step(
         conn,
         step.id,
@@ -446,31 +501,250 @@ async fn harvest_and_judge(
             StepStatus::Partial
         },
         &serde_json::json!({
-            "判了": outcome.judgements.len(),
+            "判了": judgements.len() - excluded.len(),
             "其中复用": outcome.reused.len(),
             "未判": outcome.unjudged.len(),
             "规则排除": excluded.len(),
             "合并成事件": outcome.groups.len(),
             "被标出的依据": outcome.flags.len(),
+            "口径留痕": notes,
+            "口径重判": outcome.rejudged.len(),
+            "补读": refetch.tried,
+            "补读取到": refetch.fetched,
+            "补读后重判": refetch.rejudged,
+            "选题": topic_counts,
         }),
         &outcome.unjudged.join("、"),
     )?;
 
     Ok(Judged {
-        by_key: prepared
-            .iter()
-            .map(|p| (p.candidate.candidate_key.clone(), p.candidate.clone()))
-            .collect(),
+        by_key,
         reused_judgements: outcome.reused.len(),
         reused_recognition: prepared.iter().filter(|p| p.reused).count(),
         prepared,
         sweeps,
-        judgements: {
-            let mut all = outcome.judgements;
-            all.extend(excluded);
-            all
-        },
+        judgements,
+        topics,
     })
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct RefetchCounts {
+    tried: usize,
+    fetched: usize,
+    rejudged: usize,
+}
+
+/// 正文里提示「全文在外链」的说法。命中且 Jev 觉得有价值的，也补读。
+const LINK_HINTS: [&str; 10] = [
+    "link in bio",
+    "linkinbio",
+    "主页链接",
+    "全文",
+    "官网",
+    "详见",
+    "完整内容",
+    "プロフィールのリンク",
+    "詳しくは",
+    "read more",
+];
+
+/// 定点补读（09-22 反馈第三项）：关键内容没取到的待核条目，抓一次外链正文再重判一次。
+///
+/// **只抓正文里的地址**，经出网防护（封内网、回环、云元数据地址）；每轮至多 `cap` 条。
+/// 抓没抓到都如实回写缺口的「已尝试」，抓不到的把下一步交给主编。
+async fn refetch_and_rejudge(
+    conn: &Connection,
+    round: &Round,
+    items: &mut [csw_collector_judge::pipeline::Item<'_>],
+    out: &mut csw_collector_judge::pipeline::Outcome,
+    deps: &csw_collector_judge::pipeline::Deps<'_>,
+    cap: usize,
+) -> RefetchCounts {
+    use csw_collector_core::types::{Dim, GapLevel, GapOwner, Tier};
+    use csw_collector_harvest::fetch;
+    use csw_collector_judge::rules;
+
+    let mut counts = RefetchCounts::default();
+    let gain_of = |key: &str| {
+        out.triages
+            .iter()
+            .find(|t| t.candidate_key == key)
+            .and_then(|t| {
+                t.dims
+                    .iter()
+                    .find(|(d, _)| *d == Dim::Gain)
+                    .map(|(_, p)| *p)
+            })
+            .unwrap_or(0.0)
+    };
+    let targets: Vec<String> = out
+        .judgements
+        .iter()
+        .filter(|j| j.tier == Tier::PendingCheck && j.image_seen)
+        .filter(|j| {
+            rules::wants_refetch(j)
+                || items
+                    .iter()
+                    .find(|it| it.candidate.candidate_key == j.candidate_key)
+                    .is_some_and(|it| {
+                        let t = format!("{}\n{}", it.candidate.text, it.candidate.translated)
+                            .to_lowercase();
+                        LINK_HINTS.iter().any(|h| t.contains(h)) && gain_of(&j.candidate_key) >= 0.5
+                    })
+        })
+        .map(|j| j.candidate_key.clone())
+        .take(cap)
+        .collect();
+    if targets.is_empty() {
+        return counts;
+    }
+    let client = match csw_collector_harvest::netguard::guarded_client(fetch::TIMEOUT, false) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("补读客户端建不起来，这一轮不补读：{e:#}");
+            return counts;
+        }
+    };
+
+    // key → 每个地址的结果（中文）
+    let mut tried: HashMap<String, Vec<String>> = HashMap::new();
+    let mut again: Vec<usize> = Vec::new();
+    for key in &targets {
+        let Some(i) = items
+            .iter()
+            .position(|it| &it.candidate.candidate_key == key)
+        else {
+            continue;
+        };
+        counts.tried += 1;
+        let text = format!(
+            "{}\n{}",
+            items[i].candidate.text, items[i].candidate.translated
+        );
+        let urls = fetch::urls_in(&text);
+        if urls.is_empty() {
+            tried.insert(key.clone(), vec!["正文里没有可补读的链接".into()]);
+            continue;
+        }
+        let mut got = Vec::new();
+        let mut notes = Vec::new();
+        for u in urls {
+            let f = fetch::fetch_text(&client, &u, false).await;
+            let _ = csw_collector_core::topics::put_refetch(
+                conn,
+                round.id,
+                &csw_collector_core::topics::RefetchRow {
+                    candidate_key: key.clone(),
+                    url: f.url.clone(),
+                    status: f.status.as_str().into(),
+                    http_status: f.http_status,
+                    bytes: f.bytes,
+                    text: f.text.clone(),
+                    error: f.error.clone(),
+                },
+            );
+            notes.push(format!("补读 {}：{}", f.url, f.status.cn()));
+            if f.status == fetch::FetchStatus::Ok && !f.text.trim().is_empty() {
+                got.push(csw_collector_judge::verdict::Refetched {
+                    url: f.url,
+                    text: f.text,
+                });
+            }
+        }
+        tried.insert(key.clone(), notes);
+        if !got.is_empty() {
+            counts.fetched += 1;
+            items[i].refetched = got;
+            again.push(i);
+        }
+    }
+
+    if !again.is_empty() {
+        let redone =
+            csw_collector_judge::pipeline::judge_again(items, &again, deps, &out.triages).await;
+        counts.rejudged = redone.judgements.len();
+        for j in redone.judgements {
+            let key = j.candidate_key.clone();
+            if let Some(pos) = out.judgements.iter().position(|x| x.candidate_key == key) {
+                out.judgements[pos] = j;
+            }
+            out.flags.retain(|f| f.candidate_key != key);
+            let notes = out.rule_notes.entry(key.clone()).or_default();
+            notes.clear();
+            notes.extend(redone.rule_notes.get(&key).cloned().unwrap_or_default());
+        }
+        out.flags.extend(redone.flags);
+        out.rejudged.extend(redone.rejudged);
+    }
+
+    // 「已尝试」回写进影响判断的缺口；还没结的下一步交给主编
+    for j in out.judgements.iter_mut() {
+        let Some(notes) = tried.get(&j.candidate_key) else {
+            continue;
+        };
+        let still_pending = j.tier == Tier::PendingCheck;
+        let gap = j.gaps.iter_mut().find(|g| g.level == GapLevel::Decision);
+        if let Some(g) = gap {
+            if !g.tried.is_empty() {
+                g.tried.push('；');
+            }
+            g.tried.push_str(&notes.join("；"));
+            if still_pending {
+                g.owner = GapOwner::Editor;
+                g.next = "补读没解决：请人工打开原帖与外链核对后改档".into();
+            }
+        }
+    }
+    counts
+}
+
+/// 建选题，并对多帖的推荐 / 备选选题做一次综合。综合失败不影响选题本身。
+async fn build_topics(
+    svc: &super::services::Services,
+    groups: &[csw_collector_core::types::EventGroup],
+    js: &[Judgement],
+    by_key: &HashMap<String, Candidate>,
+) -> Vec<csw_collector_core::types::Topic> {
+    use csw_collector_judge::topic;
+    let mut topics = topic::build(groups, js);
+    let todo: Vec<String> = topics
+        .iter()
+        .filter(|t| topic::needs_synthesis(t))
+        .map(|t| t.topic_key.clone())
+        .collect();
+    for key in todo {
+        let Some(t) = topics.iter().find(|t| t.topic_key == key).cloned() else {
+            continue;
+        };
+        let members: Vec<(&Candidate, &Judgement)> = t
+            .members
+            .iter()
+            .filter_map(|k| Some((by_key.get(k)?, js.iter().find(|j| &j.candidate_key == k)?)))
+            .collect();
+        if members.len() < 2 {
+            continue;
+        }
+        match topic::synthesize(&svc.model, &t, &members).await {
+            Ok(mut s) => {
+                if let Some(jev) = svc.jev.as_ref() {
+                    match topic::verify_new_info(jev, &s.synthesis.per_member, |k| {
+                        by_key
+                            .get(k)
+                            .map(|c| format!("{}\n{}", c.text, c.translated))
+                    })
+                    .await
+                    {
+                        Ok(bad) => s.synthesis.unsupported = bad,
+                        Err(e) => tracing::warn!(选题 = %key, "新增信息核对失败：{e:#}"),
+                    }
+                }
+                topic::apply(&mut topics, &key, s, js);
+            }
+            Err(e) => tracing::warn!(选题 = %key, "选题综合失败，保留逐帖信息：{e:#}"),
+        }
+    }
+    topics
 }
 
 /// 第 2–5 步的产物。
@@ -478,6 +752,8 @@ struct Judged {
     prepared: Vec<Prepared>,
     sweeps: Vec<SweepCount>,
     judgements: Vec<Judgement>,
+    /// 选题层：每条有结论的候选恰好属于一个选题
+    topics: Vec<csw_collector_core::types::Topic>,
     by_key: HashMap<String, Candidate>,
     /// 直接拿了旧结论、没问模型的条数
     reused_judgements: usize,
@@ -514,6 +790,7 @@ pub async fn run_intake(
             round,
             run_id,
             &j.judgements,
+            &j.topics,
             &j.sweeps,
             &j.by_key,
             &carried,
@@ -525,11 +802,24 @@ pub async fn run_intake(
     let mut counts = count_round(conn, round.id, &j.prepared)?;
 
     // 六、深核首批。失败不抛错——条目照样登记，只在缺口里写明。
+    // 按选题核：同一选题只核代表帖，其余帖子的材料已经并进了选题综合
+    let secondary: HashSet<&str> = j
+        .topics
+        .iter()
+        .flat_map(|t| t.members.iter().filter(|m| **m != t.primary_key))
+        .map(String::as_str)
+        .collect();
+    let primaries: Vec<Judgement> = j
+        .judgements
+        .iter()
+        .filter(|x| !secondary.contains(x.candidate_key.as_str()))
+        .cloned()
+        .collect();
     let deep_out = super::finish::deepcheck(
         conn,
         round,
         cfg,
-        &j.judgements,
+        &primaries,
         &j.by_key,
         &j.prepared,
         &standard,
@@ -541,6 +831,7 @@ pub async fn run_intake(
         counts,
         Finished {
             judgements: j.judgements,
+            topics: j.topics,
             sweeps: j.sweeps,
             by_key: j.by_key,
             deep_gaps: super::finish::deepcheck_gaps(&deep_out),
@@ -674,6 +965,7 @@ impl csw_collector_judge::pipeline::Cached for JudgeCache<'_> {
 /// 一轮跑到登记为止的产物，交给「自查 → 交付物 → 提交」那三步。
 pub struct Finished {
     pub judgements: Vec<Judgement>,
+    pub topics: Vec<csw_collector_core::types::Topic>,
     pub sweeps: Vec<SweepCount>,
     pub by_key: HashMap<String, Candidate>,
     /// 深核补出来的缺口，按条目键
@@ -775,6 +1067,7 @@ async fn apply_exclusions<'a>(
 /// 把采集产物与检索结果拼成判断那一步要的输入。
 async fn judge_items<'a>(
     conn: &Connection,
+    round_id: i64,
     prepared: &'a [Prepared],
     svc: &'a super::services::Services,
     cfg: &Config,
@@ -814,10 +1107,46 @@ async fn judge_items<'a>(
         .await
         .unwrap_or_default();
 
-        let mut materials = csw_collector_judge::materials::assemble(&retrieved, &[]);
+        // 命中的品牌键：查重核「同品牌历史正文缺失」、挑选题记忆、同品牌合并都用它
+        let mut brand_keys: Vec<String> = svc
+            .brands
+            .hits(&text)
+            .keys()
+            .map(|b| csw_collector_kb::brands::brand_key(b))
+            .filter(|k| !k.is_empty())
+            .collect();
+        brand_keys.sort();
+        brand_keys.dedup();
+
+        // 第五类：这条候选在之前几轮的结论（预取轮不算）。回测时藏起来，免得拿答案当材料。
+        let prior: Vec<csw_collector_judge::materials::PriorLedgerItem> = if hide_self {
+            Vec::new()
+        } else {
+            ledger::prior_for(conn, round_id, &p.candidate.candidate_key, 3)
+                .unwrap_or_default()
+                .into_iter()
+                .map(
+                    |(tier, at, headline)| csw_collector_judge::materials::PriorLedgerItem {
+                        candidate_key: p.candidate.candidate_key.clone(),
+                        title: headline,
+                        tier,
+                        decided_at: at,
+                        note: String::new(),
+                    },
+                )
+                .collect()
+        };
+        let mut materials = csw_collector_judge::materials::assemble(&retrieved, &prior);
         // Van 的原话送不送模型要单独拍板，没拍板前只送结论与理由码
         if !cfg.features.send_van_quotes_to_model {
             csw_collector_judge::materials::strip_van_quotes(&mut materials);
+        }
+        // 选题记忆：同品牌的采用 / 否决案例，只带对象与结论，**不带原话**。回测时不给——
+        // 被回测的那条自己的决定就在案例库里
+        if !hide_self {
+            materials.extend(
+                csw_collector_judge::memory::materials_for(conn, &brand_keys).unwrap_or_default(),
+            );
         }
         // **真的把图读出来送进判断。**
         //
@@ -843,6 +1172,8 @@ async fn judge_items<'a>(
             image_seen: p.image_seen(),
             image_gap: p.failed_media.join("；"),
             heat_note: csw_collector_judge::order::heat_note(&p.candidate, None),
+            brand_keys,
+            refetched: Vec::new(),
         });
     }
     Ok(out)

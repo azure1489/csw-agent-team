@@ -413,8 +413,7 @@ mod tests {
     use crate::ledger;
     use crate::rounds::{NewRound, open_round};
     use crate::types::{
-        Candidate, Comparison, ComparisonVerdict, Dim, DimJudgement, Judgement, MediaKind,
-        MediaRef, Platform, RoundKind, RoundTrigger, ThreeSentences, Unanswered, Verdict,
+        Candidate, Judgement, MediaKind, MediaRef, Platform, RoundKind, RoundTrigger,
     };
 
     fn setup() -> (Connection, i64) {
@@ -478,41 +477,8 @@ mod tests {
 
     fn judged(c: &Connection, round: i64, key: &str, tier: Tier) {
         let j = Judgement {
-            candidate_key: key.into(),
-            tier,
-            dims: Dim::ALL
-                .into_iter()
-                .map(|d| {
-                    (
-                        d,
-                        DimJudgement {
-                            verdict: Verdict::Yes,
-                            basis: "正文第一句".into(),
-                        },
-                    )
-                })
-                .collect(),
-            three_sentences: ThreeSentences {
-                what_changed: "甲".into(),
-                why_it_matters: "乙".into(),
-                how_different: "丙".into(),
-            },
-            unanswered: Unanswered::None,
-            comparison: Comparison {
-                verdict: ComparisonVerdict::Unrelated,
-                against: String::new(),
-                note: String::new(),
-            },
-            heat_note: String::new(),
-            look: String::new(),
-            image_seen: true,
-            gaps: vec![],
-            priority_hits: vec![],
-            lower_hits: vec![],
-            jev_disagreement: String::new(),
-            kb_refs: vec![],
-            memory_refs: vec![],
             inputs_hash: "ih".into(),
+            ..Judgement::fixture(key, tier)
         };
         ledger::put_judgement(c, round, &j, &[], "m", "v1").unwrap();
     }

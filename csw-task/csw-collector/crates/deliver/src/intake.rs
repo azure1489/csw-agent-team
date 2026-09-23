@@ -9,7 +9,10 @@
 
 use std::fmt::Write as _;
 
-use csw_collector_core::types::{Candidate, Judgement, Tier, Verdict};
+use csw_collector_core::types::{
+    Candidate, FactSource, Gap, GapLevel, GapOwner, HitState, Judgement, NoveltyKind, Tier, Topic,
+    Verdict,
+};
 
 /// 台账正文。`by_key` 用来补候选侧的信息（链接、时间），取不到就略过那几项。
 pub fn ledger_body(
@@ -45,6 +48,85 @@ pub fn ledger_body(
     s
 }
 
+/// 选题一览：推荐与备选的选题，每题列代表帖与同题的其余帖子（09-22 反馈第五项）。
+///
+/// 没有多帖选题、也没有推荐 / 备选时返回空串，不占版面。
+pub fn topics_section(
+    topics: &[Topic],
+    js: &[Judgement],
+    by_key: impl Fn(&str) -> Option<Candidate>,
+) -> String {
+    let shown: Vec<&Topic> = topics
+        .iter()
+        .filter(|t| matches!(t.tier, Some(Tier::Recommend | Tier::Alternate)))
+        .collect();
+    if shown.is_empty() {
+        return String::new();
+    }
+    let posts = |t: Tier| js.iter().filter(|j| j.tier == t).count();
+    let tps = |t: Tier| shown.iter().filter(|x| x.tier == Some(t)).count();
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "## 选题一览（推荐 {} 题 / {} 帖，备选 {} 题 / {} 帖）\n",
+        tps(Tier::Recommend),
+        posts(Tier::Recommend),
+        tps(Tier::Alternate),
+        posts(Tier::Alternate)
+    );
+    for t in shown {
+        let _ = writeln!(
+            s,
+            "### 【{}】{}\n",
+            t.tier.map(tier_name).unwrap_or(""),
+            if t.headline.is_empty() {
+                &t.topic_key
+            } else {
+                &t.headline
+            }
+        );
+        for m in &t.members {
+            let url = by_key(m).map(|c| c.url).unwrap_or_default();
+            let note = t
+                .synthesis
+                .per_member
+                .iter()
+                .find(|n| &n.candidate_key == m)
+                .map(|n| {
+                    if n.is_duplicate {
+                        "（与其余帖子重复）".to_string()
+                    } else if n.new_info.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!("（新增：{}）", n.new_info)
+                    }
+                })
+                .unwrap_or_default();
+            let tag = if *m == t.primary_key {
+                "代表帖"
+            } else {
+                "同题"
+            };
+            let _ = writeln!(s, "- {tag} `{m}` {url}{note}");
+        }
+        if !t.synthesis.shared_facts.is_empty() {
+            let _ = writeln!(s, "- 共同事实：{}", t.synthesis.shared_facts.join("；"));
+        }
+        if !t.synthesis.unsupported.is_empty() {
+            let _ = writeln!(
+                s,
+                "- 以下「新增」在该帖材料里核不到，请人过一眼：{}",
+                t.synthesis.unsupported.join("；")
+            );
+        }
+        if !t.merge_note.is_empty() {
+            let _ = writeln!(s, "- 合并依据：{}", t.merge_note);
+        }
+        s.push('\n');
+    }
+    s
+}
+
 fn counts_line(js: &[Judgement]) -> String {
     let n = |t: Tier| js.iter().filter(|j| j.tier == t).count();
     let unseen = js.iter().filter(|j| !j.image_seen).count();
@@ -60,10 +142,13 @@ fn counts_line(js: &[Judgement]) -> String {
 }
 
 fn write_one(s: &mut String, j: &Judgement, c: Option<&Candidate>) {
-    let title = c
-        .map(|c| first_line(&c.text))
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| j.candidate_key.clone());
+    let title = if j.headline.trim().is_empty() {
+        c.map(|c| first_line(&c.text))
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| j.candidate_key.clone())
+    } else {
+        j.headline.clone()
+    };
     let brand = c.map(|c| c.account.clone()).unwrap_or_default();
     let _ = writeln!(s, "### {brand}｜{title}\n");
     let _ = writeln!(s, "- 条目键：`{}`", j.candidate_key);
@@ -85,16 +170,78 @@ fn write_one(s: &mut String, j: &Judgement, c: Option<&Candidate>) {
                 .unwrap_or_else(|| "不详".into())
         );
     }
-    if !j.heat_note.is_empty() {
-        let _ = writeln!(s, "- 热度：{}（是输入的呈现，不是维度）", j.heat_note);
-    }
     let _ = writeln!(
         s,
         "- 读到实图：{}",
         if j.image_seen { "是" } else { "**否**" }
     );
 
-    let _ = writeln!(s, "\n**六维**\n");
+    // 顺序照反馈第六项：关键缺口、查重、推荐理由在前，六维依据与热度在后
+    let decision: Vec<&Gap> = j
+        .gaps
+        .iter()
+        .filter(|g| g.level == GapLevel::Decision)
+        .collect();
+    if !decision.is_empty() {
+        let _ = writeln!(s, "\n**影响判断的缺口**\n");
+        for g in decision {
+            write_gap(s, g);
+        }
+    }
+
+    let _ = writeln!(s, "\n**查重**：{}", comparison_name(j.comparison.verdict));
+    for h in &j.comparison.hits {
+        let _ = writeln!(
+            s,
+            "- {}《{}》（{}{}）{}",
+            if h.ref_no.is_empty() {
+                String::new()
+            } else {
+                format!("[{}] ", h.ref_no)
+            },
+            h.title,
+            hit_state_name(h.state),
+            if h.published_at.is_empty() {
+                String::new()
+            } else {
+                format!("，{}", h.published_at)
+            },
+            if h.dup_fact.trim().is_empty() {
+                String::new()
+            } else {
+                format!("：重复的事实——{}", h.dup_fact)
+            }
+        );
+    }
+    if !j.comparison.note.trim().is_empty() {
+        let _ = writeln!(s, "{}", j.comparison.note);
+    }
+
+    let t = &j.three_sentences;
+    if [&t.what, &t.why_worth, &t.grounds]
+        .iter()
+        .any(|x| !x.trim().is_empty())
+    {
+        let _ = writeln!(s, "\n**三句话**\n");
+        let _ = writeln!(s, "- 是什么：{}", t.what);
+        let _ = writeln!(s, "- 为什么值得看：{}", t.why_worth);
+        let _ = writeln!(s, "- 依据：{}", t.grounds);
+    }
+    let _ = writeln!(
+        s,
+        "- 看点类型：{}{}",
+        novelty_name(j.novelty.kind),
+        if j.novelty.prior_evidence.trim().is_empty() {
+            String::new()
+        } else {
+            format!("（旧款依据：{}）", j.novelty.prior_evidence)
+        }
+    );
+    if j.unanswered != csw_collector_core::types::Unanswered::None {
+        let _ = writeln!(s, "- 答不清的原因：{}", unanswered_name(j.unanswered));
+    }
+
+    let _ = writeln!(s, "\n**六维**（值得推荐的价值是核心，其余为支撑）\n");
     for (d, dj) in &j.dims {
         let _ = writeln!(
             s,
@@ -105,32 +252,32 @@ fn write_one(s: &mut String, j: &Judgement, c: Option<&Candidate>) {
         );
     }
 
-    let t = &j.three_sentences;
-    if [&t.what_changed, &t.why_it_matters, &t.how_different]
-        .iter()
-        .any(|x| !x.trim().is_empty())
-    {
-        let _ = writeln!(s, "\n**三句话**\n");
-        let _ = writeln!(s, "- 发生了什么变化：{}", t.what_changed);
-        let _ = writeln!(s, "- 为什么值得户外用户知道：{}", t.why_it_matters);
-        let _ = writeln!(s, "- 它和以前有什么不一样：{}", t.how_different);
-    }
-    if j.unanswered != csw_collector_core::types::Unanswered::None {
-        let _ = writeln!(s, "- 答不清的原因：{}", unanswered_name(j.unanswered));
-    }
-
+    let r = &j.readiness;
     let _ = writeln!(
         s,
-        "\n**对照结论**：{}{}",
-        comparison_name(j.comparison.verdict),
-        if j.comparison.against.is_empty() {
+        "\n**制作条件**（不参与定档）：事实来源 {}；可作配图 {} 张；资料{}{}",
+        fact_source_name(r.fact_source),
+        r.usable_images,
+        if r.material_complete { "齐" } else { "未齐" },
+        if r.note.trim().is_empty() {
             String::new()
         } else {
-            format!("（对照 {}）", j.comparison.against)
+            format!("；{}", r.note)
         }
     );
-    if !j.comparison.note.trim().is_empty() {
-        let _ = writeln!(s, "{}", j.comparison.note);
+    let rest: Vec<&Gap> = j
+        .gaps
+        .iter()
+        .filter(|g| g.level != GapLevel::Decision)
+        .collect();
+    if !rest.is_empty() {
+        let _ = writeln!(s, "\n**影响成稿的缺口与表达边界**\n");
+        for g in rest {
+            write_gap(s, g);
+        }
+    }
+    if !j.heat_note.is_empty() {
+        let _ = writeln!(s, "\n**热度**：{}（是输入的呈现，不是维度）", j.heat_note);
     }
     if !j.look.trim().is_empty() {
         let _ = writeln!(s, "\n**实图所见**：{}", j.look);
@@ -138,7 +285,7 @@ fn write_one(s: &mut String, j: &Judgement, c: Option<&Candidate>) {
     for (label, xs) in [
         ("优先关注", &j.priority_hits),
         ("降低优先级", &j.lower_hits),
-        ("缺口", &j.gaps),
+        ("参照的选题记忆", &j.memory_refs),
     ] {
         if !xs.is_empty() {
             let _ = writeln!(s, "\n**{label}**：{}", xs.join("、"));
@@ -148,6 +295,61 @@ fn write_one(s: &mut String, j: &Judgement, c: Option<&Candidate>) {
         let _ = writeln!(s, "\n**与初评的分歧**：{}", j.jev_disagreement);
     }
     s.push('\n');
+}
+
+fn write_gap(s: &mut String, g: &Gap) {
+    let _ = write!(s, "- {}：{}", gap_level_name(g.level), g.what);
+    let mut tail = vec![format!("由{}处理", owner_name(g.owner))];
+    if !g.tried.trim().is_empty() {
+        tail.push(format!("已尝试：{}", g.tried));
+    }
+    if !g.next.trim().is_empty() {
+        tail.push(format!("下一步：{}", g.next));
+    }
+    let _ = writeln!(s, "（{}）", tail.join("；"));
+}
+
+pub fn gap_level_name(l: GapLevel) -> &'static str {
+    match l {
+        GapLevel::Decision => "影响判断",
+        GapLevel::Production => "影响成稿",
+        GapLevel::Boundary => "表达边界",
+    }
+}
+
+pub fn owner_name(o: GapOwner) -> &'static str {
+    match o {
+        GapOwner::Collector => "收集员",
+        GapOwner::Editor => "主编",
+        GapOwner::Van => "Van",
+    }
+}
+
+fn hit_state_name(h: HitState) -> &'static str {
+    match h {
+        HitState::Published => "正式发布",
+        HitState::Draft => "已推草稿箱",
+        HitState::Generated => "仅生成稿",
+        HitState::Decision => "03 决定",
+        HitState::Unknown => "状态不详",
+    }
+}
+
+fn novelty_name(k: NoveltyKind) -> &'static str {
+    match k {
+        NoveltyKind::ExistingFeature => "产品现有特点",
+        NoveltyKind::EvidencedChange => "有证据的新变化",
+        NoveltyKind::ExplainableDesign => "值得解释的设计或文化内容",
+    }
+}
+
+fn fact_source_name(f: FactSource) -> &'static str {
+    match f {
+        FactSource::Primary => "原始发布",
+        FactSource::Reshared => "转载",
+        FactSource::BrandClaimOnly => "仅品牌自述",
+        FactSource::Unknown => "不详",
+    }
 }
 
 fn first_line(s: &str) -> String {
@@ -171,12 +373,12 @@ fn tier_name(t: Tier) -> &'static str {
 fn dim_name(d: csw_collector_core::types::Dim) -> &'static str {
     use csw_collector_core::types::Dim::*;
     match d {
-        Change => "具体变化",
-        Use => "使用关联",
-        Gain => "信息增量",
-        Compare => "比较参照",
-        Explain => "可解释性",
-        Csw => "CSW 视角",
+        Change => "具体看点",
+        Use => "与读者有关",
+        Gain => "值得推荐的价值",
+        Compare => "差异与背景",
+        Explain => "报道角度与依据",
+        Csw => "CSW 适配度",
     }
 }
 
@@ -203,7 +405,8 @@ fn comparison_name(v: csw_collector_core::types::ComparisonVerdict) -> &'static 
     match v {
         SameFactNoGain => "同一事实、无增量",
         SameBrandWithGain => "同品牌、有增量",
-        Unrelated => "不相干",
+        Unrelated => "无重复",
+        Unconfirmed => "查重未确认",
     }
 }
 
@@ -265,51 +468,42 @@ fn safe_name(key: &str) -> String {
 mod tests {
     use super::*;
     use csw_collector_core::types::{
-        Comparison, ComparisonVerdict, Dim, DimJudgement, Platform, ThreeSentences, Unanswered,
+        Comparison, ComparisonHit, ComparisonVerdict, Platform, ThreeSentences,
     };
 
     fn j(key: &str, tier: Tier, image_seen: bool) -> Judgement {
-        Judgement {
-            candidate_key: key.into(),
-            tier,
-            dims: Dim::ALL
-                .into_iter()
-                .map(|d| {
-                    (
-                        d,
-                        DimJudgement {
-                            verdict: Verdict::Yes,
-                            basis: format!("{d:?} 的依据"),
-                        },
-                    )
-                })
-                .collect(),
-            three_sentences: ThreeSentences {
-                what_changed: "换了结构".into(),
-                why_it_matters: "背得更稳".into(),
-                how_different: "上一代是软背板".into(),
-            },
-            unanswered: Unanswered::None,
-            comparison: Comparison {
-                verdict: ComparisonVerdict::SameBrandWithGain,
-                against: "r47 的那条".into(),
-                note: "多了发售日期".into(),
-            },
-            heat_note: "369 赞 · 常态 71 的 5.2×".into(),
-            look: "灰色主体、铝合金背板".into(),
-            image_seen,
-            gaps: if image_seen {
-                vec![]
-            } else {
-                vec!["未读到实图".into()]
-            },
-            priority_hits: vec!["老产品结构性改款".into()],
-            lower_hits: vec![],
-            jev_disagreement: String::new(),
-            kb_refs: vec![],
-            memory_refs: vec![],
-            inputs_hash: "h".into(),
+        let mut j = Judgement::fixture(key, tier);
+        for (d, dj) in &mut j.dims {
+            dj.basis = format!("{d:?} 的依据");
         }
+        j.headline = String::new();
+        j.three_sentences = ThreeSentences {
+            what: "山と道 背包的新背板".into(),
+            why_worth: "背得更稳".into(),
+            grounds: "正文写明换成铝合金背板".into(),
+        };
+        j.comparison = Comparison {
+            verdict: ComparisonVerdict::SameBrandWithGain,
+            against: "r47 的那条".into(),
+            note: "多了发售日期".into(),
+            hits: vec![ComparisonHit {
+                ref_no: "M1".into(),
+                title: "r47 的那条".into(),
+                state: HitState::Published,
+                body_available: true,
+                ..Default::default()
+            }],
+        };
+        j.heat_note = "369 赞 · 常态 71 的 5.2×".into();
+        j.look = "灰色主体、铝合金背板".into();
+        j.image_seen = image_seen;
+        j.gaps = if image_seen {
+            vec![]
+        } else {
+            vec![Gap::decision("未读到实图")]
+        };
+        j.priority_hits = vec!["老产品结构性改款".into()];
+        j
     }
 
     fn cand(key: &str) -> Candidate {
@@ -443,12 +637,12 @@ mod tests {
             Some(cand(k))
         });
         for name in [
-            "具体变化",
-            "使用关联",
-            "信息增量",
-            "比较参照",
-            "可解释性",
-            "CSW 视角",
+            "具体看点",
+            "与读者有关",
+            "值得推荐的价值",
+            "差异与背景",
+            "报道角度与依据",
+            "CSW 适配度",
         ] {
             assert!(body.contains(name), "少了 {name}");
         }
@@ -463,7 +657,22 @@ mod tests {
             Some(cand(k))
         });
         assert!(body.contains("读到实图：**否**"), "{body}");
-        assert!(body.contains("缺口**：未读到实图"), "{body}");
+        assert!(body.contains("影响判断的缺口"), "{body}");
+        assert!(
+            body.contains("- 影响判断：未读到实图（由收集员处理"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn 查重列出命中的文章与状态() {
+        let body = ledger_body(("A", "B"), &[j("k1", Tier::Recommend, true)], |k| {
+            Some(cand(k))
+        });
+        assert!(body.contains("**查重**：同品牌、有增量"), "{body}");
+        assert!(body.contains("[M1] 《r47 的那条》（正式发布"), "{body}");
+        // 关键缺口、查重、推荐理由在六维依据前面
+        assert!(body.find("**查重**").unwrap() < body.find("**六维**").unwrap());
     }
 
     #[test]
@@ -535,5 +744,36 @@ mod tests {
         let a = ledger_body(("A", "B"), &js, |k| Some(cand(k)));
         std::thread::sleep(std::time::Duration::from_millis(1100));
         assert_eq!(a, ledger_body(("A", "B"), &js, |k| Some(cand(k))));
+    }
+
+    #[test]
+    fn 选题一览按选题列帖子() {
+        let js = vec![
+            j("a", Tier::Recommend, true),
+            j("b", Tier::Recommend, true),
+            j("c", Tier::NotRecommend, true),
+        ];
+        let t = Topic {
+            topic_key: "a".into(),
+            primary_key: "a".into(),
+            members: vec!["a".into(), "b".into()],
+            tier: Some(Tier::Recommend),
+            headline: "夹克｜理由".into(),
+            synthesis: csw_collector_core::types::TopicSynthesis {
+                per_member: vec![csw_collector_core::types::MemberNote {
+                    candidate_key: "b".into(),
+                    new_info: String::new(),
+                    is_duplicate: true,
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let s = topics_section(&[t], &js, |k| Some(cand(k)));
+        assert!(s.contains("推荐 1 题 / 2 帖"), "{s}");
+        assert!(s.contains("代表帖 `a`"));
+        assert!(s.contains("同题 `b`"));
+        assert!(s.contains("与其余帖子重复"));
+        assert!(topics_section(&[], &js, |_| None).is_empty());
     }
 }

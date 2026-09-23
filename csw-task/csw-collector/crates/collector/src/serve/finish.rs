@@ -20,7 +20,9 @@ use rusqlite::{Connection, params};
 
 use csw_collector_core::Config;
 use csw_collector_core::rounds::{self, Round};
-use csw_collector_core::types::{Candidate, Judgement, StepCode, StepStatus, Tier};
+use csw_collector_core::types::{
+    Candidate, Gap, GapLevel, GapOwner, Judgement, StepCode, StepStatus, Tier,
+};
 use csw_collector_deepcheck::codex::{Codex, CodexConfig, DEFAULT_ENV_PASSTHROUGH};
 use csw_collector_deepcheck::run::{self as deep, Target};
 use csw_collector_deliver::index::Meta;
@@ -142,12 +144,24 @@ pub async fn deepcheck(
             let c = by_key.get(&j.candidate_key);
             Target {
                 candidate_key: j.candidate_key.clone(),
-                title: j.three_sentences.what_changed.clone(),
+                title: if j.headline.trim().is_empty() {
+                    j.three_sentences.what.clone()
+                } else {
+                    j.headline.clone()
+                },
                 url: c.map(|c| c.url.clone()).unwrap_or_default(),
                 text: c.map(|c| c.text.clone()).unwrap_or_default(),
                 images: local_images(prepared, &j.candidate_key, &cfg.blob_dir()),
                 verdict_summary: summarize(j),
-                gaps: j.gaps.clone(),
+                gaps: j
+                    .gaps
+                    .iter()
+                    .map(|g| {
+                        csw_collector_deliver::intake::gap_level_name(g.level).to_string()
+                            + "："
+                            + &g.what
+                    })
+                    .collect(),
             }
         })
         .collect();
@@ -199,11 +213,12 @@ fn summarize(j: &Judgement) -> String {
         .collect::<Vec<_>>()
         .join("；");
     format!(
-        "结论：{:?}\n六维：{dims}\n三句话：{} / {} / {}",
+        "结论：{:?}\n标题：{}\n六维：{dims}\n三句话（是什么 / 为什么值得看 / 依据）：{} / {} / {}",
         j.tier,
-        j.three_sentences.what_changed,
-        j.three_sentences.why_it_matters,
-        j.three_sentences.how_different
+        j.headline,
+        j.three_sentences.what,
+        j.three_sentences.why_worth,
+        j.three_sentences.grounds
     )
 }
 
@@ -283,6 +298,7 @@ pub fn build_deliverable(
     cfg: &Config,
     task_id: i64,
     judgements: &[Judgement],
+    topics: &[csw_collector_core::types::Topic],
     sweeps: &[SweepCount],
     by_key: &HashMap<String, Candidate>,
     extra_gaps: &[String],
@@ -292,6 +308,14 @@ pub fn build_deliverable(
 
     let mut body =
         intake::ledger_body((&round.window_start, &round.window_end), judgements, lookup);
+    // 选题一览放在逐帖台账前面：推荐位按选题算，同一个对象不让主编读好几遍
+    let section = intake::topics_section(topics, judgements, lookup);
+    if !section.is_empty() {
+        body = match body.find("\n## ") {
+            Some(i) => format!("{}\n{section}{}", &body[..i], &body[i..]),
+            None => format!("{body}\n{section}"),
+        };
+    }
     if !extra_gaps.is_empty() {
         // 红灯写在最前面：藏在末尾等于没写
         body = format!(
@@ -468,7 +492,8 @@ pub fn deepcheck_gaps(outcomes: &[deep::Outcome]) -> HashMap<String, Vec<String>
 /// 把深核补出来的缺口并进条目的缺口。
 ///
 /// **深核的缺口必须出现在台账里**：那是「这条还差什么」的最新一版，
-/// 只留在深核的线程日志里等于没人看得见。
+/// 只留在深核的线程日志里等于没人看得见。深核不推翻结论，
+/// 它补出来的都算「影响成稿」，由收集员接着补。
 pub fn merge_deepcheck_gaps(
     judgements: &mut [Judgement],
     deep_gaps: &HashMap<String, Vec<String>>,
@@ -478,8 +503,14 @@ pub fn merge_deepcheck_gaps(
         if let Some(gs) = deep_gaps.get(&j.candidate_key) {
             for g in gs {
                 // 深核可能把上一步已经写过的缺口再说一遍，不重复写
-                if !j.gaps.contains(g) {
-                    j.gaps.push(g.clone());
+                if !j.gaps.iter().any(|x| x.what == *g) {
+                    j.gaps.push(Gap {
+                        level: GapLevel::Production,
+                        what: g.clone(),
+                        owner: GapOwner::Collector,
+                        tried: "深核".into(),
+                        next: "成稿前补齐".into(),
+                    });
                     n += 1;
                 }
             }
@@ -491,48 +522,13 @@ pub fn merge_deepcheck_gaps(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use csw_collector_core::types::{
-        Comparison, ComparisonVerdict, Dim, DimJudgement, ThreeSentences, Unanswered, Verdict,
-    };
 
     fn j(key: &str, tier: Tier) -> Judgement {
-        Judgement {
-            candidate_key: key.into(),
-            tier,
-            dims: Dim::ALL
-                .into_iter()
-                .map(|d| {
-                    (
-                        d,
-                        DimJudgement {
-                            verdict: Verdict::Yes,
-                            basis: "b".into(),
-                        },
-                    )
-                })
-                .collect(),
-            three_sentences: ThreeSentences {
-                what_changed: "换了背板".into(),
-                why_it_matters: "乙".into(),
-                how_different: "丙".into(),
-            },
-            unanswered: Unanswered::None,
-            comparison: Comparison {
-                verdict: ComparisonVerdict::Unrelated,
-                against: String::new(),
-                note: String::new(),
-            },
-            heat_note: String::new(),
-            look: String::new(),
-            image_seen: tier != Tier::PendingCheck,
-            gaps: vec![],
-            priority_hits: vec![],
-            lower_hits: vec![],
-            jev_disagreement: String::new(),
-            kb_refs: vec![],
-            memory_refs: vec![],
-            inputs_hash: "ih".into(),
-        }
+        let mut j = Judgement::fixture(key, tier);
+        j.three_sentences.what = "换了背板".into();
+        j.image_seen = tier != Tier::PendingCheck;
+        j.inputs_hash = "ih".into();
+        j
     }
 
     #[test]
@@ -643,7 +639,7 @@ mod tests {
     #[test]
     fn 深核的缺口要并进台账() {
         let mut js = [j("k1", Tier::Recommend), j("k2", Tier::Recommend)];
-        js[0].gaps.push("缺发售日期".into());
+        js[0].gaps.push(Gap::decision("缺发售日期"));
         let mut deep = HashMap::new();
         deep.insert(
             "k1".to_string(),
@@ -653,7 +649,10 @@ mod tests {
 
         // 只留在深核的线程日志里等于没人看得见
         assert_eq!(merge_deepcheck_gaps(&mut js, &deep), 1);
-        assert_eq!(js[0].gaps, ["缺发售日期", "找不到原始来源"]);
+        let whats: Vec<&str> = js[0].gaps.iter().map(|g| g.what.as_str()).collect();
+        assert_eq!(whats, ["缺发售日期", "找不到原始来源"]);
+        assert_eq!(js[0].gaps[1].level, GapLevel::Production);
+        assert_eq!(js[0].gaps[1].tried, "深核");
         assert!(js[1].gaps.is_empty());
     }
 

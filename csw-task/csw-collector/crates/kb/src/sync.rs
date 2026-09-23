@@ -641,17 +641,21 @@ pub async fn sync_memory(conn: &Connection, engine: &EngineClient) -> Result<(us
     let rules = engine.memory_rules(false, 200).await.context("拉准则卡")?;
     for r in &rules {
         conn.execute(
-            "INSERT INTO memory_rules(rule_key, text, version, confirmed_by_van, updated_at)
-             VALUES (?1,?2,?3,?4,?5)
+            "INSERT INTO memory_rules(rule_key, text, version, confirmed_by_van, updated_at,
+                                      category, confirmed_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)
              ON CONFLICT(rule_key) DO UPDATE SET
                text=excluded.text, version=excluded.version,
-               confirmed_by_van=excluded.confirmed_by_van, updated_at=excluded.updated_at",
+               confirmed_by_van=excluded.confirmed_by_van, updated_at=excluded.updated_at,
+               category=excluded.category, confirmed_at=excluded.confirmed_at",
             rusqlite::params![
                 r.rule_key,
                 r.text,
                 r.version,
                 r.confirmed_by_van as i64,
-                r.updated_at
+                r.updated_at,
+                r.category,
+                r.confirmed_at
             ],
         )
         .context("写准则卡")?;
@@ -665,12 +669,14 @@ pub async fn sync_memory(conn: &Connection, engine: &EngineClient) -> Result<(us
             .with_context(|| format!("拉 {d} 案例"))?;
         for c in &rows {
             conn.execute(
-                "INSERT INTO memory_cases(case_key, decision, quote, source_url, decided_at, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6)
+                "INSERT INTO memory_cases(case_key, decision, quote, source_url, decided_at, updated_at,
+                                          brand, title, judged_tier)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
                  ON CONFLICT(case_key) DO UPDATE SET
                    decision=excluded.decision, quote=excluded.quote,
                    source_url=excluded.source_url, decided_at=excluded.decided_at,
-                   updated_at=excluded.updated_at",
+                   updated_at=excluded.updated_at, brand=excluded.brand,
+                   title=excluded.title, judged_tier=excluded.judged_tier",
                 rusqlite::params![
                     c.case_key,
                     c.decision,
@@ -678,7 +684,10 @@ pub async fn sync_memory(conn: &Connection, engine: &EngineClient) -> Result<(us
                     c.quote,
                     c.source_url,
                     c.decided_at,
-                    jiff::Timestamp::now().to_string()
+                    jiff::Timestamp::now().to_string(),
+                    c.brand,
+                    c.title,
+                    c.judged_tier
                 ],
             )
             .context("写案例")?;

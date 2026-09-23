@@ -10,7 +10,7 @@
 use anyhow::Result;
 use serde::Serialize;
 
-use csw_collector_core::types::{Candidate, Judgement, Tier};
+use csw_collector_core::types::{Candidate, Gap, Judgement, Tier};
 
 /// `items.jsonl` 的一行。字段顺序即声明顺序。
 #[derive(Debug, Serialize)]
@@ -23,11 +23,14 @@ pub struct ItemLine<'a> {
     /// 首次入库时间（窗口按它收口）
     pub ingested_at: Option<String>,
     pub tier: Tier,
-    /// 成立的维度数。排序用的量，写出来便于复算。
+    /// 「具体对象｜一句推荐理由」
+    pub headline: &'a str,
+    /// 成立的维度数。**只作记录，不参与排序与定档**（六维不是打勾表）。
     pub yes_count: usize,
     pub image_seen: bool,
     pub photos: usize,
-    pub gaps: &'a [String],
+    /// 分级的缺口。字段顺序由 `Gap` 的定义固定，zip 构建两次哈希才会一样。
+    pub gaps: &'a [Gap],
     /// 结论能不能复用的指纹
     pub inputs_hash: &'a str,
 }
@@ -78,6 +81,7 @@ pub fn items_jsonl(
                 .and_then(|c| c.ingested_at)
                 .map(|t| t.to_string()),
             tier: j.tier,
+            headline: &j.headline,
             yes_count: j
                 .dims
                 .iter()
@@ -95,50 +99,17 @@ pub fn items_jsonl(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use csw_collector_core::types::{
-        Comparison, ComparisonVerdict, Dim, DimJudgement, Platform, ThreeSentences, Unanswered,
-        Verdict,
-    };
+    use csw_collector_core::types::{Platform, Verdict};
 
     fn j(key: &str, tier: Tier, yes: usize) -> Judgement {
-        Judgement {
-            candidate_key: key.into(),
-            tier,
-            dims: Dim::ALL
-                .into_iter()
-                .enumerate()
-                .map(|(i, d)| {
-                    (
-                        d,
-                        DimJudgement {
-                            verdict: if i < yes { Verdict::Yes } else { Verdict::No },
-                            basis: "b".into(),
-                        },
-                    )
-                })
-                .collect(),
-            three_sentences: ThreeSentences {
-                what_changed: String::new(),
-                why_it_matters: String::new(),
-                how_different: String::new(),
-            },
-            unanswered: Unanswered::None,
-            comparison: Comparison {
-                verdict: ComparisonVerdict::Unrelated,
-                against: String::new(),
-                note: String::new(),
-            },
-            heat_note: String::new(),
-            look: String::new(),
-            image_seen: tier != Tier::PendingCheck,
-            gaps: vec![],
-            priority_hits: vec![],
-            lower_hits: vec![],
-            jev_disagreement: String::new(),
-            kb_refs: vec![],
-            memory_refs: vec![],
-            inputs_hash: "abc".into(),
+        let mut j = Judgement::fixture(key, tier);
+        for (i, (_, d)) in j.dims.iter_mut().enumerate() {
+            d.verdict = if i < yes { Verdict::Yes } else { Verdict::No };
+            d.basis = "b".into();
         }
+        j.image_seen = tier != Tier::PendingCheck;
+        j.inputs_hash = "abc".into();
+        j
     }
 
     fn cand(key: &str) -> Candidate {

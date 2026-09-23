@@ -254,6 +254,9 @@ pub enum MaterialKind {
     Decision,
     /// 上一轮台账。留在本地库，**不进参考库**——否则系统自己的判断会被当成 Van 的口味证据。
     PriorLedger,
+    /// 选题记忆（P5 回收的采用 / 否决案例）。**只带对象与结论，不带 Van 原话**。
+    /// 不在 [`MaterialKind::REQUIRED`] 里：记忆空着不该让整轮判不了。
+    Memory,
 }
 
 impl MaterialKind {
@@ -279,6 +282,19 @@ pub struct Material {
     pub quote: String,
     /// 发布状态，供「30 天查重」区分正式已发与未发
     pub publish_state: String,
+    /// 正文节选（已发、范例两类才有）。**查重要看正文**——只给标题，模型拿不到
+    /// 重复的事实，就会把「正文缺失」判成「无关」（09-22 反馈 Dapple Born）。
+    #[serde(default)]
+    pub body_excerpt: String,
+    /// 这条材料的正文取没取到。取不到时查重只能是「未确认」。
+    #[serde(default = "yes")]
+    pub body_available: bool,
+    #[serde(default)]
+    pub brand: String,
+}
+
+fn yes() -> bool {
+    true
 }
 
 // ─────────────────────────────── 判断 ───────────────────────────────
@@ -302,21 +318,22 @@ pub enum Verdict {
     Unclear,
 }
 
-/// Van 的六个维度。键固定，不增不减——改维度要她本人点头。
+/// Van 的六个维度。**键固定**（引擎按键名校验），含义以 `van-rubric/v2` 为准
+/// （09-23 Van 本人认可的新定义）。改维度要她本人点头。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Dim {
-    /// 变化必须具体
+    /// 具体看点：最值得报道的具体事实、变化或角度（不强求新品）
     Change,
-    /// 与真实使用有关
+    /// 与读者有关：与中国户外潮流爱好者的使用、穿搭、审美、兴趣、生活方式的联系
     Use,
-    /// 有 CSW 读者能理解的价值
+    /// 值得推荐的价值——**核心维度**，其余为它提供支撑
     Gain,
-    /// 最好有比较参照
+    /// 差异与背景：同类、历史、品牌背景、既有做法
     Compare,
-    /// 能产生有事实支持的编辑判断
+    /// 报道角度与依据：CSW 抓哪个角度、哪些事实撑得住
     Explain,
-    /// CSW 视角（调性适配）
+    /// CSW 适配度：结合实际采用 / 否决案例说明
     Csw,
 }
 
@@ -339,11 +356,148 @@ pub struct DimJudgement {
     pub basis: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+/// 三句话（v2）：是什么 / 为什么值得看 / 依据是什么。
+///
+/// v1 的键是 `what_changed` / `why_it_matters` / `how_different`——字段名本身就在逼
+/// 模型找「变化」（09-22 反馈第二项）。旧行按别名读回。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct ThreeSentences {
-    pub what_changed: String,
-    pub why_it_matters: String,
-    pub how_different: String,
+    #[serde(alias = "what_changed")]
+    pub what: String,
+    #[serde(alias = "why_it_matters")]
+    pub why_worth: String,
+    #[serde(alias = "how_different")]
+    pub grounds: String,
+}
+
+/// 看点属于哪一种。**没有旧款证据就不许写「从……变成……」。**
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NoveltyKind {
+    /// 产品现有特点
+    #[default]
+    ExistingFeature,
+    /// 有证据的新变化——必须写明旧款 / 前代依据
+    EvidencedChange,
+    /// 值得解释的设计或文化内容
+    ExplainableDesign,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct Novelty {
+    pub kind: NoveltyKind,
+    pub basis: String,
+    /// 旧款 / 前代依据出自哪里。`EvidencedChange` 时必填。
+    pub prior_evidence: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FactSource {
+    /// 品牌或当事方原始发布
+    Primary,
+    /// 转载
+    Reshared,
+    /// 只有品牌自述，无旁证
+    BrandClaimOnly,
+    #[default]
+    Unknown,
+}
+
+/// 制作条件。与选题价值**分开记**，不参与定档（09-22 反馈第一项）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct Readiness {
+    pub fact_source: FactSource,
+    /// 可作配图的实图张数
+    pub usable_images: u8,
+    pub material_complete: bool,
+    pub note: String,
+}
+
+/// 缺口级别（09-22 反馈第八项）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GapLevel {
+    /// 影响选题判断：产品身份、关键看点、报道价值无法确认。**只有这一级能让条目落待核。**
+    #[default]
+    Decision,
+    /// 影响成稿：必要规格、关键图片、时间信息缺失。不影响档位。
+    Production,
+    /// 表达边界：如品牌声称的性能未经独立实测。只是写作提醒，不是补证任务。
+    Boundary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GapOwner {
+    #[default]
+    Collector,
+    Editor,
+    Van,
+}
+
+/// 一条缺口：缺什么、谁处理、已尝试什么、下一步。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, ToSchema)]
+pub struct Gap {
+    pub level: GapLevel,
+    pub what: String,
+    pub owner: GapOwner,
+    pub tried: String,
+    pub next: String,
+}
+
+impl From<&str> for Gap {
+    fn from(s: &str) -> Self {
+        Gap::decision(s)
+    }
+}
+
+impl Gap {
+    pub fn decision(what: impl Into<String>) -> Self {
+        Self {
+            what: what.into(),
+            ..Default::default()
+        }
+    }
+}
+
+/// 旧行里的缺口是纯字符串——读回时按「影响判断、收集员处理」兜底。
+impl<'de> Deserialize<'de> for Gap {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            Text(String),
+            Full {
+                #[serde(default)]
+                level: GapLevel,
+                #[serde(default)]
+                what: String,
+                #[serde(default)]
+                owner: GapOwner,
+                #[serde(default)]
+                tried: String,
+                #[serde(default)]
+                next: String,
+            },
+        }
+        Ok(match Either::deserialize(d)? {
+            Either::Text(what) => Gap::decision(what),
+            Either::Full {
+                level,
+                what,
+                owner,
+                tried,
+                next,
+            } => Gap {
+                level,
+                what,
+                owner,
+                tried,
+                next,
+            },
+        })
+    }
 }
 
 /// 三句话答不清时，说明是哪一种答不清。
@@ -362,13 +516,49 @@ pub enum ComparisonVerdict {
     SameFactNoGain,
     SameBrandWithGain,
     Unrelated,
+    /// 查重未确认：命中的历史文章正文缺失，或只有生成稿可比。**不能给确定的无重复结论。**
+    Unconfirmed,
+}
+
+/// 命中的历史材料的发布状态。生成稿**不是**「近期已发」的证据。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HitState {
+    /// 正式发布
+    Published,
+    /// 已推草稿箱
+    Draft,
+    /// 仅生成稿
+    Generated,
+    /// 03 决定
+    Decision,
+    #[default]
+    Unknown,
+}
+
+/// 查重命中的一条历史材料。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct ComparisonHit {
+    /// 对照材料编号，如 `M3`
+    pub ref_no: String,
+    pub title: String,
+    pub url: String,
+    pub state: HitState,
+    pub published_at: String,
+    pub body_available: bool,
+    /// 具体重复了哪条事实；无重复写空
+    pub dup_fact: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Comparison {
     pub verdict: ComparisonVerdict,
+    /// 兼容旧行：v1 只写一句「对照的是哪篇」
+    #[serde(default)]
     pub against: String,
     pub note: String,
+    #[serde(default)]
+    pub hits: Vec<ComparisonHit>,
 }
 
 /// 一条候选的判断结论。
@@ -378,16 +568,23 @@ pub struct Judgement {
     pub tier: Tier,
     /// 六维，键齐全
     pub dims: Vec<(Dim, DimJudgement)>,
+    /// 「具体对象｜一句推荐理由」，40 字以内。列表与 Van 模式的主信息。
+    #[serde(default)]
+    pub headline: String,
     pub three_sentences: ThreeSentences,
+    #[serde(default)]
+    pub novelty: Novelty,
+    #[serde(default)]
+    pub readiness: Readiness,
     pub unanswered: Unanswered,
     pub comparison: Comparison,
     /// 热度说明。是输入的呈现，不是维度。
     pub heat_note: String,
-    /// 实图里看到的外观与设计要点
+    /// 实图里看到的外观与设计要点（辅助核查，界面上折叠）
     pub look: String,
     /// **没真正读到实图就是 false，且 tier 必须是 PendingCheck。**
     pub image_seen: bool,
-    pub gaps: Vec<String>,
+    pub gaps: Vec<Gap>,
     /// 命中的七类优先关注 / 七类降低优先级。是倾向，不是黑名单。
     pub priority_hits: Vec<String>,
     pub lower_hits: Vec<String>,
@@ -418,7 +615,70 @@ impl Judgement {
         if self.inputs_hash.trim().is_empty() {
             v.push("缺 inputs_hash".into());
         }
+        if self.headline.trim().is_empty() {
+            v.push("缺 headline".into());
+        }
+        if self.tier == Tier::PendingCheck && !self.has_decision_gap() {
+            v.push("待核却没有「影响判断」级的缺口".into());
+        }
         v
+    }
+
+    pub fn has_decision_gap(&self) -> bool {
+        self.gaps.iter().any(|g| g.level == GapLevel::Decision)
+    }
+
+    pub fn dim(&self, d: Dim) -> Option<&DimJudgement> {
+        self.dims.iter().find(|(k, _)| *k == d).map(|(_, j)| j)
+    }
+
+    /// 测试与示例用的完整结论：六维成立、有图、有指纹。
+    pub fn fixture(key: &str, tier: Tier) -> Self {
+        Judgement {
+            candidate_key: key.into(),
+            tier,
+            dims: Dim::ALL
+                .into_iter()
+                .map(|d| {
+                    (
+                        d,
+                        DimJudgement {
+                            verdict: Verdict::Yes,
+                            basis: "正文第一句".into(),
+                        },
+                    )
+                })
+                .collect(),
+            headline: format!("{key}｜示例"),
+            three_sentences: ThreeSentences {
+                what: "甲".into(),
+                why_worth: "乙".into(),
+                grounds: "丙".into(),
+            },
+            novelty: Novelty::default(),
+            readiness: Readiness::default(),
+            unanswered: Unanswered::None,
+            comparison: Comparison {
+                verdict: ComparisonVerdict::Unrelated,
+                against: String::new(),
+                note: String::new(),
+                hits: vec![],
+            },
+            heat_note: String::new(),
+            look: String::new(),
+            image_seen: true,
+            gaps: if tier == Tier::PendingCheck {
+                vec![Gap::decision("示例缺口")]
+            } else {
+                vec![]
+            },
+            priority_hits: vec![],
+            lower_hits: vec![],
+            jev_disagreement: String::new(),
+            kb_refs: vec![],
+            memory_refs: vec![],
+            inputs_hash: "h".into(),
+        }
     }
 }
 
@@ -438,7 +698,7 @@ pub struct Triage {
 }
 
 impl Triage {
-    /// 流式推进的排序键。用分得最开的三维，不看 `worth`。
+    /// 流式推进的排序键。v2 以核心维度 gain 为主，不看 `worth`。
     /// 这个值只排序用，任何界面与交付物里都不出现。
     pub fn priority(&self) -> f64 {
         let get = |d: Dim| {
@@ -448,11 +708,46 @@ impl Triage {
                 .map(|(_, v)| *v)
                 .unwrap_or(0.0)
         };
-        get(Dim::Explain) + get(Dim::Csw) + get(Dim::Use)
+        // v2：「值得推荐的价值」是核心，权重加倍
+        get(Dim::Gain) * 2.0 + get(Dim::Csw) + get(Dim::Use)
     }
 }
 
 // ─────────────────────────────── 事件与轮次产物 ─────────────────────
+
+/// 选题：同产品、同事件的多条贴文合成的一个报道对象（09-22 反馈第五项）。
+///
+/// 逐帖台账原样保留；选题是在它上面加的一层，推荐位按选题算，不按贴文算。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct Topic {
+    /// = 主帖的 candidate_key
+    pub topic_key: String,
+    pub primary_key: String,
+    /// 含主帖，主帖在前
+    pub members: Vec<String>,
+    pub merge_note: String,
+    /// 组内最高的档（按代码给的档，不含人工改档——人工改档在页面上另算）
+    pub tier: Option<Tier>,
+    pub headline: String,
+    pub synthesis: TopicSynthesis,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct TopicSynthesis {
+    /// 各帖共有的事实
+    pub shared_facts: Vec<String>,
+    /// 每帖相对其余几帖新增了什么；只是重复的标 `is_duplicate`
+    pub per_member: Vec<MemberNote>,
+    /// 新增信息在该帖材料里核不到的（Jev 支持度低于阈值），给人看
+    pub unsupported: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct MemberNote {
+    pub candidate_key: String,
+    pub new_info: String,
+    pub is_duplicate: bool,
+}
 
 /// 合并后的一件事。同一件事可能被多个账号发成多条候选。
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -501,32 +796,49 @@ mod tests {
     }
 
     fn judgement(tier: Tier, image_seen: bool) -> Judgement {
-        Judgement {
-            candidate_key: "k".into(),
-            tier,
-            dims: Dim::ALL.map(|d| (d, dim_ok())).to_vec(),
-            three_sentences: ThreeSentences {
-                what_changed: "a".into(),
-                why_it_matters: "b".into(),
-                how_different: "c".into(),
-            },
-            unanswered: Unanswered::None,
-            comparison: Comparison {
-                verdict: ComparisonVerdict::Unrelated,
-                against: String::new(),
-                note: String::new(),
-            },
-            heat_note: String::new(),
-            look: String::new(),
-            image_seen,
-            gaps: vec![],
-            priority_hits: vec![],
-            lower_hits: vec![],
-            jev_disagreement: String::new(),
-            kb_refs: vec![],
-            memory_refs: vec![],
-            inputs_hash: "h".into(),
-        }
+        let mut j = Judgement::fixture("k", tier);
+        j.dims = Dim::ALL.map(|d| (d, dim_ok())).to_vec();
+        j.image_seen = image_seen;
+        j
+    }
+
+    #[test]
+    fn 旧行的缺口字符串与三句话旧键都读得回() {
+        let gaps: Vec<Gap> = serde_json::from_str(
+            r#"["价格未写",
+            {"level":"boundary","what":"性能是品牌自述","owner":"editor","tried":"","next":""}]"#,
+        )
+        .unwrap();
+        assert_eq!(gaps[0], Gap::decision("价格未写"));
+        assert_eq!(gaps[1].level, GapLevel::Boundary);
+        assert_eq!(gaps[1].owner, GapOwner::Editor);
+        let t: ThreeSentences = serde_json::from_str(
+            r#"{"what_changed":"甲","why_it_matters":"乙","how_different":"丙"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (t.what.as_str(), t.why_worth.as_str(), t.grounds.as_str()),
+            ("甲", "乙", "丙")
+        );
+        // 新键写出去就是新键
+        let v = serde_json::to_value(&t).unwrap();
+        assert_eq!(v["why_worth"], "乙");
+        let c: Comparison =
+            serde_json::from_str(r#"{"verdict":"unrelated","against":"x","note":""}"#).unwrap();
+        assert!(c.hits.is_empty());
+    }
+
+    #[test]
+    fn 待核必须有影响判断的缺口() {
+        let mut j = judgement(Tier::PendingCheck, true);
+        assert!(j.violations().is_empty());
+        j.gaps = vec![Gap {
+            level: GapLevel::Production,
+            ..Gap::decision("缺价格")
+        }];
+        assert!(j.violations().iter().any(|v| v.contains("影响判断")));
+        j.headline.clear();
+        assert!(j.violations().iter().any(|v| v.contains("headline")));
     }
 
     #[test]

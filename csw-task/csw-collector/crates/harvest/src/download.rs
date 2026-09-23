@@ -95,22 +95,34 @@ fn next_seq() -> u64 {
 pub struct Downloader {
     cfg: DownloadConfig,
     http: reqwest::Client,
+    /// 只给测试用：wiremock 在回环地址上。生产永远是 false。
+    allow_private: bool,
     gate: Arc<Semaphore>,
     /// 挂上之后回放模式下不再去拉图。见 [`Self::with_recorder`]。
     rec: Option<Arc<csw_collector_core::record::Recorder>>,
 }
 
 impl Downloader {
+    /// 图片地址来自第三方（平台返回的媒体地址），所以走带出网防护的客户端：
+    /// 内网、回环、云元数据地址、重定向到内网一律不连。见 [`crate::netguard`]。
     pub fn new(cfg: DownloadConfig) -> Result<Self> {
-        csw_collector_core::ensure_crypto_provider();
-        let http = reqwest::Client::builder().timeout(cfg.timeout).build()?;
+        let http = crate::netguard::guarded_client(cfg.timeout, false)?;
         let gate = Arc::new(Semaphore::new(cfg.concurrency.max(1)));
         Ok(Self {
             cfg,
             http,
+            allow_private: false,
             gate,
             rec: None,
         })
+    }
+
+    /// **只给测试用**：放行回环地址（wiremock 监听在 127.0.0.1）。
+    #[doc(hidden)]
+    pub fn allow_private_for_tests(mut self) -> Result<Self> {
+        self.http = crate::netguard::guarded_client(self.cfg.timeout, true)?;
+        self.allow_private = true;
+        Ok(self)
     }
 
     /// 挂上录制回放层。
@@ -212,7 +224,10 @@ impl Downloader {
     }
 
     async fn try_once(&self, orig: &str, target: &str) -> Result<Downloaded> {
-        let mut resp = self.http.get(target).send().await.context("发起请求")?;
+        // IP 字面量不走解析器，发请求前先查
+        let u = url::Url::parse(target).context("图片地址不合法")?;
+        crate::netguard::check_url(&u, self.allow_private).map_err(anyhow::Error::msg)?;
+        let mut resp = self.http.get(u).send().await.context("发起请求")?;
         let status = resp.status();
         anyhow::ensure!(status.is_success(), "返回 {status}");
         let cap = self.cfg.max_bytes;
@@ -356,6 +371,7 @@ mod tests {
             max_attempts: 1,
             max_bytes: 1000,
         })
+        .and_then(Downloader::allow_private_for_tests)
         .unwrap();
         let rep = d
             .fetch_all(&[
@@ -407,6 +423,7 @@ mod tests {
             max_attempts: 1,
             max_bytes: DEFAULT_MAX_BYTES,
         })
+        .and_then(Downloader::allow_private_for_tests)
         .unwrap();
 
         let urls = vec![
@@ -505,6 +522,7 @@ mod tests {
             max_attempts: 1,
             max_bytes: DEFAULT_MAX_BYTES,
         })
+        .and_then(Downloader::allow_private_for_tests)
         .unwrap()
     }
 }

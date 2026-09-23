@@ -966,6 +966,7 @@ mod tests {
             max_attempts: 1,
             max_bytes: crate::download::DEFAULT_MAX_BYTES,
         })
+        .and_then(crate::download::Downloader::allow_private_for_tests)
         .unwrap();
         let model = ModelClient::new(csw_collector_core::model::ModelConfig {
             base_url: model_srv.uri(),
@@ -1093,6 +1094,7 @@ mod tests {
             max_attempts: 1,
             max_bytes: crate::download::DEFAULT_MAX_BYTES,
         })
+        .and_then(crate::download::Downloader::allow_private_for_tests)
         .unwrap();
         let model = ModelClient::new(csw_collector_core::model::ModelConfig {
             base_url: model_srv.uri(),

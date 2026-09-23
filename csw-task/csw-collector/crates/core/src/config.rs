@@ -165,6 +165,11 @@ pub struct Limits {
     /// rerank 每段截多少字。重排按字数计费似的线性变慢：P40 上中文 300 字每段
     /// 约 257 ms、200 字约 190 ms（09-23 实测）。**调它先跑 `m2 --rerank` 看命中率**。
     pub rerank_snippet_chars: usize,
+    /// 定点补读：每轮最多补读几条候选的外链（0 = 关）。
+    ///
+    /// 09-23 用户同意补读外网，前提是封内网（`harvest::netguard`）。一条至多 3 个地址、
+    /// 每页 15 秒，15 条最坏约 11 分钟；超出整轮预算就先调低它。
+    pub refetch_per_round: usize,
     /// 磁盘占用告警与拒开新轮的水位
     pub disk_warn_pct: u8,
     pub disk_block_pct: u8,
@@ -363,6 +368,7 @@ impl Default for Config {
                 recognize_batch: 6,
                 rerank_per_candidate: 24,
                 rerank_snippet_chars: 300,
+                refetch_per_round: 15,
                 disk_warn_pct: 88,
                 disk_block_pct: 92,
             },

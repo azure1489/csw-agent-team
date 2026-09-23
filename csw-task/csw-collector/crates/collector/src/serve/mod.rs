@@ -805,6 +805,7 @@ async fn start_round(
                 cfg,
                 t.task.id,
                 &judgements,
+                &fin.topics,
                 &fin.sweeps,
                 &fin.by_key,
                 &gaps,

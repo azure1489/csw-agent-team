@@ -6,15 +6,15 @@
 //! 扫过阈值：想筛掉一半候选，就得丢掉三成本该写的。所以这一步**不设闸**，
 //! 只决定「先判哪条」，好让首批能早点交出去。
 //!
-//! 排序键用 `explain + csw + use` 三维——回测里它们分得最开；`change` 与 `gain`
-//! 几乎不分（Instagram 文案普遍都在宣布点什么、都带点事实），拿来排序没意义。
+//! v2（09-23）排序键改成 `gain×2 + csw + use`：新口径里「值得推荐的价值」是核心维度，
+//! 且 gain 的问法从「带了几条事实」改成「值不值得推荐给中国读者」，不再是那个几乎不分的维度。
 //! **这个数绝不进台账、绝不显示成分数**：「不打分、无权重」管的是判断输出，
 //! 不是内部调度，但也正因如此，它不能泄漏到输出里去。
 //!
-//! # 问法保持英文原样
+//! # 问法（v2）
 //!
-//! 下面这些 instructions 是 0.7 回测里一字不差用过的那套，上面那些数字就是它们打出来的。
-//! **翻译成中文等于换了一套问法，回测结论随之作废。** 要改先重测。
+//! 0.7 回测的那套问法按旧六维写，**09-23 随 Van 认可的新六维整套重写，0.7 的数字随之作废**，
+//! 以新一轮 M3 回测为准。问法仍用英文（Jev 的训练语言），改问法就要重测。
 //!
 //! 唯一有意改动的是 [`FRAME`] 结尾那句：回测时只给正文、没有图，所以要叮嘱模型
 //! 「别为照片里才看得见的东西扣分」；正式运行时每张图都有识别描述，那句话就不对了。
@@ -38,10 +38,11 @@ use crate::rubric::LOWER;
 
 /// 每个问题的 instructions 前都要拼上它——Jev 不支持请求级 instructions。
 const FRAME_HEAD: &str = "You are screening one Instagram post for CSW, a Chinese-language magazine \
-about outdoor, camping and urban-outdoor living. CSW's core question: does this contain a change \
-concrete enough that CSW should explain it to readers once? A post that is not a new product can \
-still qualify through a grounded design, culture, history or current-affairs angle. Brand fame is \
-NOT a criterion. Judge only from the fields in state.";
+about outdoor, camping and urban-outdoor living. CSW's core question: is this worth recommending to \
+Chinese readers who follow outdoor style — what useful information, interesting insight, or design \
+and culture content would they get from it? It does not have to be a new product, and it does not \
+have to be buyable or visitable in China. Complete specs, price or release date alone do not prove \
+value; brand fame and being released abroad are NOT criteria. Judge only from the fields in state.";
 
 /// 没有图片描述时的结尾：与 0.7 回测一字不差。
 const FRAME_NO_IMAGES: &str = " You see the caption only — no images — so do not penalise a post \
@@ -59,61 +60,61 @@ fn frame(has_images: bool) -> &'static str {
     }
 }
 
-/// 六维的问法。**一字不差来自 0.7 回测。**
+/// 六维的问法（v2，按 Van 09-23 认可的定义）。
 fn dim_questions() -> [(Dim, &'static str, [&'static str; 3]); 6] {
     [
         (
             Dim::Change,
-            "Does the caption state a concrete change — a new product, version, collaboration, material, structure, event or space — with specifics?",
+            "Is there a specific point worth reporting — a concrete fact, change or angle? It may be a product update, or a grounded design, culture, history or lifestyle point; it need not be new.",
             [
-                "No concrete change: a reshown product, a greeting, a mood shot, a generic promotion.",
-                "Something may have changed but the caption does not say what specifically.",
-                "A specific, nameable change is stated.",
+                "Nothing specific: a greeting, a mood shot, a generic promotion.",
+                "Something may be there but the post does not say what specifically.",
+                "A specific, nameable point is stated or clearly shown.",
             ],
         ),
         (
             Dim::Use,
-            "Does the caption connect to how a person would actually wear, carry, pitch, cook with or travel with the thing?",
+            "Does it connect to how Chinese outdoor-style enthusiasts use, wear, style, look at or live with things — their interests or lifestyle, not only functional problems?",
             [
-                "No usage relation; only appearance or an announcement.",
-                "Usage is implied but not described.",
-                "Usage, wearing, carrying or a concrete scenario is described.",
+                "No connection to these readers.",
+                "A loose or implied connection.",
+                "A clear connection to their use, style, taste or lifestyle.",
             ],
         ),
         (
             Dim::Gain,
-            "Does the caption add information a reader could learn from — design intent, specifications, release date, price, channel, background?",
+            "Is it worth recommending to Chinese outdoor-style readers — would they come away with useful information, an interesting insight, or design and culture content worth knowing? Complete specs or a famous brand alone do not count.",
             [
-                "Only a name, or nothing.",
-                "One vague fact.",
-                "Several concrete facts an editor could cite.",
+                "Not worth their time: an address and opening hours, a plain restock, a sign-up notice.",
+                "Possibly worth it, but the value is thin or not yet shown.",
+                "Clearly worth recommending, and the post shows why.",
             ],
         ),
         (
             Dim::Compare,
-            "Does the caption give, or obviously allow, a comparison reference: a previous generation, the brand's earlier practice, or a similar product?",
+            "Is there a reference that helps explain what is special about it — similar products, history, brand background or established practice? A previous generation is not required.",
             [
-                "No reference and none implied.",
+                "No reference and none available.",
                 "A reference is hinted but not stated.",
-                "A comparison reference is stated or obviously available.",
+                "A useful reference is stated or obviously available.",
             ],
         ),
         (
             Dim::Explain,
-            "Is there an editorial point with factual support — something whose design choice can be tied to a use, a need or a piece of history? 'Looks good' or 'interesting' is not enough.",
+            "Is there a concrete angle CSW could take, supported by facts in the post, without inflating it into a trend?",
             [
-                "Nothing to explain.",
-                "Possibly, but the caption gives too little.",
-                "A clear point that rewards explanation.",
+                "No angle, or only 'looks good'.",
+                "An angle is possible but the facts are thin.",
+                "A clear angle with facts that support it.",
             ],
         ),
         (
             Dim::Csw,
-            "Does the subject sit inside CSW's territory — outdoor, camping, urban-outdoor living, with a design or culture angle, for readers in China?",
+            "Does it fit CSW's editorial choices, taste and cultural perspective — not merely because it mentions camping, outdoor or travel?",
             [
-                "Off-topic, or a purely local shop notice.",
-                "Related but marginal, or hard to relate to readers in China.",
-                "Squarely in CSW's territory.",
+                "Off CSW's taste, or only keyword-level outdoor.",
+                "Related but marginal.",
+                "Squarely CSW's kind of story.",
             ],
         ),
     ]
@@ -314,7 +315,7 @@ mod tests {
         assert!(pick(&no).contains("no images"));
         assert!(pick(&yes).contains("treat those descriptions"));
         assert!(
-            pick(&yes).contains("Brand fame is NOT a criterion"),
+            pick(&yes).contains("brand fame and being released abroad are NOT criteria"),
             "框架头不能丢"
         );
     }
@@ -339,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn 排序键用分得开的三维() {
+    fn 排序键以核心维度为主() {
         let t = Triage {
             candidate_key: "k".into(),
             dims: vec![
@@ -354,7 +355,7 @@ mod tests {
             lower_hits: vec![],
             model: String::new(),
         };
-        // explain + csw + use，不含 change 与 gain（回测里那两维几乎不分）
-        assert!((t.priority() - (0.68 + 0.64 + 0.57)).abs() < 1e-9);
+        // v2：gain×2 + csw + use
+        assert!((t.priority() - (0.99 * 2.0 + 0.64 + 0.57)).abs() < 1e-9);
     }
 }
