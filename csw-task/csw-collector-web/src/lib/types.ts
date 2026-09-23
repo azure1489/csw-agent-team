@@ -178,7 +178,20 @@ export interface ImageRow {
 
 export interface JudgementDetail {
   candidate: Record<string, unknown>
-  judgement: (Omit<JudgementRow, 'candidate_key' | 'effective_tier'> & {
+  judgement: (Pick<
+    JudgementRow,
+    | 'tier'
+    | 'dims'
+    | 'three_sentences'
+    | 'comparison'
+    | 'heat_note'
+    | 'image_seen'
+    | 'gaps'
+    | 'check_flags'
+    | 'headline'
+    | 'novelty'
+    | 'readiness'
+  > & {
     unanswered: string
     look: string
     priority_hits: string[]

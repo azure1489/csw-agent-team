@@ -171,12 +171,15 @@ pub fn group(items: &[MergeInput<'_>], merged: &[(usize, usize, f64)]) -> Vec<Ev
         }
         p[x]
     }
-    let mut notes: BTreeMap<usize, Vec<String>> = BTreeMap::new();
-    for (i, j, prob) in merged {
+    for (i, j, _) in merged {
         let (ri, rj) = (find(&mut parent, *i), find(&mut parent, *j));
         if ri != rj {
             parent[rj] = ri;
         }
+    }
+    // 依据在**全部合并完之后**按最终的根归组：边合边记的话，后来被并走的旧根上的记录会丢
+    let mut notes: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    for (i, j, prob) in merged {
         notes
             .entry(find(&mut parent, *i))
             .or_default()

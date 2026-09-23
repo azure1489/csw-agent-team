@@ -244,7 +244,20 @@ pub fn strip_van_quotes(materials: &mut [Material]) {
             .quote
             .lines()
             .filter(|l| l.starts_with("结论：") || l.starts_with("理由码："))
-            .collect::<Vec<_>>()
+            // 每种只留**第一行**：决定正文由「结论 / 品牌 / 理由 / 理由码 / 原话」按行拼成，
+            // 原话或理由若自己带换行、又恰好有一行以「结论：」开头，按行过滤会把那一行放出去。
+            // 结构化的那两行永远排在原话前面，取第一行就不会取到她的话（09-24 安全审查）
+            .fold(Vec::<&str>::new(), |mut acc, l| {
+                let head = if l.starts_with("结论：") {
+                    "结论："
+                } else {
+                    "理由码："
+                };
+                if !acc.iter().any(|x| x.starts_with(head)) {
+                    acc.push(l);
+                }
+                acc
+            })
             .join("\n");
     }
 }

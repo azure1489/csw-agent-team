@@ -59,6 +59,23 @@ fn forbidden_v6(ip: Ipv6Addr) -> bool {
     if let Some(v4) = ip.to_ipv4_mapped() {
         return forbidden_v4(v4); // ::ffff:a.b.c.d
     }
+    let embedded =
+        |hi: u16, lo: u16| Ipv4Addr::new((hi >> 8) as u8, hi as u8, (lo >> 8) as u8, lo as u8);
+    // 6to4：2002:AABB:CCDD::/48 里包着 AA.BB.CC.DD
+    if s[0] == 0x2002 {
+        return forbidden_v4(embedded(s[1], s[2]));
+    }
+    // Teredo（2001::/32）、本地用 NAT64（64:ff9b:1::/48）、旧的站点本地（fec0::/10）：一律不连
+    if (s[0] == 0x2001 && s[1] == 0)
+        || (s[0] == 0x64 && s[1] == 0xff9b && s[2] == 1)
+        || (s[0] & 0xFFC0) == 0xFEC0
+    {
+        return true;
+    }
+    // ::ffff:0:a.b.c.d（IPv4 转换地址）
+    if s[..4] == [0, 0, 0, 0] && s[4] == 0xffff && s[5] == 0 {
+        return forbidden_v4(embedded(s[6], s[7]));
+    }
     if s[0] == 0x64 && s[1] == 0xff9b && s[2..6] == [0, 0, 0, 0] {
         // 64:ff9b::/96 NAT64
         return forbidden_v4(Ipv4Addr::new(
@@ -146,6 +163,19 @@ impl Resolve for GuardResolver {
     }
 }
 
+/// 每一跳重定向都过 [`check_url`]，至多 [`MAX_REDIRECTS`] 跳。
+pub fn redirect_policy(allow_private: bool) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |a| {
+        if a.previous().len() >= MAX_REDIRECTS {
+            return a.error(format!("重定向超过 {MAX_REDIRECTS} 跳"));
+        }
+        match check_url(a.url(), allow_private) {
+            Ok(()) => a.follow(),
+            Err(e) => a.error(format!("重定向到了{e}")),
+        }
+    })
+}
+
 /// 带三道闸的 HTTP 客户端。**所有从第三方拿到的地址都要用它去取。**
 pub fn guarded_client(timeout: Duration, allow_private: bool) -> reqwest::Result<reqwest::Client> {
     csw_collector_core::ensure_crypto_provider();
@@ -153,15 +183,7 @@ pub fn guarded_client(timeout: Duration, allow_private: bool) -> reqwest::Result
         .timeout(timeout)
         .no_proxy()
         .dns_resolver(Arc::new(GuardResolver { allow_private }))
-        .redirect(reqwest::redirect::Policy::custom(move |a| {
-            if a.previous().len() >= MAX_REDIRECTS {
-                return a.error(format!("重定向超过 {MAX_REDIRECTS} 跳"));
-            }
-            match check_url(a.url(), allow_private) {
-                Ok(()) => a.follow(),
-                Err(e) => a.error(format!("重定向到了{e}")),
-            }
-        }))
+        .redirect(redirect_policy(allow_private))
         .build()
 }
 
@@ -191,6 +213,11 @@ mod tests {
             "http://[::ffff:127.0.0.1]/",
             "http://[::ffff:169.254.169.254]/",
             "http://[64:ff9b::a9fe:a9fe]/", // NAT64 包着 169.254.169.254
+            "http://[2002:a9fe:a9fe::1]/",  // 6to4 包着 169.254.169.254
+            "http://[2002:7f00:1::1]/",     // 6to4 包着 127.0.0.1
+            "http://[2001:0:4136:e378::1]/", // Teredo
+            "http://[fec0::1]/",
+            "http://[64:ff9b:1::a]/",
             "http://localhost/",
             "http://api.localhost/",
             "http://metadata.google.internal/",
@@ -262,14 +289,10 @@ mod tests {
             .mount(&server)
             .await;
         // 放行开关只放行回环的起点；目标地址不许放行——用一个只放行起点的策略
+        // 与 guarded_client 用的是同一个策略函数
         let client = reqwest::Client::builder()
             .no_proxy()
-            .redirect(reqwest::redirect::Policy::custom(|a| {
-                match check_url(a.url(), false) {
-                    Ok(()) => a.follow(),
-                    Err(e) => a.error(e),
-                }
-            }))
+            .redirect(redirect_policy(false))
             .build()
             .unwrap();
         let err = client.get(server.uri()).send().await.unwrap_err();

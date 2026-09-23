@@ -36,6 +36,9 @@ pub enum RoundKind {
     Prefetch,
     /// 回放夹具，不出网
     Replay,
+    /// 回测与重判（m3、rejudge）：只写本地。**不当「上一轮台账」、不影响待核结转**——
+    /// 它们判的是历史题或拿新口径试判，不是这一期的真实结论
+    Backtest,
 }
 
 /// 这一轮由什么事件触发。与 `RoundKind::Task` 配合区分正常派单、退回返工与补件。
@@ -408,10 +411,21 @@ pub enum FactSource {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct Readiness {
     pub fact_source: FactSource,
-    /// 可作配图的实图张数
+    /// 可作配图的实图张数。模型偶尔给出负数或离谱的大数，按 0–255 收住，
+    /// 不让一个字段把一整批六条的结论都解析失败
+    #[serde(deserialize_with = "clamp_u8")]
     pub usable_images: u8,
     pub material_complete: bool,
     pub note: String,
+}
+
+fn clamp_u8<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
+    let v = f64::deserialize(d)?;
+    Ok(if v.is_nan() {
+        0
+    } else {
+        v.clamp(0.0, 255.0) as u8
+    })
 }
 
 /// 缺口级别（09-22 反馈第八项）。

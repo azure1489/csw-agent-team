@@ -207,7 +207,7 @@ fn open(conn: &Connection, cfg: &Config, parent: Option<i64>) -> Result<rounds::
     let (r, _) = rounds::open_round(
         conn,
         &rounds::NewRound {
-            kind: RoundKind::Manual,
+            kind: RoundKind::Backtest,
             trigger: RoundTrigger::Manual,
             run_id: None,
             task_id: None,

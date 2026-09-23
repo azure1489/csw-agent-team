@@ -5,7 +5,7 @@
  * 第四、八项：查重要列出命中的文章与状态，缺口要分级、写清谁处理与下一步。
  * 同一件东西在四页长得一样，人才不会以为是四件事。
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Badge } from '@/components/ui'
 import { DEDUP, GAP_LEVEL, HIT_STATE, OWNER } from '@/lib/constants'
@@ -15,6 +15,8 @@ import type { ComparisonHit, Gap } from '@/lib/types'
 /** 缩略图。取不到（清理过、下载失败）就显示「无图」，不留一个破图标 */
 export function Thumb({ hash, size = 56, alt = '' }: { hash: string | null; size?: number; alt?: string }) {
   const [bad, setBad] = useState(false)
+  // 同一个组件换了图（翻页、刷新）要重新试，不能一直停在「无图」
+  useEffect(() => setBad(false), [hash])
   if (!hash || bad) {
     return (
       <div
@@ -37,31 +39,67 @@ export function Thumb({ hash, size = 56, alt = '' }: { hash: string | null; size
   )
 }
 
-/** 图集：网格缩略，点开看大图；Esc 关，左右键翻 */
+/**
+ * 图集：网格缩略，点开看大图。Esc 关、左右键翻，**手机上有关闭与翻页按钮**；
+ * 打开时焦点进对话框、页面不滚，关上后焦点回到点开的那张缩略图。
+ */
 export function Gallery({ hashes, size = 132 }: { hashes: string[]; size?: number }) {
   const [open, setOpen] = useState<number | null>(null)
+  const [bigBad, setBigBad] = useState(false)
+  const opener = useRef<HTMLElement | null>(null)
+  const closeBtn = useRef<HTMLButtonElement | null>(null)
   const close = useCallback(() => setOpen(null), [])
+  const go = useCallback(
+    (d: number) =>
+      setOpen((i) => (i === null ? i : Math.min(Math.max(i + d, 0), hashes.length - 1))),
+    [hashes.length],
+  )
+
+  // 列表刷新后变短：别去取不存在的那一张
+  useEffect(() => {
+    if (open !== null && open >= hashes.length) setOpen(hashes.length > 0 ? hashes.length - 1 : null)
+  }, [open, hashes.length])
+  useEffect(() => setBigBad(false), [open])
+
   useEffect(() => {
     if (open === null) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') close()
-      if (e.key === 'ArrowRight') setOpen((i) => (i === null ? i : Math.min(i + 1, hashes.length - 1)))
-      if (e.key === 'ArrowLeft') setOpen((i) => (i === null ? i : Math.max(i - 1, 0)))
+      if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        go(1)
+      }
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        go(-1)
+      }
     }
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, close, hashes.length])
+    closeBtn.current?.focus()
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prevOverflow
+      opener.current?.focus()
+    }
+  }, [open === null, close, go]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (hashes.length === 0) {
     return <div className="text-[12.5px] text-muted">这一条没有取到实图。</div>
   }
+  const btn =
+    'rounded-[var(--r-sm)] border border-white/40 bg-black/40 px-3 py-1.5 text-[14px] text-white disabled:opacity-30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white'
   return (
     <>
       <div className="flex flex-wrap gap-2">
         {hashes.map((h, i) => (
           <button
             key={h}
-            onClick={() => setOpen(i)}
+            onClick={(e) => {
+              opener.current = e.currentTarget
+              setOpen(i)
+            }}
             aria-label={`看第 ${i + 1} 张大图`}
             className="rounded-[var(--r-sm)] border-none bg-transparent p-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
           >
@@ -69,27 +107,59 @@ export function Gallery({ hashes, size = 132 }: { hashes: string[]; size?: numbe
           </button>
         ))}
       </div>
-      {open !== null && (
+      {open !== null && open < hashes.length && (
         <div
           role="dialog"
           aria-modal="true"
-          aria-label="大图"
+          aria-label={`大图，第 ${open + 1} / ${hashes.length} 张`}
           onClick={close}
-          className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-2 bg-black/80 p-4"
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black/85 p-4"
         >
-          <img
-            src={mediaUrl(hashes[open])}
-            alt={`第 ${open + 1} 张`}
-            onClick={(e) => e.stopPropagation()}
-            className="max-h-[85vh] max-w-full rounded-[var(--r)] object-contain"
-          />
-          <div className="text-[12.5px] text-white/80">
-            第 {open + 1} / {hashes.length} 张 · Esc 关闭 · ← → 翻页
+          {bigBad ? (
+            <div className="text-[13px] text-white/80">这张图取不到（可能已经清理）。</div>
+          ) : (
+            <img
+              src={mediaUrl(hashes[open])}
+              alt={`第 ${open + 1} 张`}
+              onError={() => setBigBad(true)}
+              onClick={(e) => e.stopPropagation()}
+              className="max-h-[78vh] max-w-full rounded-[var(--r)] object-contain"
+            />
+          )}
+          <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+            <button className={btn} disabled={open === 0} onClick={() => go(-1)} aria-label="上一张">
+              ‹ 上一张
+            </button>
+            <span className="tnum text-[12.5px] text-white/80">
+              {open + 1} / {hashes.length}
+            </span>
+            <button
+              className={btn}
+              disabled={open === hashes.length - 1}
+              onClick={() => go(1)}
+              aria-label="下一张"
+            >
+              下一张 ›
+            </button>
+            <button ref={closeBtn} className={btn} onClick={close}>
+              关闭
+            </button>
           </div>
         </div>
       )}
     </>
   )
+}
+
+/** 只渲染 http(s) 链接：链接是模型写的，不能让一个 `javascript:` 地址变成可点的东西 */
+export function safeHref(u: string | undefined | null): string | undefined {
+  if (!u) return undefined
+  try {
+    const p = new URL(u)
+    return p.protocol === 'http:' || p.protocol === 'https:' ? p.href : undefined
+  } catch {
+    return undefined
+  }
 }
 
 export function DedupBadge({ verdict, sm }: { verdict: string; sm?: boolean }) {
@@ -108,8 +178,8 @@ export function Hits({ hits }: { hits: ComparisonHit[] }) {
     <ul className="m-0 space-y-1 pl-4 text-[12.5px]">
       {hits.map((h, i) => (
         <li key={`${h.ref_no}-${i}`}>
-          {h.url ? (
-            <a href={h.url} target="_blank" rel="noreferrer" className="text-accent no-underline">
+          {safeHref(h.url) ? (
+            <a href={safeHref(h.url)} target="_blank" rel="noreferrer" className="text-accent no-underline">
               《{h.title || h.ref_no}》
             </a>
           ) : (

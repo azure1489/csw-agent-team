@@ -220,8 +220,9 @@ fn schema() -> Value {
 }
 
 const FRAME_SUPPORTED: &str = "`statement` claims what one post adds beyond the others. `material` \
-is that post's caption and photo descriptions. Does `material` actually support `statement`? Answer \
-false if the statement asserts anything that is not in `material`.";
+is that post's caption (and translation). Does `material` actually support `statement`? Answer \
+false if the statement asserts anything that is not in `material`. If the statement is only about \
+what a photo shows, which the caption cannot confirm, answer false.";
 
 /// 用 Jev 核「新增信息」是不是真出自那一帖。核不到的返回 `帖子：那句话`。
 pub async fn verify_new_info(
@@ -246,9 +247,14 @@ pub async fn verify_new_info(
             ),
         )]);
         let state = json!({"material": material, "statement": n.new_info});
-        let p = jev.ask(&state, &q).await?.noul("supported").unwrap_or(0.0);
-        if p < SUPPORTED_THRESHOLD {
-            out.push(format!("{}：{}", n.candidate_key, n.new_info));
+        // 一条问失败不连累整组：失败的那条不标，其余照核
+        match jev.ask(&state, &q).await {
+            Ok(a) => {
+                if a.noul("supported").unwrap_or(0.0) < SUPPORTED_THRESHOLD {
+                    out.push(format!("{}：{}", n.candidate_key, n.new_info));
+                }
+            }
+            Err(e) => tracing::warn!(帖子 = %n.candidate_key, "新增信息核对失败：{e:#}"),
         }
     }
     Ok(out)
@@ -267,6 +273,14 @@ pub fn apply(topics: &mut Vec<Topic>, topic_key: &str, s: Synth, js: &[Judgement
         }
         t.synthesis = s.synthesis;
         t.members.retain(|m| !split.contains(m));
+        // 拆走的帖子的「新增」说明不再属于这个选题
+        let members = t.members.clone();
+        t.synthesis
+            .per_member
+            .retain(|n| members.contains(&n.candidate_key));
+        if t.members.len() < 2 {
+            t.synthesis.shared_facts.clear();
+        }
         if !s.split.is_empty() {
             let why: Vec<String> = s
                 .split
@@ -284,6 +298,13 @@ pub fn apply(topics: &mut Vec<Topic>, topic_key: &str, s: Synth, js: &[Judgement
             topics.push(topic_of(&[j], &k, "从同组选题拆出：另一个报道角度"));
         }
     }
+    // 拆出来的按档排回去，与 build 的顺序一致
+    topics.sort_by(|a, b| {
+        a.tier
+            .map(rank)
+            .cmp(&b.tier.map(rank))
+            .then_with(|| a.topic_key.cmp(&b.topic_key))
+    });
 }
 
 /// 贴文数与选题数：推荐 / 备选各多少帖、多少题。

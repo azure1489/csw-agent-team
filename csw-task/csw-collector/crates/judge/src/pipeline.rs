@@ -82,6 +82,11 @@ pub struct Deps<'a> {
 /// 自己再加宽松条件——那等于绕开唯一一道拦着「换了东西还在用旧结论」的闸。
 pub trait Cached {
     fn get(&self, candidate_key: &str, inputs_hash: &str) -> Option<Judgement>;
+    /// 那条旧结论当初留下的口径留痕。复用时要一起带过来——口径改过的档与原因
+    /// 只记在留痕里，丢了就说不清它为什么是这一档。
+    fn notes(&self, _candidate_key: &str, _inputs_hash: &str) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -175,6 +180,19 @@ pub async fn run(items: &[Item<'_>], deps: &Deps<'_>) -> Outcome {
             // 拿回来的也要过契约自检：库被手改过、或者旧版本写进去的结论
             // 不合现在的契约时，宁可重判一遍，也不要把它当成这一轮的结论
             Some(j) if j.violations().is_empty() => {
+                let kept: Vec<String> = deps
+                    .cached
+                    .map(|c| c.notes(&it.candidate.candidate_key, &hash))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|n| {
+                        n.starts_with(rules::NOTE)
+                            || n.starts_with(csw_collector_core::ledger::REJUDGED_FLAG)
+                    })
+                    .collect();
+                if !kept.is_empty() {
+                    out.rule_notes.insert(j.candidate_key.clone(), kept);
+                }
                 out.reused.push(j.candidate_key.clone());
                 reused.push(j);
             }
@@ -319,26 +337,34 @@ async fn enforce(
         .map(|(i, it)| (it.candidate.candidate_key.as_str(), i))
         .collect();
     let mut again: Vec<(usize, String)> = Vec::new();
+    let mut first_notes: HashMap<String, Vec<String>> = HashMap::new();
     for j in &mut out.judgements {
         let Some(&i) = by_key.get(j.candidate_key.as_str()) else {
             continue;
         };
         let it = &items[i];
         let allow = may_rejudge(&j.candidate_key);
+        let src = source_of(it);
         let a = rules::apply(
             j,
             &rules::Ctx {
                 materials: &it.materials,
                 brand_keys: &it.brand_keys,
                 allow_rejudge: allow,
+                source_text: &src,
             },
         );
-        out.rule_notes
-            .entry(j.candidate_key.clone())
-            .or_default()
-            .extend(a.notes);
-        if let Some(why) = a.rejudge {
-            again.push((i, why));
+        match a.rejudge {
+            // 要退回的：这一次的留痕先放一边——重判成了就作废，重判失败才用得上
+            Some(why) => {
+                first_notes.insert(j.candidate_key.clone(), a.notes);
+                again.push((i, why));
+            }
+            None => out
+                .rule_notes
+                .entry(j.candidate_key.clone())
+                .or_default()
+                .extend(a.notes),
         }
     }
     if again.is_empty() {
@@ -371,30 +397,39 @@ async fn enforce(
             let Some(pos) = out.judgements.iter().position(|j| j.candidate_key == key) else {
                 continue;
             };
-            let mut j = redone
-                .iter()
-                .find(|r| r.candidate_key == key)
-                .cloned()
-                .unwrap_or_else(|| out.judgements[pos].clone());
+            let fresh = redone.iter().find(|r| r.candidate_key == key).cloned();
+            let redid = fresh.is_some();
+            let mut j = fresh.unwrap_or_else(|| out.judgements[pos].clone());
+            let src = source_of(&items[*i]);
             let a = rules::apply(
                 &mut j,
                 &rules::Ctx {
                     materials: &items[*i].materials,
                     brand_keys: &items[*i].brand_keys,
                     allow_rejudge: false,
+                    source_text: &src,
                 },
             );
+            let first = first_notes.remove(&key).unwrap_or_default();
             let notes = out.rule_notes.entry(key.clone()).or_default();
-            notes.insert(
-                0,
-                format!(
+            if redid {
+                // 重判成了：第一次输出作废，它的留痕也跟着作废，只记「重判过一次」
+                notes.push(format!(
                     "{}上次输出违反口径，已退回重判一次",
                     csw_collector_core::ledger::REJUDGED_FLAG
-                ),
-            );
+                ));
+                if !out.rejudged.contains(&key) {
+                    out.rejudged.push(key.clone());
+                }
+            } else {
+                notes.extend(first);
+                notes.push(format!(
+                    "{}要退回重判但重判失败，已按口径就地修正",
+                    rules::NOTE
+                ));
+            }
             notes.extend(a.notes);
             out.judgements[pos] = j;
-            out.rejudged.push(key);
         }
     }
 }
@@ -413,7 +448,38 @@ pub async fn judge_again(
         triages: triages.to_vec(),
         ..Default::default()
     };
-    for chunk in idx.chunks(verdict::BATCH) {
+    // 预取轮补读过、同一页正文判过的，指纹一样，直接拿
+    let mut todo: Vec<usize> = Vec::new();
+    for &i in idx {
+        let it = &items[i];
+        let hash = inputs_hash(it, &hash_ctx);
+        match deps
+            .cached
+            .and_then(|c| c.get(&it.candidate.candidate_key, &hash))
+        {
+            Some(j) if j.violations().is_empty() => {
+                // 只带口径留痕；Jev 核对的标记下面会重新核一遍，带过来就重复了
+                let notes: Vec<String> = deps
+                    .cached
+                    .map(|c| c.notes(&it.candidate.candidate_key, &hash))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|n| {
+                        n.starts_with(rules::NOTE)
+                            || n.starts_with(csw_collector_core::ledger::REJUDGED_FLAG)
+                    })
+                    .collect();
+                if !notes.is_empty() {
+                    out.rule_notes.insert(j.candidate_key.clone(), notes);
+                }
+                out.reused.push(j.candidate_key.clone());
+                out.judgements.push(j);
+            }
+            _ => todo.push(i),
+        }
+    }
+    let reused: std::collections::HashSet<String> = out.reused.iter().cloned().collect();
+    for chunk in todo.chunks(verdict::BATCH) {
         let inputs: Vec<JudgeInput<'_>> = chunk
             .iter()
             .map(|i| judge_input(&items[*i], triages, String::new()))
@@ -437,11 +503,21 @@ pub async fn judge_again(
             }
         }
     }
-    enforce(&mut out, items, deps, &hash_ctx, |_| true).await;
+    enforce(&mut out, items, deps, &hash_ctx, |k| !reused.contains(k)).await;
     if let Some(jev) = deps.jev {
         out.flags = check_all(jev, &out.judgements, items).await;
     }
     out
+}
+
+/// 口径检查要比对的原文：正文、译文与补读正文。原文里本来就有的说法不算模型编的。
+fn source_of(it: &Item<'_>) -> String {
+    let mut s = format!("{}\n{}", it.candidate.text, it.candidate.translated);
+    for r in &it.refetched {
+        s.push('\n');
+        s.push_str(&r.text);
+    }
+    s
 }
 
 fn judge_input<'a>(it: &'a Item<'a>, triages: &'a [Triage], retry_note: String) -> JudgeInput<'a> {
@@ -605,10 +681,21 @@ pub fn inputs_hash(item: &Item<'_>, work_standard: &str) -> String {
     }
     // 对照材料按 (类型, ref_id) 排序后入哈希：检索顺序有随机性，
     // 不排序的话同样的材料会算出不同的指纹，复用就永远命中不了
+    // 不只看是哪条材料，还要看它**现在的内容**：知识库补上了历史正文、案例从采用改成否决、
+    // 原话开关一拨，模型看到的都不一样了，旧结论就不能再用（09-24 审查）
     let mut refs: Vec<String> = item
         .materials
         .iter()
-        .map(|m| format!("{:?}/{}", m.kind, m.ref_id))
+        .map(|m| {
+            let content = blake3::hash(
+                format!(
+                    "{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}",
+                    m.title, m.publish_state, m.body_available, m.body_excerpt, m.quote
+                )
+                .as_bytes(),
+            );
+            format!("{:?}/{}/{}", m.kind, m.ref_id, content.to_hex())
+        })
         .collect();
     refs.sort();
     for r in &refs {

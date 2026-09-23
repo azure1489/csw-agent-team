@@ -322,6 +322,28 @@ pub fn judgement_by_hash(
         .optional()?)
 }
 
+/// 那条按指纹复用的旧结论当初落库时的留痕（check_flags）。
+pub fn flags_by_hash(
+    conn: &Connection,
+    candidate_key: &str,
+    inputs_hash: &str,
+) -> Result<Vec<String>> {
+    if inputs_hash.is_empty() {
+        return Ok(vec![]);
+    }
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT check_flags_json FROM judgements WHERE candidate_key = ?1 AND inputs_hash = ?2
+             ORDER BY round_id DESC LIMIT 1",
+            params![candidate_key, inputs_hash],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(raw
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default())
+}
+
 /// 上一轮台账：第五类对照材料。**留在本地库，不进参考库**——
 /// 否则系统自己的判断会被当成 Van 的口味证据。
 ///
@@ -335,7 +357,7 @@ pub fn prior_ledger(
     let mut st = conn.prepare(
         "SELECT j.candidate_key, j.tier, j.created_at FROM judgements j
          JOIN rounds r ON r.id = j.round_id
-         WHERE j.round_id < ?1 AND r.kind <> 'prefetch'
+         WHERE j.round_id < ?1 AND r.kind NOT IN ('prefetch', 'backtest', 'replay')
          ORDER BY j.round_id DESC, j.candidate_key LIMIT ?2",
     )?;
     Ok(st
@@ -358,7 +380,8 @@ pub fn prior_for(
     let mut st = conn.prepare(
         "SELECT j.tier, j.created_at, j.headline FROM judgements j
          JOIN rounds r ON r.id = j.round_id
-         WHERE j.round_id < ?1 AND r.kind <> 'prefetch' AND j.candidate_key = ?2
+         WHERE j.round_id < ?1 AND r.kind NOT IN ('prefetch', 'backtest', 'replay')
+           AND j.candidate_key = ?2
          ORDER BY j.round_id DESC LIMIT ?3",
     )?;
     Ok(st
@@ -397,7 +420,9 @@ pub fn open_pending_checks(conn: &Connection, limit: usize) -> Result<Vec<String
     let sql = format!(
         "SELECT j.candidate_key FROM judgements j
          WHERE j.round_id = (SELECT MAX(j2.round_id) FROM judgements j2
-                             WHERE j2.candidate_key = j.candidate_key)
+                             JOIN rounds r2 ON r2.id = j2.round_id
+                             WHERE j2.candidate_key = j.candidate_key
+                               AND r2.kind NOT IN ('backtest', 'replay'))
            AND {EFFECTIVE_TIER_SQL} = 'pending_check'
          ORDER BY j.round_id DESC, j.candidate_key LIMIT ?1"
     );

@@ -150,7 +150,10 @@ WHERE workflow_id = (SELECT id FROM workflows WHERE wf_key='daily_news' AND vers
 
 -- +goose Down
 
+-- 按内容认出 v10，而不是「最新的那个草稿」：部署后有人再建草稿，回滚也不会删错。
+-- 已激活（有 run 指着它）的不删——那要走后台回滚，不是迁移回滚。
 -- +goose StatementBegin
 DELETE FROM workflows WHERE wf_key='daily_news' AND status='draft'
-  AND id = (SELECT MAX(id) FROM workflows WHERE wf_key='daily_news' AND status='draft');
+  AND id IN (SELECT workflow_id FROM workflow_stages
+             WHERE code='intake' AND instructions LIKE '%判断框架（Van 确认版，v10 起）%');
 -- +goose StatementEnd

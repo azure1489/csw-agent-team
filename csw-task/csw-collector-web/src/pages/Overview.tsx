@@ -38,7 +38,8 @@ export function Overview() {
 
   // 按有效档（叠加人工改档）算：主编改过的档，总览上也该是改过的
   const tiers = Object.fromEntries(detail.data?.effective_tiers ?? detail.data?.tiers ?? [])
-  const tc = detail.data?.topics
+  // 改版前的轮次没有选题记录：那时退回按贴文数
+  const tc = (detail.data?.topics?.topics ?? 0) > 0 ? detail.data?.topics : undefined
   // 等主编或 Van 处理的待核亮出来，不用等 Van 来催（09-22 反馈第八项）
   const waiting = (pending.data ?? []).filter((r) =>
     r.gaps.some((g) => g.owner === 'editor' || g.owner === 'van'),

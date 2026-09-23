@@ -25,13 +25,20 @@ pub const PER_DECISION: usize = 3;
 /// 挑这条候选的选题记忆：同品牌的先取，按决定时间倒序，采用、否决各至多 [`PER_DECISION`] 条。
 ///
 /// 没有同品牌的案例就不送——跨品牌的案例拿来比「调性」，模型只会顺着字面联想。
-pub fn materials_for(conn: &Connection, brand_keys: &[String]) -> Result<Vec<Material>> {
+///
+/// **这条贴文自己的案例不送**（`self_url`）：判一条贴文时拿 Van 对它本身的决定当材料，
+/// 等于把答案递给模型——重判、回测时尤其如此。
+pub fn materials_for(
+    conn: &Connection,
+    brand_keys: &[String],
+    self_url: &str,
+) -> Result<Vec<Material>> {
     if brand_keys.is_empty() {
         return Ok(Vec::new());
     }
     // 案例表几百行，全读出来按品牌键比，比在 SQL 里做归一化简单也可靠
     let mut st = conn.prepare(
-        "SELECT case_key, decision, brand, title, judged_tier, decided_at
+        "SELECT case_key, decision, brand, title, judged_tier, decided_at, source_url
          FROM memory_cases WHERE decision IN ('adopted','rejected')
          ORDER BY decided_at DESC, case_key",
     )?;
@@ -43,14 +50,19 @@ pub fn materials_for(conn: &Connection, brand_keys: &[String]) -> Result<Vec<Mat
             r.get::<_, String>(3)?,
             r.get::<_, String>(4)?,
             r.get::<_, Option<String>>(5)?,
+            r.get::<_, String>(6)?,
         ))
     })?;
+    let own = csw_collector_kb::docs::norm_url(self_url);
     let mut adopted = 0;
     let mut rejected = 0;
     let mut out = Vec::new();
     for row in rows {
-        let (key, decision, brand, title, judged, decided_at) = row?;
+        let (key, decision, brand, title, judged, decided_at, url) = row?;
         if brand.trim().is_empty() || !brand_keys.contains(&brand_key(&brand)) {
+            continue;
+        }
+        if !self_url.is_empty() && csw_collector_kb::docs::norm_url(&url) == own {
             continue;
         }
         let n = if decision == "adopted" {
@@ -161,7 +173,7 @@ mod tests {
     #[test]
     fn 只送同品牌的采用与否决且不带原话() {
         let c = conn();
-        let ms = materials_for(&c, &["dappleborn".into()]).unwrap();
+        let ms = materials_for(&c, &["dappleborn".into()], "").unwrap();
         // 采用 1 条 + 否决至多 3 条；暂缓的不送；别的品牌不送
         assert_eq!(
             ms.iter()
@@ -193,7 +205,20 @@ mod tests {
 
     #[test]
     fn 没有品牌命中就不送() {
-        assert!(materials_for(&conn(), &[]).unwrap().is_empty());
+        assert!(materials_for(&conn(), &[], "").unwrap().is_empty());
+    }
+
+    #[test]
+    fn 这条贴文自己的案例不送() {
+        let c = conn();
+        c.execute(
+            "UPDATE memory_cases SET source_url = 'https://www.instagram.com/p/ABC/' WHERE case_key = 'c1'",
+            [],
+        )
+        .unwrap();
+        let ms =
+            materials_for(&c, &["dappleborn".into()], "https://instagram.com/reel/ABC").unwrap();
+        assert!(!ms.iter().any(|m| m.ref_id == "c1"));
     }
 
     #[test]

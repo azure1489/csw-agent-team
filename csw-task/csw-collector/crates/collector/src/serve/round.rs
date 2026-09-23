@@ -623,7 +623,18 @@ async fn refetch_and_rejudge(
         let mut got = Vec::new();
         let mut notes = Vec::new();
         for u in urls {
-            let f = fetch::fetch_text(&client, &u, false).await;
+            // 预取轮（或上一期）刚抓过、抓到了的就不再抓：同一页正文，指纹也就对得上
+            let f = match csw_collector_core::topics::recent_refetch(conn, key, &u, 36) {
+                Ok(Some(text)) => fetch::Fetched {
+                    url: u.clone(),
+                    status: fetch::FetchStatus::Ok,
+                    http_status: Some(200),
+                    bytes: text.len(),
+                    text,
+                    error: String::new(),
+                },
+                _ => fetch::fetch_text(&client, &u, false).await,
+            };
             let _ = csw_collector_core::topics::put_refetch(
                 conn,
                 round.id,
@@ -668,7 +679,11 @@ async fn refetch_and_rejudge(
             notes.extend(redone.rule_notes.get(&key).cloned().unwrap_or_default());
         }
         out.flags.extend(redone.flags);
-        out.rejudged.extend(redone.rejudged);
+        for k in redone.rejudged {
+            if !out.rejudged.contains(&k) {
+                out.rejudged.push(k);
+            }
+        }
     }
 
     // 「已尝试」回写进影响判断的缺口；还没结的下一步交给主编
@@ -677,12 +692,28 @@ async fn refetch_and_rejudge(
             continue;
         };
         let still_pending = j.tier == Tier::PendingCheck;
-        let gap = j.gaps.iter_mut().find(|g| g.level == GapLevel::Decision);
-        if let Some(g) = gap {
-            if !g.tried.is_empty() {
-                g.tried.push('；');
+        // 写到指向外部内容的那条缺口上；没有就另起一条，不去改一条讲别的事的缺口
+        let about_link = |g: &csw_collector_core::types::Gap| {
+            g.level == GapLevel::Decision
+                && ["外链", "链接", "主页", "全文", "官网", "完整内容", "link"]
+                    .iter()
+                    .any(|k| format!("{}{}", g.what, g.next).contains(k))
+        };
+        if !j.gaps.iter().any(about_link) && still_pending {
+            j.gaps.push(csw_collector_core::types::Gap::decision(
+                "完整内容在外链，需补读",
+            ));
+        }
+        if let Some(g) = j.gaps.iter_mut().find(|g| about_link(g)) {
+            for n in notes {
+                // 预取轮已经写过的同一句不再重复
+                if !g.tried.contains(n.as_str()) {
+                    if !g.tried.is_empty() {
+                        g.tried.push('；');
+                    }
+                    g.tried.push_str(n);
+                }
             }
-            g.tried.push_str(&notes.join("；"));
             if still_pending {
                 g.owner = GapOwner::Editor;
                 g.next = "补读没解决：请人工打开原帖与外链核对后改档".into();
@@ -812,10 +843,19 @@ pub async fn run_intake(
         .flat_map(|t| t.members.iter().filter(|m| **m != t.primary_key))
         .map(String::as_str)
         .collect();
+    // 主编点名的、待核的照样进：主编点名就核那一条；待核深核正是为了补缺口
+    let pinned: HashSet<String> = csw_collector_core::workbench::first_batch(conn, round.id)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     let primaries: Vec<Judgement> = j
         .judgements
         .iter()
-        .filter(|x| !secondary.contains(x.candidate_key.as_str()))
+        .filter(|x| {
+            !secondary.contains(x.candidate_key.as_str())
+                || pinned.contains(&x.candidate_key)
+                || x.tier == csw_collector_core::types::Tier::PendingCheck
+        })
         .cloned()
         .collect();
     let deep_out = super::finish::deepcheck(
@@ -985,6 +1025,10 @@ struct JudgeCache<'a> {
 }
 
 impl csw_collector_judge::pipeline::Cached for JudgeCache<'_> {
+    fn notes(&self, candidate_key: &str, inputs_hash: &str) -> Vec<String> {
+        ledger::flags_by_hash(self.conn, candidate_key, inputs_hash).unwrap_or_default()
+    }
+
     fn get(&self, candidate_key: &str, inputs_hash: &str) -> Option<Judgement> {
         ledger::judgement_by_hash(self.conn, candidate_key, inputs_hash)
             .unwrap_or_else(|e| {
@@ -1108,6 +1152,16 @@ async fn judge_items<'a>(
 ) -> Result<Vec<csw_collector_judge::pipeline::Item<'a>>> {
     use csw_collector_kb::search::{Query, Retriever};
 
+    // 「上一轮台账」取这一轮之前的。重判某一轮时从被重判的那一轮往前取——
+    // 否则被重判那一轮自己的旧结论会被当成材料送进去，新口径的试判就被旧答案带偏了
+    let prior_before: i64 = conn
+        .query_row(
+            "SELECT CASE WHEN kind = 'backtest' THEN COALESCE(parent_round_id, id) ELSE id END
+             FROM rounds WHERE id = ?1",
+            [round_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(round_id);
     let mut out = Vec::with_capacity(prepared.len());
     let total = prepared.len();
     for (i, p) in prepared.iter().enumerate() {
@@ -1154,7 +1208,7 @@ async fn judge_items<'a>(
         let prior: Vec<csw_collector_judge::materials::PriorLedgerItem> = if hide_self {
             Vec::new()
         } else {
-            ledger::prior_for(conn, round_id, &p.candidate.candidate_key, 3)
+            ledger::prior_for(conn, prior_before, &p.candidate.candidate_key, 3)
                 .unwrap_or_default()
                 .into_iter()
                 .map(
@@ -1177,7 +1231,8 @@ async fn judge_items<'a>(
         // 被回测的那条自己的决定就在案例库里
         if !hide_self {
             materials.extend(
-                csw_collector_judge::memory::materials_for(conn, &brand_keys).unwrap_or_default(),
+                csw_collector_judge::memory::materials_for(conn, &brand_keys, &p.candidate.url)
+                    .unwrap_or_default(),
             );
         }
         // **真的把图读出来送进判断。**

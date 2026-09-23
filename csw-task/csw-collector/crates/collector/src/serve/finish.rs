@@ -153,15 +153,8 @@ pub async fn deepcheck(
                 text: c.map(|c| c.text.clone()).unwrap_or_default(),
                 images: local_images(prepared, &j.candidate_key, &cfg.blob_dir()),
                 verdict_summary: summarize(j),
-                gaps: j
-                    .gaps
-                    .iter()
-                    .map(|g| {
-                        csw_collector_deliver::intake::gap_level_name(g.level).to_string()
-                            + "："
-                            + &g.what
-                    })
-                    .collect(),
+                // 只给「缺什么」：带级别前缀的话，深核照抄回来就对不上、会被当成新缺口再加一遍
+                gaps: j.gaps.iter().map(|g| g.what.clone()).collect(),
             }
         })
         .collect();

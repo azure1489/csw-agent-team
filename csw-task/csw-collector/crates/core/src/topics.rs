@@ -111,11 +111,33 @@ pub fn put_refetch(conn: &Connection, round_id: i64, r: &RefetchRow) -> Result<(
     Ok(())
 }
 
+/// 最近 `hours` 小时内这条候选这个地址补读成功过的正文。预取轮抓过的，正式轮直接用。
+pub fn recent_refetch(
+    conn: &Connection,
+    candidate_key: &str,
+    url: &str,
+    hours: i64,
+) -> Result<Option<String>> {
+    let since = jiff::Timestamp::now()
+        .checked_sub(jiff::SignedDuration::from_hours(hours))?
+        .to_string();
+    Ok(conn
+        .query_row(
+            "SELECT text FROM refetches WHERE candidate_key = ?1 AND url = ?2 AND status = 'ok'
+               AND text <> '' AND attempted_at >= ?3
+             ORDER BY id DESC LIMIT 1",
+            params![candidate_key, url, since],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
 /// 这条候选最近一次补读了哪些地址、结果如何（给待核结转页看，不含正文）。
 pub fn refetch_summary(conn: &Connection, candidate_key: &str) -> Result<Vec<(String, String)>> {
     let last: Option<i64> = conn
         .query_row(
-            "SELECT MAX(round_id) FROM refetches WHERE candidate_key = ?1",
+            "SELECT MAX(f.round_id) FROM refetches f JOIN rounds r ON r.id = f.round_id
+             WHERE f.candidate_key = ?1 AND r.kind NOT IN ('backtest', 'replay')",
             [candidate_key],
             |r| r.get(0),
         )

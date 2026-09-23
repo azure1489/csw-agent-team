@@ -46,6 +46,7 @@ type View = 'topic' | 'post'
 
 /** 一行 = 一个选题（按选题看）或一条贴文（按贴文看） */
 interface Line {
+  /** 占这一行位置的那一帖：选题里**生效档最高**的（人工改过档也算），改档与首批都作用在它上面 */
   head: JudgementRow
   members: JudgementRow[]
   topic?: Topic
@@ -89,9 +90,8 @@ export function Ledger() {
         at.set(k, out.length)
         out.push({ head: r, members: [r], topic: byTopic.get(k) })
       } else {
+        // 不换 head：第一次出现的就是生效档最高的那一帖（服务端按生效档排）
         out[i].members.push(r)
-        // 代表帖在前
-        if (r.candidate_key === k) out[i].head = r
       }
     }
     return out
@@ -229,7 +229,7 @@ function Row({
   const j = line.head
   const changed = j.effective_tier !== j.tier
   const title = line.topic?.headline?.trim() || titleOf(j.headline, j.three_sentences)
-  const flags = j.check_flags.length
+  const flags = j.check_flags?.length ?? 0
   return (
     <>
       <tr className="border-t border-rule align-top">
@@ -241,9 +241,10 @@ function Row({
             <div className="text-[13.5px] font-medium text-ink">{title || <Untitled j={j} />}</div>
             <div className="mt-0.5 text-[11.5px] text-muted">
               {j.account} · {j.candidate_key}
-              {line.members.length > 1 && (
+              {Math.max(line.members.length, line.topic?.members.length ?? 0) > 1 && (
                 <span className="ml-1.5 rounded-[var(--r-sm)] bg-accent-soft px-1.5 text-accent">
-                  同一选题 {line.members.length} 帖
+                  同一选题 {Math.max(line.members.length, line.topic?.members.length ?? 0)} 帖
+                  {line.topic && line.members.length < line.topic.members.length && '（其余在别的档）'}
                 </span>
               )}
             </div>
@@ -272,7 +273,7 @@ function Row({
           {!j.image_seen && <div className="text-[11.5px] text-warn">没读到实图</div>}
         </Td>
         <Td>
-          <DedupBadge verdict={j.comparison.verdict} sm />
+          <DedupBadge verdict={j.comparison?.verdict ?? ''} sm />
         </Td>
         <Td right>
           {canEdit ? (
@@ -328,7 +329,7 @@ function Detail({ line, roundId }: { line: Line; roundId?: number }) {
                         {m.account} · {m.candidate_key}
                       </Link>
                       <span className="ml-1.5 text-muted">{TIER_LABEL[m.effective_tier]}</span>
-                      {m.candidate_key === j.candidate_key && (
+                      {m.candidate_key === line.topic?.primary_key && (
                         <span className="ml-1.5 text-muted">（代表帖）</span>
                       )}
                       {n && (
@@ -379,7 +380,7 @@ function Detail({ line, roundId }: { line: Line; roundId?: number }) {
             {j.comparison.note && (
               <div className="mt-1 text-[12.5px] text-muted">{j.comparison.note}</div>
             )}
-            {j.check_flags.length > 0 && (
+            {(j.check_flags?.length ?? 0) > 0 && (
               <>
                 <div className="mb-1 mt-3 text-[12px] font-semibold text-muted">留痕（口径兜底、依据核对）</div>
                 <ul className="m-0 space-y-0.5 pl-4 text-[12.5px] text-warn">

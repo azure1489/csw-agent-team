@@ -213,10 +213,23 @@ pub fn item_inputs_by_topic(
                 },
                 brand: c.as_ref().map(|c| c.account.clone()).unwrap_or_default(),
                 evidence_url: c.as_ref().map(|c| c.url.clone()).unwrap_or_default(),
-                dedup_note: if others.is_empty() {
-                    String::new()
-                } else {
-                    format!("同选题另有 {} 帖：{}", others.len(), others.join(" "))
+                // 去重说明：查重结论 + 同选题的其余帖子。引擎的去重判据看这一栏
+                dedup_note: {
+                    let mut n = format!(
+                        "查重：{}",
+                        csw_collector_deliver::intake::comparison_label(j.comparison.verdict)
+                    );
+                    if let Some(h) = j.comparison.hits.first() {
+                        n.push_str(&format!("（对照《{}》）", h.title));
+                    }
+                    if !others.is_empty() {
+                        n.push_str(&format!(
+                            "；同选题另有 {} 帖：{}",
+                            others.len(),
+                            others.join(" ")
+                        ));
+                    }
+                    n
                 },
                 product: String::new(),
                 source_url: c.as_ref().map(|c| c.url.clone()).unwrap_or_default(),
@@ -396,7 +409,7 @@ mod tests {
         assert_eq!(items.len(), 1, "三帖一个选题，只占一个条目");
         assert_eq!(items[0].item_key, "s2w8-b");
         assert!(
-            items[0].dedup_note.starts_with("同选题另有 2 帖"),
+            items[0].dedup_note.contains("同选题另有 2 帖"),
             "{}",
             items[0].dedup_note
         );

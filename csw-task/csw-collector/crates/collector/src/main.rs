@@ -174,8 +174,9 @@ enum Command {
         /// 关注哪几条：条目键或账号里含这些字样的，逗号分隔
         #[arg(long, value_delimiter = ',')]
         focus: Vec<String>,
-        #[arg(long, default_value = "/tmp/rejudge.md")]
-        out: String,
+        /// 报告写到哪；不给就写到数据目录下 reports/（不用 /tmp：共享主机上固定路径可被抢先放符号链接）
+        #[arg(long)]
+        out: Option<String>,
     },
     /// 导出契约 JSON Schema（阶段 1 的契约冻结产物）
     Schema {
@@ -478,16 +479,15 @@ async fn main() -> anyhow::Result<()> {
             let cfg =
                 csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
             let secrets = csw_collector_core::Secrets::from_env();
-            rejudge::run(
-                &cfg,
-                &secrets,
-                rejudge::Opts {
-                    round,
-                    focus,
-                    out: out.into(),
-                },
-            )
-            .await
+            let out = out.map(std::path::PathBuf::from).unwrap_or_else(|| {
+                cfg.data_dir
+                    .join("reports")
+                    .join(format!("rejudge-{round}.md"))
+            });
+            if let Some(d) = out.parent() {
+                std::fs::create_dir_all(d)?;
+            }
+            rejudge::run(&cfg, &secrets, rejudge::Opts { round, focus, out }).await
         }
         Command::Schema { out } => schema::run(out.as_deref()),
         Command::AuthProbe {

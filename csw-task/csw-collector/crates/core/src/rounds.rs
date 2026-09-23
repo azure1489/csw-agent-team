@@ -375,6 +375,7 @@ fn kind_str(k: RoundKind) -> &'static str {
         RoundKind::Manual => "manual",
         RoundKind::Prefetch => "prefetch",
         RoundKind::Replay => "replay",
+        RoundKind::Backtest => "backtest",
     }
 }
 

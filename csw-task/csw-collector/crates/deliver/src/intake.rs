@@ -400,6 +400,11 @@ fn unanswered_name(u: csw_collector_core::types::Unanswered) -> &'static str {
     }
 }
 
+/// 查重结论的中文名（登记条目的去重说明也用它）。
+pub fn comparison_label(v: csw_collector_core::types::ComparisonVerdict) -> &'static str {
+    comparison_name(v)
+}
+
 fn comparison_name(v: csw_collector_core::types::ComparisonVerdict) -> &'static str {
     use csw_collector_core::types::ComparisonVerdict::*;
     match v {

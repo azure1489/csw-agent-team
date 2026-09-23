@@ -74,17 +74,19 @@ function Item({
   const [noteOpen, setNoteOpen] = useState(false)
   const [note, setNote] = useState('')
   const [allPics, setAllPics] = useState(false)
+  const [coverBad, setCoverBad] = useState(false)
   const has = (m: string) => it.marks.includes(m)
   const t = three(it.three_sentences)
   const rest = it.images.filter((h) => h !== it.cover)
 
   return (
     <article className="overflow-hidden rounded-[var(--r-md)] border border-rule bg-surface">
-      {it.cover && (
+      {it.cover && !coverBad && (
         <img
           src={mediaUrl(it.cover)}
           alt={it.title}
           loading="lazy"
+          onError={() => setCoverBad(true)}
           className="block max-h-[420px] w-full bg-surface-2 object-contain"
         />
       )}

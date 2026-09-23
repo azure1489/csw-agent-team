@@ -39,7 +39,7 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
     let (r, _) = rounds::open_round(
         &conn,
         &rounds::NewRound {
-            kind: RoundKind::Manual,
+            kind: RoundKind::Backtest,
             trigger: RoundTrigger::Manual,
             run_id: None,
             task_id: None,
@@ -279,7 +279,7 @@ mod tests {
         let (r, _) = rounds::open_round(
             &c,
             &rounds::NewRound {
-                kind: RoundKind::Manual,
+                kind: RoundKind::Backtest,
                 trigger: RoundTrigger::Manual,
                 run_id: None,
                 task_id: None,

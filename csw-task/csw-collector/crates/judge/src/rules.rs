@@ -17,7 +17,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use csw_collector_core::types::{
-    ComparisonVerdict, Dim, Gap, GapLevel, GapOwner, HitState, Judgement, Material, MaterialKind,
+    ComparisonVerdict, Dim, Gap, GapLevel, GapOwner, Judgement, Material, MaterialKind,
     NoveltyKind, Tier, Unanswered, Verdict,
 };
 use csw_collector_kb::brands::brand_key;
@@ -51,6 +51,9 @@ pub struct Ctx<'a> {
     pub brand_keys: &'a [String],
     /// 还能不能退回重判。重判过一次的传 false，违例就地修正。
     pub allow_rejudge: bool,
+    /// 这条候选的原文（正文 + 译文 + 补读正文）。**原文里本来就有的「从…改为…」不算编造**——
+    /// 依据要引原话，品牌文案自己这么写，引用它不是模型虚构的对比。
+    pub source_text: &'a str,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -65,16 +68,62 @@ pub struct Applied {
 pub fn apply(j: &mut Judgement, ctx: &Ctx<'_>) -> Applied {
     let mut out = Applied::default();
     let mut retry: Vec<String> = Vec::new();
-    let nos: HashSet<String> = materials::numbered(ctx.materials)
-        .into_iter()
-        .map(|(n, _)| n)
+    let numbered = materials::numbered(ctx.materials);
+    let memory_nos: HashSet<String> = numbered
+        .iter()
+        .filter(|(_, m)| m.kind == MaterialKind::Memory)
+        .map(|(n, _)| n.clone())
         .collect();
+
+    // R0 契约：没读到实图必须待核、每维要有依据。模型偶尔违反，不修的话这条落不了库，
+    // 台账上就平白少一行（它也不在「未判」里）
+    if !j.image_seen && j.tier != Tier::PendingCheck {
+        j.tier = Tier::PendingCheck;
+        if !j.has_decision_gap() {
+            j.gaps.push(Gap {
+                next: "下一轮重新下载、识别后重判".into(),
+                ..Gap::decision("未读到实图")
+            });
+        }
+        out.notes
+            .push(format!("{NOTE}没读到实图却给了结论，改为待核"));
+    }
+    let mut empty_basis = 0;
+    for (_, d) in &mut j.dims {
+        if d.basis.trim().is_empty() {
+            d.basis = "模型没给依据，按不明处理".into();
+            d.verdict = Verdict::Unclear;
+            empty_basis += 1;
+        }
+    }
+    if empty_basis > 0 {
+        out.notes
+            .push(format!("{NOTE}{empty_basis} 个维度没给依据，按不明处理"));
+    }
+
+    // 查重命中的链接、状态、正文可得与否**按材料编号从我们自己的材料里抄**，不信模型写的：
+    // 链接会被渲染成可点的地址（模型被正文诱导写一个 `javascript:` 就是一次存储型 XSS），
+    // 状态决定 R5 认不认「只凭生成稿」（09-24 安全审查）。对不上编号的清空链接，留给 R5 处理。
+    for h in &mut j.comparison.hits {
+        match numbered.iter().find(|(n, _)| n == h.ref_no.trim()) {
+            Some((_, m)) => {
+                h.url = if m.source.starts_with("https://") || m.source.starts_with("http://") {
+                    m.source.clone()
+                } else {
+                    String::new()
+                };
+                h.state = materials::hit_state(&m.publish_state);
+                h.body_available = m.body_available;
+            }
+            None => h.url.clear(),
+        }
+    }
 
     // R2 编造的前后对比
     let evidenced = j.novelty.kind == NoveltyKind::EvidencedChange
         && !j.novelty.prior_evidence.trim().is_empty();
     if !evidenced {
-        let found = contrast_phrases(j);
+        let found = contrast_phrases(j, ctx.source_text);
         if !found.is_empty() {
             if ctx.allow_rejudge {
                 retry.push(format!(
@@ -84,7 +133,7 @@ pub fn apply(j: &mut Judgement, ctx: &Ctx<'_>) -> Applied {
                     found.join("」「")
                 ));
             } else {
-                strip_contrast(j);
+                strip_contrast(j, &found);
                 out.notes.push(format!(
                     "{NOTE}无旧款依据却写了前后对比「{}」，重判后仍在，已删去这些句子",
                     found.join("」「")
@@ -93,35 +142,42 @@ pub fn apply(j: &mut Judgement, ctx: &Ctx<'_>) -> Applied {
         }
     }
 
-    // R5 查重只凭生成稿，或引用了不存在的材料
+    // R5「同一事实无增量」要有站得住的命中：命中的材料得在我们给的材料里、不是生成稿、正文取得到。
+    // 否则只能是查重未确认——生成稿不是近期已发的证据，只看到标题也核不了事实
     if j.comparison.verdict == ComparisonVerdict::SameFactNoGain {
-        let bad_ref = j
-            .comparison
-            .hits
-            .iter()
-            .any(|h| !h.ref_no.trim().is_empty() && !nos.contains(h.ref_no.trim()));
-        let only_generated = j.comparison.hits.is_empty()
-            || j.comparison
-                .hits
-                .iter()
-                .all(|h| h.state == HitState::Generated);
-        if bad_ref || only_generated {
+        let solid = j.comparison.hits.iter().any(|h| {
+            numbered.iter().any(|(n, m)| {
+                n == h.ref_no.trim() && m.kind != MaterialKind::GeneratedPost && m.body_available
+            })
+        });
+        if !solid {
             j.comparison.verdict = ComparisonVerdict::Unconfirmed;
             out.notes.push(format!(
-                "{NOTE}判「同一事实无增量」，但{}，改为查重未确认",
-                if bad_ref {
-                    "引用了不在对照材料里的编号"
-                } else {
-                    "命中的只有生成稿（生成稿不是近期已发的证据）"
-                }
+                "{NOTE}判「同一事实无增量」，但命中的只有生成稿、正文不可得的材料或不存在的编号，改为查重未确认"
             ));
-            if j.tier == Tier::NotRecommend && ctx.allow_rejudge {
-                retry.push(
-                    "你以「同一事实无增量」判了不推荐，但依据只有生成稿或不存在的材料编号。\
-                     生成稿不是近期已发的证据；请只凭正式发布 / 已推草稿箱 / 03 决定查重，\
-                     核不了就填 unconfirmed，并按内容本身的价值重新定档。"
-                        .into(),
-                );
+            if j.tier == Tier::NotRecommend {
+                if ctx.allow_rejudge {
+                    retry.push(
+                        "你以「同一事实无增量」判了不推荐，但依据只有生成稿、正文不可得的材料或不存在的编号。\
+                         生成稿不是近期已发的证据；请只凭正文取得到的正式发布 / 已推草稿箱 / 03 决定查重，\
+                         核不了就填 unconfirmed，并按内容本身的价值重新定档。"
+                            .into(),
+                    );
+                } else {
+                    // 不能再重判：不推荐的理由已经站不住，交给人核
+                    j.tier = Tier::PendingCheck;
+                    j.gaps.push(Gap {
+                        level: GapLevel::Decision,
+                        what: "查重未确认：不推荐的理由是「同一事实已发」，但没有站得住的已发证据"
+                            .into(),
+                        owner: GapOwner::Editor,
+                        tried: "对照材料里只有生成稿或只有标题".into(),
+                        next: "核对是否真的发过，再定档".into(),
+                    });
+                    out.notes.push(format!(
+                        "{NOTE}不推荐只凭查重、而查重站不住，改为待核（原判不推荐）"
+                    ));
+                }
             }
         }
     }
@@ -189,12 +245,15 @@ pub fn apply(j: &mut Judgement, ctx: &Ctx<'_>) -> Applied {
 
     // R6 缺口
     if j.tier == Tier::PendingCheck && !j.has_decision_gap() {
-        j.gaps.push(Gap::decision(match j.unanswered {
-            Unanswered::MissingMaterial => "关键资料尚未取得",
-            Unanswered::AngleNotFormed => "报道角度尚未成立",
-            Unanswered::LowValue => "价值是否成立尚待确认",
-            Unanswered::None => "判断所需的关键信息尚待确认",
-        }));
+        j.gaps.push(Gap {
+            next: "补读或人工核对后重判".into(),
+            ..Gap::decision(match j.unanswered {
+                Unanswered::MissingMaterial => "关键资料尚未取得",
+                Unanswered::AngleNotFormed => "报道角度尚未成立",
+                Unanswered::LowValue => "价值是否成立尚待确认",
+                Unanswered::None => "判断所需的关键信息尚待确认",
+            })
+        });
         out.notes.push(format!(
             "{NOTE}待核却没写影响判断的缺口，已按「答不清」的原因补一条"
         ));
@@ -217,10 +276,10 @@ pub fn apply(j: &mut Judgement, ctx: &Ctx<'_>) -> Applied {
 
     // 选题记忆的引用只能是给出的编号
     let before = j.memory_refs.len();
-    j.memory_refs.retain(|r| nos.contains(r.trim()));
+    j.memory_refs.retain(|r| memory_nos.contains(r.trim()));
     if j.memory_refs.len() < before {
         out.notes.push(format!(
-            "{NOTE}引用了 {} 个不存在的选题记忆编号，已去掉",
+            "{NOTE}引用了 {} 个不是选题记忆的编号，已去掉",
             before - j.memory_refs.len()
         ));
     }
@@ -253,13 +312,13 @@ pub fn apply(j: &mut Judgement, ctx: &Ctx<'_>) -> Applied {
     out
 }
 
-/// 结论里所有写了前后对比的片段。
-pub fn contrast_phrases(j: &Judgement) -> Vec<String> {
+/// 结论里所有写了前后对比的片段。**原文里本来就有的不算**（见 [`Ctx::source_text`]）。
+pub fn contrast_phrases(j: &Judgement, source: &str) -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
     for text in contrast_fields(j) {
         for m in CONTRAST.find_iter(text) {
             let s = m.as_str().to_string();
-            if !found.contains(&s) {
+            if !source.contains(&s) && !found.contains(&s) {
                 found.push(s);
             }
         }
@@ -283,16 +342,20 @@ fn contrast_fields(j: &Judgement) -> Vec<&str> {
     v
 }
 
-/// 把含前后对比的句子换成占位。每个字段至多留一个占位。
-fn strip_contrast(j: &mut Judgement) {
+/// 把含（编造的）前后对比的句子换成占位。每个字段至多留一个占位。
+///
+/// 标题特殊：它没有句号，整条会被当成一句删光、连产品名一起没了。所以标题只保留「｜」前的
+/// 具体对象；对象本身也含对比就清空，交给 R7 用「是什么」那句重建。
+fn strip_contrast(j: &mut Judgement, found: &[String]) {
+    let hit = |x: &str| found.iter().any(|f| x.contains(f.as_str()));
     let fix = |s: &mut String| {
-        if !CONTRAST.is_match(s) {
+        if !hit(s) {
             return;
         }
         let mut out = String::new();
         let mut placed = false;
         for m in SENTENCE.find_iter(s) {
-            if CONTRAST.is_match(m.as_str()) {
+            if hit(m.as_str()) {
                 if !placed {
                     out.push_str(STRIPPED);
                     placed = true;
@@ -303,7 +366,16 @@ fn strip_contrast(j: &mut Judgement) {
         }
         *s = out;
     };
-    fix(&mut j.headline);
+    if hit(&j.headline) {
+        let object = j
+            .headline
+            .split('｜')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        j.headline = if hit(&object) { String::new() } else { object };
+    }
     fix(&mut j.three_sentences.what);
     fix(&mut j.three_sentences.why_worth);
     fix(&mut j.three_sentences.grounds);
@@ -330,13 +402,14 @@ pub fn wants_refetch(j: &Judgement) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use csw_collector_core::types::{ComparisonHit, Novelty};
+    use csw_collector_core::types::{ComparisonHit, HitState, Novelty};
 
     fn ctx<'a>(ms: &'a [Material], brands: &'a [String], again: bool) -> Ctx<'a> {
         Ctx {
             materials: ms,
             brand_keys: brands,
             allow_rejudge: again,
+            source_text: "",
         }
     }
 
@@ -388,7 +461,8 @@ mod tests {
         let a = apply(&mut j, &ctx(&[], &[], false));
         assert!(a.rejudge.is_none());
         assert_eq!(j.three_sentences.what, format!("{STRIPPED}背面有收纳袋。"));
-        assert!(!j.headline.contains("告别"));
+        // 标题只删推荐理由里的对比，产品名留着
+        assert_eq!(j.headline, "norbit 夹克");
         assert!(a.notes.iter().any(|n| n.contains("已删去")));
     }
 
@@ -496,7 +570,7 @@ mod tests {
         let a = apply(&mut j, &ctx(&[], &[], true));
         assert_eq!(j.comparison.verdict, ComparisonVerdict::Unconfirmed);
         assert!(j.memory_refs.is_empty());
-        assert!(a.notes.iter().any(|n| n.contains("不存在的选题记忆编号")));
+        assert!(a.notes.iter().any(|n| n.contains("不是选题记忆的编号")));
     }
 
     #[test]
@@ -524,6 +598,81 @@ mod tests {
         j.headline = "很".repeat(41);
         let a = apply(&mut j, &ctx(&[], &[], true));
         assert!(a.notes.iter().any(|n| n.contains("超过")));
+    }
+
+    #[test]
+    fn 查重命中的链接与状态按材料抄不信模型() {
+        let mut ms = vec![material(MaterialKind::GeneratedPost, "生成稿", "", true)];
+        ms[0].source = "https://csw.example/p/1".into();
+        ms[0].publish_state = "generated".into();
+        let mut j = Judgement::fixture("k", Tier::Recommend);
+        j.comparison.hits = vec![
+            ComparisonHit {
+                ref_no: "M1".into(),
+                url: "javascript:alert(1)".into(),
+                // 模型谎称这是正式发布
+                state: HitState::Published,
+                ..Default::default()
+            },
+            ComparisonHit {
+                ref_no: "M9".into(),
+                url: "javascript:alert(2)".into(),
+                ..Default::default()
+            },
+        ];
+        apply(&mut j, &ctx(&ms, &[], true));
+        assert_eq!(j.comparison.hits[0].url, "https://csw.example/p/1");
+        assert_eq!(j.comparison.hits[0].state, HitState::Generated);
+        assert!(j.comparison.hits[1].url.is_empty());
+    }
+
+    #[test]
+    fn 原文里本来就有的对比不算编造() {
+        let mut j = Judgement::fixture("k", Tier::Recommend);
+        j.dims[0].1.basis = "正文「背板从铝框改为碳纤维」".into();
+        let a = apply(
+            &mut j,
+            &Ctx {
+                source_text: "新款背板从铝框改为碳纤维，更轻。",
+                ..ctx(&[], &[], true)
+            },
+        );
+        assert!(a.rejudge.is_none(), "{a:?}");
+    }
+
+    #[test]
+    fn 不能重判时只凭生成稿的不推荐改待核() {
+        let ms = [material(MaterialKind::GeneratedPost, "生成稿", "", true)];
+        let mut j = Judgement::fixture("k", Tier::NotRecommend);
+        j.comparison.verdict = ComparisonVerdict::SameFactNoGain;
+        j.comparison.hits = vec![ComparisonHit {
+            ref_no: "M1".into(),
+            ..Default::default()
+        }];
+        apply(&mut j, &ctx(&ms, &[], false));
+        assert_eq!(j.tier, Tier::PendingCheck);
+        assert!(j.has_decision_gap());
+        assert!(j.violations().is_empty(), "{:?}", j.violations());
+        // 只有标题（正文不可得）的已发也站不住
+        let ms = [material(MaterialKind::Published, "已发", "", false)];
+        let mut j = Judgement::fixture("k", Tier::Alternate);
+        j.comparison.verdict = ComparisonVerdict::SameFactNoGain;
+        j.comparison.hits = vec![ComparisonHit {
+            ref_no: "M1".into(),
+            ..Default::default()
+        }];
+        apply(&mut j, &ctx(&ms, &[], true));
+        assert_eq!(j.comparison.verdict, ComparisonVerdict::Unconfirmed);
+    }
+
+    #[test]
+    fn 契约违例就地修好不让这条落不了库() {
+        let mut j = Judgement::fixture("k", Tier::Recommend);
+        j.image_seen = false;
+        j.dims[3].1.basis = " ".into();
+        apply(&mut j, &ctx(&[], &[], true));
+        assert_eq!(j.tier, Tier::PendingCheck);
+        assert!(j.violations().is_empty(), "{:?}", j.violations());
     }
 
     #[test]

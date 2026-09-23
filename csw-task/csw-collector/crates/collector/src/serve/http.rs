@@ -734,11 +734,14 @@ async fn pending_check(State(st): State<Arc<AppState>>) -> Result<Json<Vec<Pendi
             continue;
         };
         // 从最新一轮往回数，连续是待核的有几轮
+        // 只数正式派单的轮、看有效档：预取轮与回测轮不算「挂了一轮」，人改过档的也不算待核
         let mut st_hist = conn
-            .prepare(
-                "SELECT tier, created_at FROM judgements WHERE candidate_key = ?1
-                 ORDER BY round_id DESC",
-            )
+            .prepare_cached(&format!(
+                "SELECT {}, j.created_at FROM judgements j JOIN rounds r ON r.id = j.round_id
+                 WHERE j.candidate_key = ?1 AND r.kind = 'task'
+                 ORDER BY j.round_id DESC",
+                ledger::EFFECTIVE_TIER_SQL
+            ))
             .map_err(ApiError::db)?;
         let hist: Vec<(String, String)> = st_hist
             .query_map([&key], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -777,7 +780,7 @@ async fn pending_check(State(st): State<Arc<AppState>>) -> Result<Json<Vec<Pendi
             account,
             url,
             cover,
-            rounds_pending: streak.len().max(1),
+            rounds_pending: streak.len(),
             first_pending_at: streak.last().map(|(_, at)| at.clone()).unwrap_or_default(),
             gaps: serde_json::Value::Array(decision),
         });
@@ -1333,9 +1336,15 @@ async fn van_today(State(st): State<Arc<AppState>>) -> Result<Json<serde_json::V
                     .as_array()
                     .map(|a| {
                         a.iter()
-                            .filter(|g| g.get("level").and_then(|l| l.as_str()) == Some("decision"))
-                            .filter_map(|g| g.get("what").and_then(|w| w.as_str()))
-                            .map(str::to_string)
+                            .filter_map(|g| match g.as_str() {
+                                // 旧行的缺口是纯字符串：按「影响判断」算，与台账一致
+                                Some(s) => Some(s.to_string()),
+                                None => (g.get("level").and_then(|l| l.as_str())
+                                    == Some("decision"))
+                                .then(|| g.get("what").and_then(|w| w.as_str()))
+                                .flatten()
+                                .map(str::to_string),
+                            })
                             .collect()
                     })
                     .unwrap_or_default(),
@@ -1351,9 +1360,27 @@ async fn van_today(State(st): State<Arc<AppState>>) -> Result<Json<serde_json::V
         .filter_map(Result::ok)
         .collect();
 
-    // 按选题收拢：同一选题只出一张卡（代表帖），其余帖子挂在 `also` 里，不占推荐位
+    // 按选题收拢：同一选题只出一张卡，其余帖子挂在 `also` 里，不占推荐位。
+    // 卡片用选题的代表帖与综合出来的标题；代表帖不在推荐 / 备选里时，用这一组里排最前的那帖
+    let topics = csw_collector_core::topics::topics(&conn, round).map_err(ApiError::any)?;
+    let mut rows = rows;
+    rows.sort_by_key(|it| {
+        let t = topics
+            .iter()
+            .find(|t| t.members.contains(&it.candidate_key));
+        let tier = if it.tier == "recommend" { 0 } else { 1 };
+        (tier, t.is_none_or(|t| t.primary_key != it.candidate_key))
+    });
     let mut items: Vec<VanItem> = Vec::new();
     for mut it in rows {
+        if let Some(t) = topics
+            .iter()
+            .find(|t| t.members.len() > 1 && t.members.contains(&it.candidate_key))
+            && t.primary_key == it.candidate_key
+            && !t.headline.trim().is_empty()
+        {
+            it.title = t.headline.clone();
+        }
         it.marks = marks
             .iter()
             .filter(|m| m.candidate_key == it.candidate_key)

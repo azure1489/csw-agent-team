@@ -480,6 +480,10 @@ func TestDailyNewsV10Draft(t *testing.T) {
 	if n9 == 0 || n9 != n10 || d9 != d10 {
 		t.Fatalf("v10 应照 v9 复制：阶段 %d/%d，依赖 %d/%d", n9, n10, d9, d10)
 	}
+	gates := `SELECT COUNT(*) FROM workflow_gates WHERE workflow_id=(SELECT id FROM workflows WHERE wf_key='daily_news' AND version=?)`
+	if g9, g10 := q(9, gates), q(10, gates); g9 == 0 || g9 != g10 {
+		t.Fatalf("v10 应照 v9 复制闸：%d/%d", g9, g10)
+	}
 	var shortlist string
 	if err := db.QueryRow(`SELECT s.instructions FROM workflow_stages s JOIN workflows w ON w.id=s.workflow_id
 		WHERE w.wf_key='daily_news' AND w.version=10 AND s.code='shortlist'`).Scan(&shortlist); err != nil {
