@@ -273,17 +273,43 @@ fn card_miss_reason(out: &TurnOutcome) -> String {
 }
 
 fn parse_card(out: &TurnOutcome, candidate_key: &str) -> Option<Card> {
-    let text = out.text.trim();
-    let raw = if text.is_empty() { None } else { Some(text) }?;
-    // 结构化输出应当就是一段 JSON；模型偶尔会在外面裹一层围栏
-    let body = raw
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
-    let mut card: Card = serde_json::from_str(body).ok()?;
+    let mut card = find_card(out.text.trim())?;
     card.candidate_key = candidate_key.to_string();
     Some(card)
+}
+
+/// 从回复里找出条目卡那段 JSON。
+///
+/// 回合里常有好几条 agentMessage：先一句「我会核对来源……」，最后才是 JSON。
+/// 拼起来整段解析，第一个字就错——09-23 演练两次、12 条深核全挂在这儿。
+/// 先整段试（去掉围栏）；不行就从后往前，找**行首**的 `{` 逐个试，取最后一段能解析的。
+fn find_card(text: &str) -> Option<Card> {
+    if text.is_empty() {
+        return None;
+    }
+    let strip = |t: &str| {
+        t.trim()
+            .trim_start_matches("```json")
+            .trim_start_matches("```")
+            .trim_end_matches("```")
+            .trim()
+            .to_string()
+    };
+    if let Ok(c) = serde_json::from_str::<Card>(&strip(text)) {
+        return Some(c);
+    }
+    let starts: Vec<usize> = text
+        .char_indices()
+        .filter(|(i, ch)| *ch == '{' && (*i == 0 || text[..*i].ends_with('\n')))
+        .map(|(i, _)| i)
+        .collect();
+    for i in starts.into_iter().rev() {
+        let mut de = serde_json::Deserializer::from_str(&text[i..]).into_iter::<Card>();
+        if let Some(Ok(c)) = de.next() {
+            return Some(c);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -423,5 +449,17 @@ mod tests {
             .gap_note()
             .is_none()
         );
+    }
+
+    #[test]
+    fn 开场白之后的json也认得() {
+        let text = "我会核对来源与首次披露线索，并检查完整图。\n\n{\"disclosed_at\": \"2026-09-20\", \"gaps\": [\"缺价格\"]}\n";
+        let c = find_card(text).expect("该认出条目卡");
+        assert_eq!(c.disclosed_at, "2026-09-20");
+        assert_eq!(c.gaps, vec!["缺价格".to_string()]);
+        // 围栏也照认
+        assert!(find_card("```json\n{\"gaps\": []}\n```").is_some());
+        // 纯文字没有卡
+        assert!(find_card("核不到，没有结论。").is_none());
     }
 }
