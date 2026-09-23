@@ -155,7 +155,8 @@ pub async fn run(o: &Opts, model: Option<&ModelClient>) -> Result<()> {
     let batches: Vec<&[QuoteIn]> = quotes.chunks(BATCH).collect();
     if !o.confirm_send_to_model {
         let d = dry_run(&quotes, &batches);
-        print_dry_run(&d, &o.quotes);
+        std::fs::create_dir_all(&o.out).ok();
+        print_dry_run(&d, &o.quotes, &o.out);
         return Ok(());
     }
 
@@ -237,7 +238,7 @@ fn dry_run(quotes: &[QuoteIn], batches: &[&[QuoteIn]]) -> DryRun {
     }
 }
 
-fn print_dry_run(d: &DryRun, src: &Path) {
+fn print_dry_run(d: &DryRun, src: &Path, out: &Path) {
     println!("# P5 第二步 · 干跑\n");
     println!("**一个字节都没有发出去。**\n");
     println!("| 项 | 值 |");
@@ -250,7 +251,29 @@ fn print_dry_run(d: &DryRun, src: &Path) {
         "\n送出去的东西里**包含 Van 的原话与上下文**，收件方是 csw-subapi（第三方）。\n\
          确认要发的话，加 `--confirm-send-to-model` 重跑。\n"
     );
-    println!("---\n\n## 第一批送出去的原文\n\n```\n{}\n```", d.sample);
+    // 样例里是原话。**不打到标准输出**：这条命令常经 ssh 远程跑，标准输出会原样
+    // 回到发命令的那一端（09-23 就这样把几条原话带进了操作会话）。写进产物目录，0600。
+    let path = out.join("dry-run-sample.txt");
+    match write_private(&path, &d.sample) {
+        Ok(()) => println!(
+            "第一批要送出去的原文（含原话）写在 {}（0600），要看去那里看。",
+            path.display()
+        ),
+        Err(e) => println!("样例写不下来（{e:#}）；为免原话外露，不打到这里。"),
+    }
+}
+
+fn write_private(path: &Path, text: &str) -> Result<()> {
+    use std::io::Write;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    o.mode(0o600);
+    let mut f = o.open(path)?;
+    f.write_all(text.as_bytes())?;
+    Ok(())
 }
 
 fn prompt_for(batch: &[QuoteIn]) -> String {
