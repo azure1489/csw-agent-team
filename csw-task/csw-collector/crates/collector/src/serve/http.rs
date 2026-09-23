@@ -185,7 +185,10 @@ async fn healthz(State(st): State<Arc<AppState>>) -> Response {
                     ),
                 }
             },
-        ],
+        ]
+        .into_iter()
+        .chain(jev_dep(&st))
+        .collect(),
         outbox_conflicts: conflicts as usize,
     };
     let code = if h.ok {
@@ -194,6 +197,23 @@ async fn healthz(State(st): State<Arc<AppState>>) -> Response {
         StatusCode::SERVICE_UNAVAILABLE
     };
     (code, Json(h)).into_response()
+}
+
+/// Jev 那一项。**不影响总体 `ok`**：Jev 挂了判断照样能做，只是少了初评——
+/// 看门狗按总体 `ok` 判「服务挂没挂」，不该因为它回退。但要亮出来：
+/// 09-22 起它每次 404、只在日志里留 WARN，两天没人发现。没配 Jev 就不列。
+fn jev_dep(st: &AppState) -> Option<DepStatus> {
+    let jev = st.svc.as_ref()?.jev.as_ref()?;
+    let (n, e) = jev.health();
+    Some(DepStatus {
+        name: "jev".into(),
+        ok: n < csw_collector_core::jev::JEV_UNHEALTHY_AFTER,
+        note: if n == 0 {
+            "正常".into()
+        } else {
+            format!("连续失败 {n} 次：{e}")
+        },
+    })
 }
 
 /// Prometheus 文本格式。**故意只有计数，没有分数**。

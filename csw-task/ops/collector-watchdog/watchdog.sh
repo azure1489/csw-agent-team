@@ -226,7 +226,9 @@ fi
 
 # 四、服务活着但库读不了
 HZ="$(curl -s -m 10 "$HEALTHZ")"
-printf '%s' "$HZ" | grep -q '"ok":true' ||
+# 只看最外层的 ok（它是第一个字段）。原先 grep 整段的 "ok":true，任何一项依赖是好的
+# 就算过——总体不健康、磁盘那项正常时，这条永远报不出来
+printf '%s' "$HZ" | grep -q '^{"ok":true' ||
   alert_once db_bad "healthz 说不健康（本地库读不了就是它）：$HZ"
 
 exit 0

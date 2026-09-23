@@ -175,7 +175,16 @@ pub struct JevClient {
     sem: Arc<Semaphore>,
     /// 录制回放。`None` 等同直连。
     rec: Option<Arc<crate::record::Recorder>>,
+    /// 连续失败了几次、最后一次为什么。成功一次就清零。
+    ///
+    /// Jev 挂了判断照样能做（初评跳过、窄判断退回生成模型），所以它的失败**不拦路**——
+    /// 也正因为不拦路，09-22 到 09-23 地址拼重、每次 404，只在日志里留了 164 行 WARN，
+    /// 谁都没发现。`/healthz` 靠这两个数把它亮出来。
+    health: Arc<(std::sync::atomic::AtomicU32, std::sync::Mutex<String>)>,
 }
+
+/// 连续失败到几次就在 `/healthz` 里标红
+pub const JEV_UNHEALTHY_AFTER: u32 = 3;
 
 impl JevClient {
     pub fn new(cfg: JevConfig, api_key: &str) -> Result<Self> {
@@ -188,7 +197,31 @@ impl JevClient {
             api_key: api_key.to_string(),
             sem,
             rec: None,
+            health: Arc::new((
+                std::sync::atomic::AtomicU32::new(0),
+                std::sync::Mutex::new(String::new()),
+            )),
         })
+    }
+
+    /// （连续失败次数, 最后一次的错误）
+    pub fn health(&self) -> (u32, String) {
+        let n = self.health.0.load(std::sync::atomic::Ordering::Relaxed);
+        let e = self.health.1.lock().map(|g| g.clone()).unwrap_or_default();
+        (n, e)
+    }
+
+    fn note(&self, r: &Result<Answers>) {
+        use std::sync::atomic::Ordering;
+        match r {
+            Ok(_) => self.health.0.store(0, Ordering::Relaxed),
+            Err(e) => {
+                self.health.0.fetch_add(1, Ordering::Relaxed);
+                if let Ok(mut g) = self.health.1.lock() {
+                    *g = format!("{e:#}").chars().take(200).collect();
+                }
+            }
+        }
     }
 
     /// 挂上录制回放层。回放模式下**不出网**，未命中即失败。
@@ -203,6 +236,16 @@ impl JevClient {
     /// 答案，分成几次请求既慢又贵。要分次，只有当后一个问题得先看到前一个的答案
     /// 才能构造出来。
     pub async fn ask(
+        &self,
+        state: &Value,
+        questions: &BTreeMap<String, Question>,
+    ) -> Result<Answers> {
+        let r = self.ask_inner(state, questions).await;
+        self.note(&r);
+        r
+    }
+
+    async fn ask_inner(
         &self,
         state: &Value,
         questions: &BTreeMap<String, Question>,
@@ -475,5 +518,42 @@ mod tests {
             endpoint(&crate::Config::default().jev.base_url),
             "https://api.typesafe.ai/v1/systemone"
         );
+    }
+
+    #[tokio::test]
+    async fn 连续失败记得住_成功一次就清零() {
+        let srv = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(404).set_body_string(r#"{"detail":"Not Found"}"#),
+            )
+            .up_to_n_times(3)
+            .with_priority(1)
+            .mount(&srv)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({"answers": {"q": {"type": "noul", "noul": 0.9}}})),
+            )
+            .with_priority(2)
+            .mount(&srv)
+            .await;
+        let cfg = JevConfig {
+            base_url: srv.uri(),
+            max_attempts: 1,
+            ..Default::default()
+        };
+        let c = JevClient::new(cfg, "k").unwrap();
+        let mut qs = BTreeMap::new();
+        qs.insert("q".to_string(), Question::noul("是不是", "是", "不是"));
+        for _ in 0..3 {
+            assert!(c.ask(&json!("s"), &qs).await.is_err());
+        }
+        let (n, e) = c.health();
+        assert_eq!(n, 3);
+        assert!(e.contains("404"), "{e}");
+        assert!(c.ask(&json!("s"), &qs).await.is_ok());
+        assert_eq!(c.health().0, 0);
     }
 }
