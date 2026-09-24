@@ -228,7 +228,7 @@ pub fn tier_counts(conn: &Connection, round_id: i64) -> Result<Vec<(String, usiz
         .collect())
 }
 
-/// 已判的条目键。用来算「窗口内去重候选数 = 台账行数」这条对账。
+/// 已判的条目键。用来算「窗口内候选数 = 台账行数」这条对账。
 pub fn judged_keys(conn: &Connection, round_id: i64) -> Result<Vec<String>> {
     let mut st = conn
         .prepare("SELECT candidate_key FROM judgements WHERE round_id=?1 ORDER BY candidate_key")?;

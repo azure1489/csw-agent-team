@@ -254,7 +254,7 @@ func BuildIntakeCheck(ctx context.Context, q *sqlite.Queries, runID int64) ([]In
 	// 为什么必须分支：旧的 checkYield 拿「已审 − 登记」对账，假设的是「审过的就该登记」。
 	// 工作台是**每条都判**——一期审 358 条、只登记二十来条，剩下的都判了「不推荐」并留在台账里。
 	// 拿旧判据去套，这个落差会永远是三百多，每期必判红。
-	// 新口径对的是「判过的条数 = 窗口内去重候选数」：一条都不许漏判。
+	// 新口径对的是「判过的条数 = 窗口内候选数」：一条都不许漏判。
 	if len(tr.Judgements) > 0 {
 		out = append(out, checkJudgedAll(tr))
 		out = append(out, checkPendingCheckConsistency(tr))
@@ -270,10 +270,11 @@ func BuildIntakeCheck(ctx context.Context, q *sqlite.Queries, runID int64) ([]In
 	return out, nil
 }
 
-// checkJudgedAll 每条都判：台账行数要盖住窗口内的去重候选数。
+// checkJudgedAll 每条都判：台账行数要盖住窗口内的候选数。
 //
-// 只在有判断台账时才跑。分母取 csw_api 采集轮的去重获取数——那是工作台自己算出来的
-// 「这一轮到底有多少条不同的候选」，比 found（含重复）诚实。
+// 只在有判断台账时才跑。分母取 csw_api 采集轮的**窗口内**条数（in_window）。
+// 不能取去重获取数（fetched_unique）：工作台按发布时间取一个更宽的窗口、再在本地按首次入库时间收口，
+// fetched_unique 是收口之前的数——r53 取到 1274、窗口内 99、判了 99，拿 1274 去比就误报「漏判 1175」。
 // 没有 csw_api 采集轮就不判定：别的采集方式没有这个计数，硬套会得出假结论。
 func checkJudgedAll(tr IntakeTrace) IntakeCheck {
 	c := IntakeCheck{Name: "每条都判：窗口内的候选一条都没漏"}
@@ -283,7 +284,7 @@ func checkJudgedAll(tr IntakeTrace) IntakeCheck {
 			continue
 		}
 		hasAPI = true
-		unique += sw.FetchedUnique
+		unique += sw.InWindow
 		unreviewed += sw.Unreviewed
 	}
 	judged, carried, pending := 0, 0, 0
@@ -302,7 +303,7 @@ func checkJudgedAll(tr IntakeTrace) IntakeCheck {
 		c.Detail += "；本期没有 csw_api 采集轮，没有去重候选数可比，不判定"
 		return c
 	}
-	c.Detail += fmt.Sprintf("；csw_api 去重候选 %d、未审 %d", unique, unreviewed)
+	c.Detail += fmt.Sprintf("；csw_api 窗口内候选 %d、未审 %d", unique, unreviewed)
 	if unreviewed > 0 {
 		c.Detail += "——工作台每条都判，未审应当为 0；有未审说明这一步没跑完"
 		return c

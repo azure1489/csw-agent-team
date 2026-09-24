@@ -268,7 +268,7 @@ func TestIntakeCheckJudgementBranch(t *testing.T) {
 		t.Fatalf("有 1 条没读到图，应当通过但带提醒：%+v", pend)
 	}
 
-	// 漏判一条：把去重候选数提到 5，台账只有 3 条 → 判红
+	// 漏判一条：把窗口内候选数提到 5，台账只有 3 条 → 判红
 	if _, err := e.ReportSweeps(ctx, collector, collectorRole, runID, []SweepInput{
 		{SweepKey: "csw-window", Platform: "instagram", SourceKey: "channel", Tool: "csw_api",
 			Found: 438, FetchedUnique: 5, Reviewed: 5, Unreviewed: 0, InWindow: 5, Registered: 1, Result: "ok"},
@@ -278,6 +278,18 @@ func TestIntakeCheckJudgementBranch(t *testing.T) {
 	checks, _ = BuildIntakeCheck(ctx, st.Q(), runID)
 	if judged, _ := checkByName(checks, "每条都判"); judged.OK {
 		t.Fatalf("漏判 2 条应当判红：%+v", judged)
+	}
+
+	// r53 的形状：按发布时间取宽、本地按入库时间收口——去重获取 1274、窗口内 3、判了 3 → 不算漏判
+	if _, err := e.ReportSweeps(ctx, collector, collectorRole, runID, []SweepInput{
+		{SweepKey: "csw-window", Platform: "instagram", SourceKey: "channel", Tool: "csw_api",
+			Found: 1274, FetchedUnique: 1274, Reviewed: 3, Unreviewed: 0, InWindow: 3, Registered: 1, Result: "ok"},
+	}); err != nil {
+		t.Fatalf("re-report wide: %v", err)
+	}
+	checks, _ = BuildIntakeCheck(ctx, st.Q(), runID)
+	if judged, _ := checkByName(checks, "每条都判"); !judged.OK {
+		t.Fatalf("窗口内 3 条都判了，不该因为收口前的 1274 判红：%+v", judged)
 	}
 
 	// 有未审：工作台每条都判，未审 > 0 说明这一步没跑完 → 判红
