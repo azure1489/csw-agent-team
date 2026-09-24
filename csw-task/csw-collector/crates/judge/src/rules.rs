@@ -40,6 +40,14 @@ static CONTRAST: LazyLock<Regex> = LazyLock::new(|| {
     .expect("正则")
 });
 
+/// 「没看全图」一类的缺口。**只在全部图片都已识别时**才拿来删——那时它说的不是事实。
+static IMAGE_UNREAD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"未(?:能)?(?:真正)?(?:读到|看到|查看|读取|实读)[^；。]{0,12}实图|(?:只|仅)(?:实际|实)?(?:查看|读取|读到|读|看|见)了?(?:前\s*(?:3|三)\s*张|第\s*1\s*(?:[—\-–~至到、]\s*)?3\s*张)|逐图核验|全图(?:核验|审核|判断)|(?:文字|画面)(?:描述|说明|摘要)(?:替代|代替)",
+    )
+    .expect("正则")
+});
+
 /// 句子切分：连同句末标点一起切。
 static SENTENCE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[^。；！？\n]+[。；！？\n]?").expect("正则"));
@@ -51,6 +59,8 @@ pub struct Ctx<'a> {
     pub brand_keys: &'a [String],
     /// 还能不能退回重判。重判过一次的传 false，违例就地修正。
     pub allow_rejudge: bool,
+    /// 这条的全部图片都已由识图步骤看过（代码算的，见 `pipeline::Item::image_seen`）
+    pub images_all_read: bool,
     /// 这条候选的原文（正文 + 译文 + 补读正文）。**原文里本来就有的「从…改为…」不算编造**——
     /// 依据要引原话，品牌文案自己这么写，引用它不是模型虚构的对比。
     pub source_text: &'a str,
@@ -74,6 +84,28 @@ pub fn apply(j: &mut Judgement, ctx: &Ctx<'_>) -> Applied {
         .filter(|(_, m)| m.kind == MaterialKind::Memory)
         .map(|(n, _)| n.clone())
         .collect();
+
+    // R8 图都看过了还说没看图。判断只随附前 3 张缩略、其余给看图结果，模型会把它当成
+    // 「没读到第 4 张以后的实图」落待核——09-24 r53 的 61 条待核里 52 条是这个
+    if ctx.images_all_read {
+        j.image_seen = true;
+        let before = j.gaps.len();
+        j.gaps.retain(|g| !IMAGE_UNREAD.is_match(&g.what));
+        let dropped = before - j.gaps.len();
+        if dropped > 0 {
+            out.notes.push(format!(
+                "{NOTE}全部图片已由识图步骤看过，去掉 {dropped} 条「没看全图」的缺口"
+            ));
+            if j.tier == Tier::PendingCheck && !j.has_decision_gap() && ctx.allow_rejudge {
+                retry.push(
+                    "你因为「没看全图」判了待核。这条的全部图片都已由识图步骤逐张看过原图，\
+                     「第 N 张」后面就是看图结果，只随附部分缩略不是没读到实图。\
+                     请按已有的正文与看图结果重新定档；真有影响选题判断的缺口才判待核。"
+                        .into(),
+                );
+            }
+        }
+    }
 
     // R0 契约：没读到实图必须待核、每维要有依据。模型偶尔违反，不修的话这条落不了库，
     // 台账上就平白少一行（它也不在「未判」里）
@@ -409,6 +441,7 @@ mod tests {
             materials: ms,
             brand_keys: brands,
             allow_rejudge: again,
+            images_all_read: false,
             source_text: "",
         }
     }
@@ -673,6 +706,53 @@ mod tests {
         apply(&mut j, &ctx(&[], &[], true));
         assert_eq!(j.tier, Tier::PendingCheck);
         assert!(j.violations().is_empty(), "{:?}", j.violations());
+    }
+
+    #[test]
+    fn 图都看过了就不许因为没看全图待核() {
+        let mut j = Judgement::fixture("k", Tier::PendingCheck);
+        j.image_seen = false;
+        j.gaps = vec![
+            Gap::decision("未读到实图：第4—8张；目前只读到第1—3张。"),
+            Gap::decision(
+                "未读到第4—6张实图；只实际查看了第1—3张，不能用画面文字说明替代逐图核验。",
+            ),
+            Gap {
+                level: GapLevel::Production,
+                ..Gap::decision("缺具体上市日期与价格")
+            },
+        ];
+        let all = |again| Ctx {
+            images_all_read: true,
+            ..ctx(&[], &[], again)
+        };
+        let a = apply(&mut j, &all(true));
+        assert!(j.image_seen);
+        assert!(
+            !j.gaps.iter().any(|g| g.what.contains("实图")),
+            "{:?}",
+            j.gaps
+        );
+        assert!(j.gaps.iter().any(|g| g.what.contains("上市日期")));
+        assert!(a.rejudge.is_some(), "只因图待核的要退回重判");
+
+        // 还有别的影响判断的缺口：不退回，只删图的那条
+        let mut j = Judgement::fixture("k", Tier::PendingCheck);
+        j.gaps = vec![
+            Gap::decision("未读到第4—18张实图，仅实际查看第1—3张。"),
+            Gap::decision("产品身份无法确认"),
+        ];
+        let a = apply(&mut j, &all(true));
+        assert!(a.rejudge.is_none(), "{a:?}");
+        assert_eq!(j.gaps.len(), 1);
+
+        // 图没识别全的（代码没标全读）：缺口照留
+        let mut j = Judgement::fixture("k", Tier::PendingCheck);
+        j.image_seen = false;
+        j.gaps = vec![Gap::decision("未读到实图")];
+        apply(&mut j, &ctx(&[], &[], true));
+        assert_eq!(j.gaps.len(), 1);
+        assert!(!j.image_seen);
     }
 
     #[test]

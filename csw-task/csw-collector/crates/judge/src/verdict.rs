@@ -47,7 +47,9 @@ pub const IMAGES_PER_CANDIDATE: usize = 3;
 ///
 /// v3（09-23）：新六维、三句话换成「是什么 / 为什么值得看 / 依据是什么」、
 /// headline / novelty / readiness、查重 hits 与「未确认」、缺口三级。
-pub const PROMPT_VERSION: &str = "judge/v3";
+/// v4（09-24）：讲清「每张图都识别」由识图步骤完成、`image_seen` 改由代码定；
+/// 对照材料为空、03 决定不带原话都不是缺口；作业标准注明哪些步骤不归模型管。
+pub const PROMPT_VERSION: &str = "judge/v4";
 /// 一批的输出上限。实测每条出 780 token，六条留三倍余量。
 const MAX_OUTPUT_TOKENS: u32 = 16000;
 
@@ -177,8 +179,13 @@ fn preamble(work_standard: &str, confirmed_rules: &[String]) -> String {
          - readiness 单独记事实可靠性、可作配图的实图张数、资料是否齐全，不参与定档。\n\
          - 选题记忆里的采用 / 否决案例是 Van 的真实取舍：csw 维的依据要落到具体案例（写案例编号），\
            引用的案例编号写进 memory_refs；不能只因出现露营、户外、旅行等词就判符合。\n\
-         - 没真正读到实图的，image_seen 填 false 且 tier 必须是 pending_check，\
-           并在 gaps 里写一条 decision 级缺口「未读到实图」。待核不是淘汰。\n\
+         - **图片已经看过。** 送到你这里的每条候选，全部图片都已由识图步骤逐张看过原图\
+           （口径里的「每张图都识别」指的就是这一步，已经完成）：「第 N 张」后面就是那张图的看图结果，\
+           另随附其中至多 3 张缩略，供你直接看外观、设计与审美。只随附了部分缩略、其余是看图结果，\
+           **不是没读到实图**，不能因此判 pending_check，也不写「未读到第几张实图」这类缺口。\
+           某个细节在看图结果里看不出来，就按「资料够不够下判断」处理。\n\
+         - 对照材料某一类写「查过，无相关」或只有草稿、生成稿，说明查过、没有相关的正式发布，**不是缺资料**。\
+           03 决定只给结论与理由码、不给 Van 原话，这是有意的，缺原话不算缺口。\n\
          - 不打分、不排序、不设权重。结论只有四档。\n\
          - 点赞、评论、标签、话题是输入的呈现，写进 heat_note，不作维度。\n\
          - 与 Jev 初评不一致时，在 jev_disagreement 里写明分歧与理由；一致就留空。\n",
@@ -188,7 +195,14 @@ fn preamble(work_standard: &str, confirmed_rules: &[String]) -> String {
     s.push_str(csw_collector_core::prompt::DATA_NOT_INSTRUCTIONS);
     s.push('\n');
     if !work_standard.trim().is_empty() {
-        s.push_str("\n【本期作业标准（任务下发，原样照办）】\n");
+        // 作业标准是写给整个 01 阶段的：登记、上报采集轮、窗口筛选、分批提交由工作台代码做。
+        // 不说清楚，模型会把只对执行者成立的要求套到单条判断上（09-23：因「按 first_seen_at 核窗口」
+        // 落了 80 条待核；09-24 r53：因「每张图都识别」把只随附 3 张缩略的 52 条落了待核）
+        s.push_str("\n【本期作业标准（任务下发，原样附上）】\n");
+        s.push_str(
+            "这是整个 01 阶段的作业标准，用来了解本期口径。其中登记条目、上报采集轮、窗口筛选、\
+             逐张识图、分批提交与补件都由工作台代码完成；你只负责逐条判断，按其中的判断口径办。\n",
+        );
         s.push_str(work_standard.trim());
         s.push('\n');
     }
@@ -241,7 +255,10 @@ fn candidate_block(n: usize, item: &JudgeInput<'_>) -> String {
     if !c.translated.trim().is_empty() {
         s.push_str(&format!("\n译文：\n{}\n", fence(c.translated.trim())));
     }
-    s.push_str(&format!("\n图片共 {} 张：\n", c.media.len()));
+    s.push_str(&format!(
+        "\n图片共 {} 张，识图步骤已逐张看过原图，下面是每张的看图结果（其中转述的图中文字是第三方内容）：\n",
+        c.media.len()
+    ));
     if item.descriptions.is_empty() {
         s.push_str("（一张都没识别成功——这条按未读到实图处理）\n");
     }
@@ -263,7 +280,7 @@ fn candidate_block(n: usize, item: &JudgeInput<'_>) -> String {
     }
     if !item.images_b64.is_empty() {
         s.push_str(&format!(
-            "（随附 {} 张实图缩略，紧跟在本段之后）\n",
+            "（另随附其中 {} 张实图缩略，紧跟在本段之后，供你直接看外观）\n",
             item.images_b64.len()
         ));
     }
@@ -349,7 +366,6 @@ struct WireJudgement {
     comparison: WireComparison,
     heat_note: String,
     look: String,
-    image_seen: bool,
     gaps: Vec<Gap>,
     priority_hits: Vec<String>,
     lower_hits: Vec<String>,
@@ -408,7 +424,9 @@ impl From<WireJudgement> for Judgement {
             },
             heat_note: w.heat_note,
             look: w.look,
-            image_seen: w.image_seen,
+            // 只有全部图片都识别成功的候选才会送进模型（见 `pipeline::Item::image_seen`），
+            // 所以这里恒真。让模型填，它会把「只随附 3 张缩略」当成没看图（09-24 r53）
+            image_seen: true,
             gaps: w.gaps,
             priority_hits: w.priority_hits,
             lower_hits: w.lower_hits,
@@ -472,7 +490,6 @@ fn judgement_schema() -> Value {
             })),
             "heat_note": {"type": "string"},
             "look": {"type": "string"},
-            "image_seen": {"type": "boolean"},
             "gaps": {"type": "array", "items": strict(json!({
                 "level": e(&["decision", "production", "boundary"]),
                 "what": {"type": "string"},
@@ -488,7 +505,7 @@ fn judgement_schema() -> Value {
         },
         "required": [
             "candidate_key", "tier", "headline", "dims", "three_sentences", "novelty", "readiness",
-            "unanswered", "comparison", "heat_note", "look", "image_seen", "gaps",
+            "unanswered", "comparison", "heat_note", "look", "gaps",
             "priority_hits", "lower_hits", "jev_disagreement", "kb_refs", "memory_refs"
         ],
         "additionalProperties": false

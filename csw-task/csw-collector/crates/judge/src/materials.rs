@@ -110,7 +110,8 @@ pub fn availability(conn: &Connection, prior_ledger_loaded: bool) -> Result<Sour
 
 pub fn kind_name(k: MaterialKind) -> &'static str {
     match k {
-        MaterialKind::Published => "正式已发布的条目",
+        // 这一类里也有推到草稿箱的，逐条标了状态；标题只写「正式已发布」，模型会拿草稿去质疑整类
+        MaterialKind::Published => "已发布与已推草稿箱的条目（逐条标了状态）",
         MaterialKind::Example => "范例",
         MaterialKind::GeneratedPost => "生成过文章的贴文",
         MaterialKind::Decision => "03 决定",

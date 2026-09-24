@@ -351,6 +351,7 @@ async fn enforce(
                 materials: &it.materials,
                 brand_keys: &it.brand_keys,
                 allow_rejudge: allow,
+                images_all_read: it.image_seen,
                 source_text: &src,
             },
         );
@@ -407,6 +408,7 @@ async fn enforce(
                     materials: &items[*i].materials,
                     brand_keys: &items[*i].brand_keys,
                     allow_rejudge: false,
+                    images_all_read: items[*i].image_seen,
                     source_text: &src,
                 },
             );
