@@ -23,6 +23,9 @@ use crate::types::{
 
 /// 写候选。**按 `candidate_key` 覆盖元数据，但 `first_seen_at` 只写第一次**——
 /// 它是「这条第一次进我们视野」的时间，被后来的同步改掉就没意义了。
+///
+/// 发布时间与平台入库时间**新值为空就留旧值**：按链接取单条（Van 点名、重判）时接口不给入库时间，
+/// 直接覆盖会把窗口轮写下的时间清空，下一次判断就说「缺 first_seen_at，无法确认窗口」（09-24 重判 r53）。
 pub fn upsert_candidate(conn: &Connection, c: &Candidate) -> Result<()> {
     let now = jiff::Timestamp::now().to_string();
     conn.execute(
@@ -33,8 +36,9 @@ pub fn upsert_candidate(conn: &Connection, c: &Candidate) -> Result<()> {
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?18)
          ON CONFLICT(candidate_key) DO UPDATE SET
            account=excluded.account, url=excluded.url, text=excluded.text,
-           translated=excluded.translated, posted_at=excluded.posted_at,
-           ingested_at=excluded.ingested_at, likes=excluded.likes, comments=excluded.comments,
+           translated=excluded.translated,
+           posted_at=COALESCE(excluded.posted_at, candidates.posted_at),
+           ingested_at=COALESCE(excluded.ingested_at, candidates.ingested_at), likes=excluded.likes, comments=excluded.comments,
            followers=excluded.followers, heat_ratio=excluded.heat_ratio,
            content_type=excluded.content_type, image_only=excluded.image_only,
            tags_json=excluded.tags_json, hashtags_json=excluded.hashtags_json,
@@ -573,6 +577,21 @@ mod tests {
             "待核结转用了 {:?}",
             t2.elapsed()
         );
+    }
+
+    #[test]
+    fn 按链接重取单条不会清掉已有的入库时间() {
+        let (c, _) = setup(1);
+        upsert_candidate(&c, &cand("k1", 1)).unwrap();
+        let mut again = cand("k1", 1);
+        again.ingested_at = None;
+        again.posted_at = None;
+        again.text = "新正文".into();
+        upsert_candidate(&c, &again).unwrap();
+        let got = get_candidate(&c, "k1").unwrap().unwrap();
+        assert_eq!(got.text, "新正文", "其余元数据照常覆盖");
+        assert_eq!(got.ingested_at, "2026-09-18T01:00:00Z".parse().ok());
+        assert_eq!(got.posted_at, "2026-09-17T08:00:00Z".parse().ok());
     }
 
     #[test]

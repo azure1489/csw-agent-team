@@ -108,7 +108,7 @@ pub async fn harvest(
     };
     let collectors: Vec<&dyn CollectorDyn> = vec![&window, &van];
     // 只取图文是总方案定死的，不是开关
-    let (cands, sweeps, blocked) = pipeline::collect_all(&collectors, from, to, true).await;
+    let (mut cands, sweeps, blocked) = pipeline::collect_all(&collectors, from, to, true).await;
 
     if let Some(why) = blocked {
         // 必扫失败不兜底：兜底会让「这一轮到底扫没扫全」没人能回答
@@ -122,9 +122,17 @@ pub async fn harvest(
         anyhow::bail!("{why}");
     }
 
-    for c in &cands {
+    for c in &mut cands {
         ledger::upsert_candidate(conn, c)?;
         ledger::attach_candidate(conn, round.id, &c.candidate_key, &c.collector, false)?;
+        // 按链接取的单条（Van 点名、重判）接口不给入库时间：用库里窗口轮记下的，
+        // 否则判断会说「缺 first_seen_at，无法确认窗口」落待核（09-24 重判 r53 有 5 条）
+        if (c.ingested_at.is_none() || c.posted_at.is_none())
+            && let Some(known) = ledger::get_candidate(conn, &c.candidate_key)?
+        {
+            c.ingested_at = c.ingested_at.or(known.ingested_at);
+            c.posted_at = c.posted_at.or(known.posted_at);
+        }
     }
 
     let cache = DescCache { conn };

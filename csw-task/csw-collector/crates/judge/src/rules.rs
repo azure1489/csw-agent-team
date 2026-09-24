@@ -48,6 +48,12 @@ static IMAGE_UNREAD: LazyLock<Regex> = LazyLock::new(|| {
     .expect("正则")
 });
 
+/// 写成缺口的「没有缺口」：模型偶尔把「没有影响结论的缺失材料」也填进 gaps。
+static NOT_A_GAP: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:没有|无|暂无|不存在)(?:任何)?(?:影响[^；。，]{0,10}的)?(?:缺口|缺失材料|缺失|缺少的?材料)")
+        .expect("正则")
+});
+
 /// 句子切分：连同句末标点一起切。
 static SENTENCE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[^。；！？\n]+[。；！？\n]?").expect("正则"));
@@ -105,6 +111,16 @@ pub fn apply(j: &mut Judgement, ctx: &Ctx<'_>) -> Applied {
                 );
             }
         }
+    }
+
+    // 「没有缺口」不是缺口
+    let before = j.gaps.len();
+    j.gaps.retain(|g| !NOT_A_GAP.is_match(&g.what));
+    if j.gaps.len() < before {
+        out.notes.push(format!(
+            "{NOTE}去掉 {} 条写成缺口的「没有缺口」",
+            before - j.gaps.len()
+        ));
     }
 
     // R0 契约：没读到实图必须待核、每维要有依据。模型偶尔违反，不修的话这条落不了库，
@@ -753,6 +769,23 @@ mod tests {
         apply(&mut j, &ctx(&[], &[], true));
         assert_eq!(j.gaps.len(), 1);
         assert!(!j.image_seen);
+    }
+
+    #[test]
+    fn 写成缺口的没有缺口要去掉() {
+        let mut j = Judgement::fixture("k", Tier::NotRecommend);
+        j.gaps = vec![
+            Gap::decision("没有影响结论的缺失材料；重复清仓事实已确认"),
+            Gap::decision("无缺口"),
+        ];
+        apply(&mut j, &ctx(&[], &[], false));
+        assert!(j.gaps.is_empty(), "{:?}", j.gaps);
+        assert_eq!(j.tier, Tier::NotRecommend, "不该被 R3 误改成待核");
+        // 正常的缺口不动
+        let mut j = Judgement::fixture("k", Tier::PendingCheck);
+        j.gaps = vec![Gap::decision("无法确认产品身份")];
+        apply(&mut j, &ctx(&[], &[], false));
+        assert_eq!(j.gaps.len(), 1);
     }
 
     #[test]
