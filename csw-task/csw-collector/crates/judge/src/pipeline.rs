@@ -486,20 +486,31 @@ pub async fn judge_again(
         }
     }
     let reused: std::collections::HashSet<String> = out.reused.iter().cloned().collect();
-    for chunk in todo.chunks(verdict::BATCH) {
-        let inputs: Vec<JudgeInput<'_>> = chunk
-            .iter()
-            .map(|i| judge_input(&items[*i], triages, String::new()))
-            .collect();
-        match verdict::judge_batch(
-            deps.model,
-            &inputs,
-            deps.work_standard,
-            deps.confirmed_rules,
-        )
-        .await
-        {
-            Ok(js) => out.judgements.extend(attach(js, chunk, items, &hash_ctx)),
+    // 各批并发发出去（与首轮判断同一个并发度）：09-28 r54 深核后重判 58 条一批一批串着发，占了 13 分钟
+    let conc = deps.batch_concurrency.max(1);
+    let hash_ref = &hash_ctx;
+    let results: Vec<(&[usize], anyhow::Result<Vec<Judgement>>)> =
+        futures::StreamExt::collect::<Vec<_>>(futures::StreamExt::buffered(
+            futures::stream::iter(todo.chunks(verdict::BATCH).map(|chunk| async move {
+                let inputs: Vec<JudgeInput<'_>> = chunk
+                    .iter()
+                    .map(|i| judge_input(&items[*i], triages, String::new()))
+                    .collect();
+                let r = verdict::judge_batch(
+                    deps.model,
+                    &inputs,
+                    deps.work_standard,
+                    deps.confirmed_rules,
+                )
+                .await;
+                (chunk, r)
+            })),
+            conc,
+        ))
+        .await;
+    for (chunk, r) in results {
+        match r {
+            Ok(js) => out.judgements.extend(attach(js, chunk, items, hash_ref)),
             Err(e) => {
                 tracing::warn!(条数 = chunk.len(), 原因 = %format!("{e:#}"), "补读后重判失败，保留原结论");
                 out.unjudged.extend(
