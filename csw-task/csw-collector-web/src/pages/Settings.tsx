@@ -8,7 +8,7 @@
  */
 import { useState } from 'react'
 
-import { Empty, ErrorBox, H2, Head, Loading, StepBadge, Table, bj } from '@/components/Bits'
+import { Empty, ErrorBox, H2, Head, Loading, StepBadge, Table, bj, roundLabel } from '@/components/Bits'
 import { Td, Th } from '@/components/ui'
 import { useAudit, useHealth, useOpenRound, useRerun, useRounds, useSettings, useWork } from '@/lib/queries'
 
@@ -130,7 +130,7 @@ export function Settings() {
           <option value="">挑一轮</option>
           {(rounds.data ?? []).map((r) => (
             <option key={r.id} value={r.id}>
-              第 {r.id} 轮 · {bj(r.window_end)}
+              {roundLabel(r)}
             </option>
           ))}
         </select>

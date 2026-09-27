@@ -13,7 +13,7 @@ export type Tier = 'recommend' | 'alternate' | 'not_recommend' | 'pending_check'
 
 export interface RoundBrief {
   id: number
-  kind: 'task' | 'manual' | 'prefetch' | 'replay'
+  kind: 'task' | 'manual' | 'prefetch' | 'replay' | 'backtest'
   trigger: string
   run_id: number | null
   task_id: number | null

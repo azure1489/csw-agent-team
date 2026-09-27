@@ -7,7 +7,7 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
-import { Empty, ErrorBox, H2, Head, Loading, Stat, Table, bj, bjDate } from '@/components/Bits'
+import { Empty, ErrorBox, H2, Head, Loading, Stat, Table, bj, bjDate, roundLabel } from '@/components/Bits'
 import { I } from '@/components/icons'
 import { Btn, Td, Th } from '@/components/ui'
 import { useBackfill, useCoverage, useRoundMedia, useRounds } from '@/lib/queries'
@@ -37,7 +37,7 @@ export function Coverage() {
           >
             {(rounds.data ?? []).map((r) => (
               <option key={r.id} value={r.id}>
-                第 {r.id} 轮 · {bj(r.window_end)}
+                {roundLabel(r)}
               </option>
             ))}
           </select>

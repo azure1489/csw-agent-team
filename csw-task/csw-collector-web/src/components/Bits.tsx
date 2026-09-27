@@ -42,6 +42,33 @@ export function bj(iso?: string | null, withSeconds = false): string {
   return withSeconds ? `${s}:${p(d.getSeconds())}` : s
 }
 
+/** 轮次的叫法。**窗口终点对测试轮没有意义**（回测、重判的窗口是占位的），所以一律给开工时间 */
+const ROUND_KIND: Record<string, string> = {
+  task: '正式',
+  prefetch: '预取',
+  manual: '手动',
+  replay: '回放',
+  backtest: '测试',
+}
+const ROUND_STATUS: Record<string, string> = {
+  running: '进行中',
+  failed: '失败',
+  cancelled: '已取消',
+}
+
+export function roundLabel(r: {
+  id: number
+  kind: string
+  run_id: number | null
+  status: string
+  created_at: string
+}): string {
+  const kind = ROUND_KIND[r.kind] ?? r.kind
+  const run = r.run_id ? ` r${r.run_id}` : ''
+  const st = ROUND_STATUS[r.status] ? `（${ROUND_STATUS[r.status]}）` : ''
+  return `第 ${r.id} 轮 · ${kind}${run} · ${bj(r.created_at)}${st}`
+}
+
 /** 只给日期那一半 */
 export function bjDate(iso?: string | null): string {
   return bj(iso).split(' ')[0] ?? '——'

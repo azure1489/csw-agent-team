@@ -16,7 +16,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 
-import { Empty, ErrorBox, Head, Loading, Table, TierBadge, bj } from '@/components/Bits'
+import { Empty, ErrorBox, Head, Loading, Table, TierBadge, bj, roundLabel } from '@/components/Bits'
 import { DedupBadge, Fold, GapList, Hits, Thumb } from '@/components/Judged'
 import { Td, Th } from '@/components/ui'
 import { DIMS, FACT_SOURCE, NOVELTY, TIER_LABEL } from '@/lib/constants'
@@ -112,7 +112,7 @@ export function Ledger() {
           >
             {(rounds.data ?? []).map((r) => (
               <option key={r.id} value={r.id}>
-                第 {r.id} 轮 · {bj(r.window_end)}
+                {roundLabel(r)}
               </option>
             ))}
           </select>
@@ -163,7 +163,13 @@ export function Ledger() {
       {js.isLoading && <Loading what="台账" />}
       {js.error && <ErrorBox error={js.error} />}
       {override.error && <ErrorBox error={override.error} />}
-      {js.data?.length === 0 && <Empty>这一档下没有条目。</Empty>}
+      {js.data?.length === 0 && (
+        <Empty>
+          {rounds.data?.find((r) => r.id === roundId)?.status === 'running'
+            ? '这一轮还在跑，判完才有条目。'
+            : '这一档下没有条目。'}
+        </Empty>
+      )}
 
       {lines.length > 0 && (
         <div className="overflow-x-auto">
