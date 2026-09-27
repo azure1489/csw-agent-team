@@ -24,9 +24,13 @@ pub const MONDAY_HOURS: i64 = 72;
 
 /// 水位再旧也不往回扫超过这么久。
 ///
-/// 服务停了一周再起来时，按水位算的窗口会是一百多小时、几千条候选——
-/// 那一轮跑不完，而跑不完比少扫几条更糟。**截断要标出来**，不许悄悄发生。
-pub const MAX_LOOKBACK_HOURS: i64 = 96;
+/// 服务停了好几周再起来时，按水位算的窗口会是几千条候选——那一轮跑不完，
+/// 而跑不完比少扫几条更糟。**截断要标出来**，不许悄悄发生。
+///
+/// 216 小时（9 天）盖得住国庆：10-01 ~ 10-07 放假，10-08 那一期的水位是 09-30 05:30，
+/// 回溯约 8 天。原来的 96 小时连中秋都卡边（09-28 那期水位正好 96 小时 14 秒前，
+/// 截掉 14 秒，交付物里却写成「更早的那一段没有扫」）。
+pub const MAX_LOOKBACK_HOURS: i64 = 216;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Window {
@@ -183,11 +187,19 @@ mod tests {
     #[test]
     fn 水位太旧要截断而且要标出来() {
         let now = ts("2026-09-22T21:30:00Z");
-        // 服务停了一周
-        let w = for_round(now, Some(ts("2026-09-15T21:30:00Z")));
+        // 服务停了两周
+        let w = for_round(now, Some(ts("2026-09-08T21:30:00Z")));
         assert_eq!(w.hours(), MAX_LOOKBACK_HOURS as f64);
         // 截断要标出来，不许悄悄发生
         assert!(w.truncated);
+    }
+
+    #[test]
+    fn 国庆长假回来那一期不截() {
+        // 10-01 ~ 10-07 放假：10-08 05:30 那期的水位是 09-30 05:30
+        let w = for_round(ts("2026-10-07T21:30:00Z"), Some(ts("2026-09-29T21:30:00Z")));
+        assert!(!w.truncated);
+        assert_eq!(w.hours(), 192.0);
     }
 
     #[test]
