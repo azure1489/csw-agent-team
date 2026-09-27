@@ -1298,6 +1298,9 @@ async fn judge_items<'a>(
     };
     let mut out = Vec::with_capacity(prepared.len());
     let total = prepared.len();
+    // 每条候选与案例的最高相似度、送出去的跨品牌案例数：阈值定得对不对，只能看真实分布
+    let mut best_sims: Vec<f32> = Vec::new();
+    let mut cross_sent = 0usize;
     for (i, p) in prepared.iter().enumerate() {
         if let Some(id) = progress_step {
             let _ = rounds::set_progress(conn, id, i, total);
@@ -1372,12 +1375,20 @@ async fn judge_items<'a>(
             ),
             _ => None,
         };
-        materials.extend(csw_collector_judge::memory::pick(
+        if let Some(best) = sims
+            .as_deref()
+            .and_then(|v| v.iter().copied().reduce(f32::max))
+        {
+            best_sims.push(best);
+        }
+        let picked = csw_collector_judge::memory::pick(
             &cases,
             &brand_keys,
             &p.candidate.url,
             sims.as_deref(),
-        ));
+        );
+        cross_sent += picked.iter().filter(|m| m.title.contains("跨品牌")).count();
+        materials.extend(picked);
         // **真的把图读出来送进判断。**
         //
         // 这里曾经传的是 `|_| None`，于是 `pick_images` 的 filter_map 把每一张都
@@ -1393,6 +1404,20 @@ async fn judge_items<'a>(
                 .ok()
                 .map(|bytes| csw_collector_harvest::recognize::b64(&bytes))
         });
+        if i + 1 == total && !best_sims.is_empty() {
+            let mut v = best_sims.clone();
+            v.sort_by(f32::total_cmp);
+            let q = |f: f64| v[((v.len() - 1) as f64 * f) as usize];
+            tracing::info!(
+                候选 = v.len(),
+                最高相似度_中位 = q(0.5),
+                最高相似度_九成 = q(0.9),
+                最高相似度_最大 = q(1.0),
+                阈值 = csw_collector_judge::memory::MIN_SIMILARITY,
+                送出跨品牌案例 = cross_sent,
+                "选题记忆：跨品牌相似案例"
+            );
+        }
         out.push(csw_collector_judge::pipeline::Item {
             candidate: &p.candidate,
             descriptions: &p.descriptions,

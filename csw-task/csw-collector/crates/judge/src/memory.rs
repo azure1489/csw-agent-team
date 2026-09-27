@@ -25,7 +25,7 @@ pub const PER_DECISION: usize = 3;
 pub const CROSS_PER_DECISION: usize = 2;
 /// 跨品牌案例的最低相似度（案例「品牌｜对象」的文本向量 与 候选融合向量 的余弦）。
 /// 低于它的不送：拿不相干的案例比「调性」，模型只会顺着字面联想。
-pub const MIN_SIMILARITY: f32 = 0.45;
+pub const MIN_SIMILARITY: f32 = 0.30;
 
 /// 一条可送的案例（采用或否决）。**没有原话这一列**——根本不读。
 #[derive(Debug, Clone)]
