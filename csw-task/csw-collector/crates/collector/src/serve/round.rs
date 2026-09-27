@@ -425,11 +425,13 @@ async fn harvest_and_judge(
     // 判之前先把 Van 否过的同一件事挡掉。挡下来的不进模型，单独出一行台账。
     let (mut items, excluded) = apply_exclusions(conn, round, svc, items).await;
     let cache = JudgeCache { conn };
-    // 只送 Van 确认过的准则卡；没确认的一张都不送（09-23 用户拍板）
-    let confirmed_rules = csw_collector_judge::memory::confirmed_rules(conn).unwrap_or_else(|e| {
-        tracing::warn!("读准则卡失败，这一轮不带准则卡：{e:#}");
-        Vec::new()
-    });
+    // 已确认的准则卡照送；没确认的按开关标「草稿」送（09-27 用户拍板，默认开）
+    let confirmed_rules =
+        csw_collector_judge::memory::rules_for_judge(conn, cfg.features.send_draft_rules_to_model)
+            .unwrap_or_else(|e| {
+                tracing::warn!("读准则卡失败，这一轮不带准则卡：{e:#}");
+                Vec::new()
+            });
     let deps = csw_collector_judge::pipeline::Deps {
         model: &svc.model,
         jev: svc.jev.as_ref(),

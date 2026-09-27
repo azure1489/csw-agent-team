@@ -198,8 +198,12 @@ fn preamble(work_standard: &str, confirmed_rules: &[String]) -> String {
     );
     s.push_str(&rubric::as_prompt_block());
     if !confirmed_rules.is_empty() {
-        // 只有 Van 校准过的准则卡才进来；归纳出来、她还没点头的不送
-        s.push_str("\n【Van 已确认的选题准则】\n");
+        // 已确认的与草稿都标明了；草稿是从她过往决定归纳的，她还没点头（09-27 用户同意先送）
+        s.push_str(
+            "\n【Van 的选题准则（从她过往的采用 / 否决归纳）】\n\
+             标「已确认」的是她本人认可的；标「草稿」的她还没确认，用来参考她的取舍尺度——\
+             判「值得推荐的价值」「CSW 适配度」时要对照这些准则，与上面的口径冲突时以口径为准。\n",
+        );
         for r in confirmed_rules {
             s.push_str(&format!("- {}\n", r.trim()));
         }
@@ -886,13 +890,11 @@ mod tests {
         assert!(p.contains("没读到不等于没价值"));
         assert!(p.contains("unconfirmed"));
         assert!(p.contains("decision 级缺口"));
-        assert!(
-            !p.contains("Van 已确认的选题准则"),
-            "没有确认的卡就不出这一段"
-        );
-        let p = preamble("", &["门店活动不当产品新闻".into()]);
-        assert!(p.contains("Van 已确认的选题准则"));
-        assert!(p.contains("门店活动不当产品新闻"));
+        assert!(!p.contains("Van 的选题准则"), "没有准则卡就不出这一段");
+        let p = preamble("", &["〔草稿，Van 未确认〕门店活动不当产品新闻".into()]);
+        assert!(p.contains("Van 的选题准则"));
+        assert!(p.contains("〔草稿，Van 未确认〕门店活动不当产品新闻"));
+        assert!(p.contains("以口径为准"), "草稿与口径冲突时要说清谁说了算");
     }
 
     #[test]

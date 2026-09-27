@@ -212,6 +212,9 @@ pub struct Features {
     /// 关着的时候决定类材料只保留「结论」与「理由码」两行（机器词表），
     /// 模型仍然知道「这件事被否过 / 被采用过」，只是看不到她是怎么说的。
     pub send_van_quotes_to_model: bool,
+    /// 把 Van **还没确认**的准则卡也送进判断，标「草稿」。**默认开**（09-27 用户拍板：
+    /// 补了相似案例后 M3 仍偏宽，先让草稿卡进判断）。卡片是从原话归纳的准则，不是原话本身。
+    pub send_draft_rules_to_model: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -384,6 +387,7 @@ impl Default for Config {
                 mcp_for_hermes: false,
                 deepcheck_web_tools: false,
                 send_van_quotes_to_model: false,
+                send_draft_rules_to_model: true,
             },
             alert: Alert::default(),
             web: Web {

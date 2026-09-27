@@ -200,6 +200,33 @@ pub fn confirmed_rules(conn: &Connection) -> Result<Vec<String>> {
     Ok(rows.filter_map(Result::ok).collect())
 }
 
+/// 判断要带的准则卡：已确认的在前，`with_drafts` 时再加上**还没确认**的（「其他」类不带——
+/// 多是文风，与选题无关）。每张注明是已确认还是草稿，模型才知道哪张说了算。
+pub fn rules_for_judge(conn: &Connection, with_drafts: bool) -> Result<Vec<String>> {
+    let mut out: Vec<String> = confirmed_rules(conn)?
+        .into_iter()
+        .map(|r| format!("〔已确认〕{r}"))
+        .collect();
+    if with_drafts {
+        let mut st = conn.prepare(
+            "SELECT category, text FROM memory_rules
+             WHERE confirmed_by_van = 0 AND trim(text) <> '' AND category <> 'other'
+             ORDER BY category, rule_key",
+        )?;
+        let rows = st.query_map(params![], |r| {
+            let cat: String = r.get(0)?;
+            let text: String = r.get(1)?;
+            Ok(if cat.is_empty() {
+                format!("〔草稿，Van 未确认〕{text}")
+            } else {
+                format!("〔草稿，Van 未确认〕（{}）{text}", category_name(&cat))
+            })
+        })?;
+        out.extend(rows.filter_map(Result::ok));
+    }
+    Ok(out)
+}
+
 fn category_name(c: &str) -> &str {
     match c {
         "frame" => "判断框架",
@@ -330,6 +357,25 @@ mod tests {
         let ms =
             materials_for(&c, &["dappleborn".into()], "https://instagram.com/reel/ABC").unwrap();
         assert!(!ms.iter().any(|m| m.ref_id == "c1"));
+    }
+
+    #[test]
+    fn 草稿卡标明未确认且不带其他类() {
+        let c = conn();
+        c.execute(
+            "INSERT INTO memory_rules(rule_key, category, text, confirmed_by_van, updated_at)
+             VALUES ('d1', 'lower', '只有新配色的降低', 0, 'x'), ('d2', 'other', '标题别用感叹号', 0, 'x')",
+            [],
+        )
+        .unwrap();
+        let without = rules_for_judge(&c, false).unwrap();
+        assert!(without.iter().all(|r| r.starts_with("〔已确认〕")));
+        let with = rules_for_judge(&c, true).unwrap();
+        assert!(
+            with.iter()
+                .any(|r| r == "〔草稿，Van 未确认〕（降低优先级）只有新配色的降低")
+        );
+        assert!(!with.iter().any(|r| r.contains("感叹号")), "其他类不送");
     }
 
     #[test]
