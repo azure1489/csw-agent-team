@@ -84,7 +84,9 @@ pub struct Model {
     /// 只用 csw-subapi 这一套。域名与密钥必须配对，混搭直接 401。
     pub base_url: String,
     pub model: String,
-    /// 同网关内的降级目标
+    /// 同网关内的降级目标。**默认空 = 不降级**：一轮里混进另一个模型的判断，口径就不一致了
+    /// （09-27 第 25 轮：三次超时悄悄换成了 gpt-5.6-sol，推荐从 9 条涨到 20 条）。
+    /// 超时由同一个模型重试（`max_attempts`），宁可慢一点。
     pub fallback_model: String,
     /// 实测网关在 8 并发上下限流，再高只换来 429
     pub concurrency: usize,
@@ -330,7 +332,7 @@ impl Default for Config {
             model: Model {
                 base_url: "https://csw-subapi.833233.xyz/v1".into(),
                 model: "gpt-6-astra".into(),
-                fallback_model: "gpt-5.6-sol".into(),
+                fallback_model: String::new(),
                 // 0.4 实测单独用时 8 最合适；但网关账号的并发上限与 Hermes 的十几个 agent 共用，
                 // 09-23 切换后 8 条就开始撞 429。降到 5，给 Hermes 留余量
                 concurrency: 5,

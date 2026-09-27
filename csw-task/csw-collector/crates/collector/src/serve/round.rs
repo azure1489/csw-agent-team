@@ -821,8 +821,29 @@ async fn deepcheck_and_rejudge(
         }
     }
     if !again.is_empty() {
-        let redone =
+        let mut redone =
             csw_collector_judge::pipeline::judge_again(items, &again, deps, &out.triages).await;
+        // 重判没回来的（网关超时之类）再试一次：不能让深核过的因为一次网关抖动留在待核
+        let missed: Vec<usize> = again
+            .iter()
+            .copied()
+            .filter(|i| {
+                !redone
+                    .judgements
+                    .iter()
+                    .any(|j| j.candidate_key == items[*i].candidate.candidate_key)
+            })
+            .collect();
+        if !missed.is_empty() {
+            tracing::warn!(条数 = missed.len(), "深核后重判有几条没回来，再试一次");
+            let more =
+                csw_collector_judge::pipeline::judge_again(items, &missed, deps, &out.triages)
+                    .await;
+            redone.judgements.extend(more.judgements);
+            redone.rule_notes.extend(more.rule_notes);
+            redone.flags.extend(more.flags);
+            redone.rejudged.extend(more.rejudged);
+        }
         tracing::info!(
             条数 = redone.judgements.len(),
             "深核过的待核带着条目卡重判了"
@@ -844,6 +865,43 @@ async fn deepcheck_and_rejudge(
             }
         }
     }
+    // 重判两次都没成的深核过的待核：按「深核后仍缺关键资料」由代码定为备选·待补证，
+    // 与 R9 同一个处理——深核过的不再留在待核
+    let deepchecked: HashSet<&str> = outcomes
+        .iter()
+        .filter(|o| o.done())
+        .map(|o| o.candidate_key.as_str())
+        .collect();
+    for j in out
+        .judgements
+        .iter_mut()
+        .filter(|j| j.tier == Tier::PendingCheck && deepchecked.contains(j.candidate_key.as_str()))
+    {
+        j.tier = Tier::Alternate;
+        if !j.has_decision_gap() {
+            j.gaps.push(csw_collector_core::types::Gap::decision(
+                "深核后仍缺决定选题的关键资料",
+            ));
+        }
+        for g in j
+            .gaps
+            .iter_mut()
+            .filter(|g| g.level == csw_collector_core::types::GapLevel::Decision)
+        {
+            g.owner = csw_collector_core::types::GapOwner::Editor;
+            if g.next.trim().is_empty() {
+                g.next = "人工补证后再定是否推荐".into();
+            }
+        }
+        out.rule_notes
+            .entry(j.candidate_key.clone())
+            .or_default()
+            .push(format!(
+                "{}深核后重判没成（网关），按深核后仍缺资料定为备选·待补证（原判待核）",
+                csw_collector_judge::rules::NOTE
+            ));
+    }
+
     // 深核补出来的「仍缺」并进缺口：只留在深核日志里等于没人看得见
     let gaps = super::finish::deepcheck_gaps(&outcomes);
     super::finish::merge_deepcheck_gaps(&mut out.judgements, &gaps);
