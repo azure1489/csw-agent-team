@@ -126,7 +126,7 @@ pub struct Codex {
     /// 首批深核几条（推荐的）
     pub first_batch: usize,
     /// 待核的至多深核几条。深核过的不再留在待核（09-25 用户），所以待核的都核：
-    /// r53 深核前 25 条待核，15 的上限留下 10 条没核
+    /// r53 深核前 25 条待核，15 的上限留下 10 条没核；周一 72 小时窗口（09-28）62 条，40 也不够
     pub pending_cap: usize,
     pub budget_secs: u64,
 }
@@ -356,7 +356,7 @@ impl Default for Config {
                 model: "gpt-6-astra".into(),
                 parallel: 3,
                 first_batch: 6,
-                pending_cap: 40,
+                pending_cap: 80,
                 budget_secs: 600,
             },
             schedule: Schedule {
