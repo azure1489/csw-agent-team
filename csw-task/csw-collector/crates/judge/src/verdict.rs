@@ -117,6 +117,9 @@ pub fn pick_images(
 }
 
 /// 判一批。**作业标准原样注入**，不改写、不摘要——它是任务下发的，不是我们定的。
+///
+/// 模型偶尔漏回几条（09-27 第 20 轮：送 6 条只回 1 条）。**回来的收下，漏的那几条当场单独再问一次**；
+/// 仍然缺就整批报错，交给上层的失败重试。结果按送进去的顺序给。
 pub async fn judge_batch(
     model: &ModelClient,
     batch: &[JudgeInput<'_>],
@@ -124,6 +127,43 @@ pub async fn judge_batch(
     confirmed_rules: &[String],
 ) -> Result<Vec<Judgement>> {
     anyhow::ensure!(!batch.is_empty(), "空批");
+    let all: Vec<&JudgeInput<'_>> = batch.iter().collect();
+    let mut got = judge_once(model, &all, work_standard, confirmed_rules).await?;
+    let missing: Vec<&JudgeInput<'_>> = batch
+        .iter()
+        .filter(|x| !got.contains_key(x.candidate.candidate_key.as_str()))
+        .collect();
+    if !missing.is_empty() {
+        tracing::warn!(
+            送 = batch.len(),
+            回 = got.len(),
+            "判断漏回了几条，只把漏的再问一次"
+        );
+        let more = judge_once(model, &missing, work_standard, confirmed_rules).await?;
+        for (k, j) in more {
+            got.entry(k).or_insert(j);
+        }
+    }
+    let n = got.len();
+    let out: Vec<Judgement> = batch
+        .iter()
+        .filter_map(|x| got.remove(x.candidate.candidate_key.as_str()))
+        .collect();
+    anyhow::ensure!(
+        out.len() == batch.len(),
+        "返回 {n} 条，送进去 {} 条（漏的已补问一次）",
+        batch.len()
+    );
+    Ok(out)
+}
+
+/// 问一次模型。只收**送进去的**候选的结论（按条目键），同一条回了两遍取第一条。
+async fn judge_once(
+    model: &ModelClient,
+    batch: &[&JudgeInput<'_>],
+    work_standard: &str,
+    confirmed_rules: &[String],
+) -> Result<std::collections::HashMap<String, Judgement>> {
     let mut parts = vec![Part::Text(preamble(work_standard, confirmed_rules))];
     for (i, item) in batch.iter().enumerate() {
         parts.push(Part::Text(candidate_block(i + 1, item)));
@@ -131,20 +171,24 @@ pub async fn judge_batch(
             parts.push(Part::ImageB64(b.clone()));
         }
     }
-    parts.push(Part::Text(closing(batch)));
+    parts.push(Part::Text(closing(batch.len())));
 
     let out = model
         .structured(&parts, "csw_judgements", &schema(), MAX_OUTPUT_TOKENS)
         .await
         .context("判断请求")?;
     let wire: WireBatch = out.parse()?;
-    anyhow::ensure!(
-        wire.judgements.len() == batch.len(),
-        "返回 {} 条，送进去 {} 条",
-        wire.judgements.len(),
-        batch.len()
-    );
-    Ok(wire.judgements.into_iter().map(Into::into).collect())
+    let sent: std::collections::HashSet<&str> = batch
+        .iter()
+        .map(|x| x.candidate.candidate_key.as_str())
+        .collect();
+    let mut got = std::collections::HashMap::new();
+    for w in wire.judgements {
+        if sent.contains(w.candidate_key.as_str()) && !got.contains_key(&w.candidate_key) {
+            got.insert(w.candidate_key.clone(), Judgement::from(w));
+        }
+    }
+    Ok(got)
 }
 
 fn preamble(work_standard: &str, confirmed_rules: &[String]) -> String {
@@ -355,12 +399,11 @@ fn dim_key(d: Dim) -> String {
         .unwrap_or_default()
 }
 
-fn closing(batch: &[JudgeInput<'_>]) -> String {
+fn closing(n: usize) -> String {
     format!(
         "\n────────── 输出 ──────────\n\
-         对上面 {} 条候选各给一条判断，**顺序与上面一致**，\
-         candidate_key 原样抄回去（别改写、别缩写）。",
-        batch.len()
+         对上面 {n} 条候选各给一条判断，**一条都不能少**，顺序与上面一致，\
+         candidate_key 原样抄回去（别改写、别缩写）。"
     )
 }
 

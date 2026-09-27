@@ -971,6 +971,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn 模型漏回几条只把漏的再问一次() {
+        // 09-27 第 20 轮：送 6 条只回 1 条，整批作废重来。现在回来的收下，漏的单独补问
+        let wrap = |js: serde_json::Value| {
+            json!({
+                "output": [{"content": [{"type": "output_text",
+                    "text": json!({"judgements": js}).to_string()}]}],
+                "usage": {"input_tokens": 10, "output_tokens": 5}
+            })
+        };
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(wrap(json!([one_recommend("k1")]))),
+            )
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(wrap(json!([one_recommend("k2")]))),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let m = ModelClient::new(ModelConfig {
+            base_url: server.uri(),
+            api_key: "k".into(),
+            model: "m".into(),
+            fallback_model: String::new(),
+            concurrency: 1,
+            timeout: std::time::Duration::from_secs(5),
+            max_attempts: 1,
+        })
+        .unwrap();
+        let (c1, c2) = (cand("k1", "甲"), cand("k2", "乙"));
+        let ds = [desc()];
+        let out = run(
+            &[item(&c1, &ds, vec![]), item(&c2, &ds, vec![])],
+            &Deps {
+                model: &m,
+                jev: None,
+                work_standard: "标准",
+                batch_concurrency: 1,
+                on_batch: None,
+                cached: None,
+                confirmed_rules: &[],
+            },
+        )
+        .await;
+        let mut keys: Vec<&str> = out
+            .judgements
+            .iter()
+            .map(|j| j.candidate_key.as_str())
+            .collect();
+        keys.sort();
+        assert_eq!(keys, ["k1", "k2"]);
+        assert!(out.unjudged.is_empty(), "{:?}", out.unjudged);
+    }
+
+    #[tokio::test]
     async fn 判完一批就回调一次() {
         let payload = json!({"judgements": [one_recommend("k1")]});
         let (_s, m) = model_returning(json!({
