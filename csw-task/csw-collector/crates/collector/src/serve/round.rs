@@ -978,7 +978,7 @@ pub async fn run_intake(
     ))
 }
 
-/// 预取轮：只跑第 2–5 步，**不写引擎、不群播报、不深核、不交付**。
+/// 预取轮：跑第 2–6 步（含深核），**不写引擎、不群播报、不交付**。
 ///
 /// # 它是缓存，不是前置条件
 ///
@@ -997,7 +997,8 @@ pub async fn run_prefetch(
     cfg: &Config,
     svc: &super::services::Services,
 ) -> Result<RoundCounts> {
-    run_local(conn, round, cfg, svc, Caches::default(), "预取轮").await
+    // 预取轮也深核：正式轮复用它的条目卡与深核后的结论，05:30 那一轮才在 40 分钟内交得出
+    run_local(conn, round, cfg, svc, Caches::default(), "预取轮", true).await
 }
 
 /// 手动开的一轮，或重跑。与预取轮一样**只跑第 2–5 步、不写引擎**。
@@ -1011,7 +1012,7 @@ pub async fn run_manual(
     svc: &super::services::Services,
     caches: Caches,
 ) -> Result<RoundCounts> {
-    run_local(conn, round, cfg, svc, caches, "手动轮").await
+    run_local(conn, round, cfg, svc, caches, "手动轮", false).await
 }
 
 async fn run_local(
@@ -1021,6 +1022,7 @@ async fn run_local(
     svc: &super::services::Services,
     caches: Caches,
     label: &str,
+    deep: bool,
 ) -> Result<RoundCounts> {
     // 作业标准从镜像取：手动轮与预取轮都没有派单，而标准要进指纹。
     // **重跑一轮带任务号的，要用那一轮当时那份**——换一份标准重判等于换了依据，
@@ -1036,7 +1038,7 @@ async fn run_local(
             "{label}：还没接过 01 的单，用空作业标准跑——描述与向量能省，判断那一段省不了"
         );
     }
-    let j = harvest_and_judge(conn, round, cfg, svc, &standard, caches, None, false, false).await?;
+    let j = harvest_and_judge(conn, round, cfg, svc, &standard, caches, None, false, deep).await?;
     let counts = count_round(conn, round.id, &j.prepared)?;
     tracing::info!(
         候选 = counts.candidates,

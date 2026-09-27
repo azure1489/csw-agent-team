@@ -136,6 +136,39 @@ pub async fn deepcheck(
             "首批按主编指定的挑"
         );
     }
+    // 36 小时内核过、做成了的直接用那张条目卡：预取轮 01:40 核过的，05:30 正式轮不再花时间，
+    // 条目卡一样、重判的指纹也一样，结论也就直接复用（09-27：深核后重判占了 17 分钟）
+    let mut reused: Vec<deep::Outcome> = Vec::new();
+    let picked: Vec<&Judgement> = picked
+        .into_iter()
+        .filter(|j| match recent_card(conn, &j.candidate_key, 36) {
+            Some((from, card)) => {
+                reused.push(deep::Outcome {
+                    candidate_key: j.candidate_key.clone(),
+                    status: "done".into(),
+                    card: Some(card),
+                    items: vec![],
+                    note: format!("复用第 {from} 轮的深核"),
+                    attempts: 0,
+                });
+                false
+            }
+            None => true,
+        })
+        .collect();
+    for o in &reused {
+        save_deepcheck(conn, round.id, o);
+    }
+    if picked.is_empty() && !reused.is_empty() {
+        let _ = rounds::end_step(
+            conn,
+            step.id,
+            StepStatus::Succeeded,
+            &serde_json::json!({"深核": reused.len(), "做成": reused.len(), "复用": reused.len()}),
+            "",
+        );
+        return reused;
+    }
     if picked.is_empty() {
         let _ = rounds::end_step(
             conn,
@@ -196,8 +229,14 @@ pub async fn deepcheck(
         })
         .collect();
 
-    let outcomes = deep::check_batch(&codex, &targets, standard, cfg.codex.parallel.max(1)).await;
+    let mut outcomes =
+        deep::check_batch(&codex, &targets, standard, cfg.codex.parallel.max(1)).await;
     let _ = codex.shutdown().await;
+    for o in &outcomes {
+        save_deepcheck(conn, round.id, o);
+    }
+    let fresh = outcomes.len();
+    outcomes.extend(reused);
 
     let done = outcomes.iter().filter(|o| o.done()).count();
     let _ = rounds::end_step(
@@ -208,10 +247,56 @@ pub async fn deepcheck(
         } else {
             StepStatus::Partial
         },
-        &serde_json::json!({"深核": outcomes.len(), "做成": done}),
+        &serde_json::json!({"深核": outcomes.len(), "做成": done, "复用": outcomes.len() - fresh}),
         "",
     );
     outcomes
+}
+
+/// 深核结果落库：页面的条目详情读它，下一轮复用也读它。写不进去不影响这一轮。
+fn save_deepcheck(conn: &Connection, round_id: i64, o: &deep::Outcome) {
+    let now = jiff::Timestamp::now().to_string();
+    let status = if o.done() {
+        "completed"
+    } else if o.status == "timeout" {
+        "interrupted"
+    } else {
+        "failed"
+    };
+    let result = serde_json::json!({
+        "card": o.card,
+        "note": o.note,
+        "attempts": o.attempts,
+    });
+    if let Err(e) = conn.execute(
+        "INSERT INTO deepchecks(round_id, candidate_key, status, result_json, started_at, ended_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+         ON CONFLICT(round_id, candidate_key) DO UPDATE SET
+           status = excluded.status, result_json = excluded.result_json, ended_at = excluded.ended_at",
+        params![round_id, o.candidate_key, status, result.to_string(), now],
+    ) {
+        tracing::warn!(候选 = %o.candidate_key, "深核结果没落库：{e:#}");
+    }
+}
+
+/// 这条最近 `hours` 小时内做成了的深核：(哪一轮, 条目卡)。
+pub fn recent_card(conn: &Connection, key: &str, hours: i64) -> Option<(i64, deep::Card)> {
+    let since = jiff::Timestamp::now()
+        .checked_sub(jiff::SignedDuration::from_hours(hours))
+        .ok()?
+        .to_string();
+    let (round, json): (i64, String) = conn
+        .query_row(
+            "SELECT round_id, result_json FROM deepchecks
+             WHERE candidate_key = ?1 AND status = 'completed' AND ended_at >= ?2
+             ORDER BY ended_at DESC LIMIT 1",
+            params![key, since],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok()?;
+    let v: serde_json::Value = serde_json::from_str(&json).ok()?;
+    let card: deep::Card = serde_json::from_value(v.get("card")?.clone()).ok()?;
+    Some((round, card))
 }
 
 /// 这条候选的图在本地哪儿。**app-server 不接受远程地址**，只能给绝对路径。
@@ -621,6 +706,43 @@ mod tests {
             .map(|x| x.candidate_key.as_str())
             .collect();
         assert_eq!(picked, ["p1", "r1", "r2"]);
+    }
+
+    #[test]
+    fn 深核结果落库且三十六小时内可复用() {
+        let c = csw_collector_core::store::open_in_memory().unwrap();
+        c.execute(
+            "INSERT INTO rounds(id, kind, trigger, window_start, window_end, plan_version,
+                                rubric_version, kb_snapshot, status, created_at)
+             VALUES (7, 'prefetch', 'manual', 'a', 'b', 1, 'v', 's', 'done', 'x')",
+            [],
+        )
+        .unwrap();
+        let ok = deep::Outcome {
+            candidate_key: "k1".into(),
+            status: "done".into(),
+            card: Some(deep::Card {
+                original_source: "官网".into(),
+                ..Default::default()
+            }),
+            items: vec![],
+            note: String::new(),
+            attempts: 1,
+        };
+        save_deepcheck(&c, 7, &ok);
+        let (from, card) = recent_card(&c, "k1", 36).expect("刚核过的要拿得到");
+        assert_eq!(from, 7);
+        assert_eq!(card.original_source, "官网");
+        // 没做成的不复用
+        let bad = deep::Outcome {
+            candidate_key: "k2".into(),
+            status: "failed".into(),
+            card: None,
+            ..ok.clone()
+        };
+        save_deepcheck(&c, 7, &bad);
+        assert!(recent_card(&c, "k2", 36).is_none());
+        assert!(recent_card(&c, "没核过", 36).is_none());
     }
 
     #[test]
