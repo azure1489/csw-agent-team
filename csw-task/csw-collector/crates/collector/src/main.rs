@@ -177,6 +177,9 @@ enum Command {
         /// 报告写到哪；不给就写到数据目录下 reports/（不用 /tmp：共享主机上固定路径可被抢先放符号链接）
         #[arg(long)]
         out: Option<String>,
+        /// 也做深核（要 codex），看深核过的待核重判后落到哪
+        #[arg(long)]
+        deepcheck: bool,
     },
     /// 导出契约 JSON Schema（阶段 1 的契约冻结产物）
     Schema {
@@ -475,7 +478,12 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
-        Command::Rejudge { round, focus, out } => {
+        Command::Rejudge {
+            round,
+            focus,
+            out,
+            deepcheck,
+        } => {
             let cfg =
                 csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
             let secrets = csw_collector_core::Secrets::from_env();
@@ -487,7 +495,17 @@ async fn main() -> anyhow::Result<()> {
             if let Some(d) = out.parent() {
                 std::fs::create_dir_all(d)?;
             }
-            rejudge::run(&cfg, &secrets, rejudge::Opts { round, focus, out }).await
+            rejudge::run(
+                &cfg,
+                &secrets,
+                rejudge::Opts {
+                    round,
+                    focus,
+                    out,
+                    deepcheck,
+                },
+            )
+            .await
         }
         Command::Schema { out } => schema::run(out.as_deref()),
         Command::AuthProbe {

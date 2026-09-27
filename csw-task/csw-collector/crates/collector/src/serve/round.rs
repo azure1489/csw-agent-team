@@ -371,8 +371,10 @@ async fn harvest_and_judge(
     standard: &str,
     caches: Caches,
     links: Option<&[String]>,
-    // 回测：藏起每条自己那条决定、不带选题记忆、不补读（要可复现）
+    // 回测：藏起每条自己那条决定、不补读（要可复现）
     hide_self: bool,
+    // 深核：正式轮做；重判要看深核效果时也做。深核过的待核带着条目卡重判一次，不再留在待核
+    deep: bool,
 ) -> Result<Judged> {
     // 二、采集媒体信息
     let (prepared, sweeps) = harvest(
@@ -458,6 +460,24 @@ async fn harvest_and_judge(
         RefetchCounts::default()
     };
 
+    // 六、深核：放在落库、登记之前，深核的结果才进得了台账与引擎
+    let deep_outcomes = if deep {
+        deepcheck_and_rejudge(
+            conn,
+            round,
+            cfg,
+            standard,
+            &prepared,
+            &mut items,
+            &mut outcome,
+            &deps,
+        )
+        .await
+    } else {
+        Vec::new()
+    };
+    let deepchecked = deep_outcomes.iter().filter(|o| o.done()).count();
+
     for j in outcome.judgements.iter().chain(excluded.iter()) {
         let mut flags: Vec<String> = outcome
             .rule_notes
@@ -513,6 +533,8 @@ async fn harvest_and_judge(
             "补读": refetch.tried,
             "补读取到": refetch.fetched,
             "补读后重判": refetch.rejudged,
+            "深核": deep_outcomes.len(),
+            "深核做成": deepchecked,
             "选题": topic_counts,
         }),
         &outcome.unjudged.join("、"),
@@ -520,6 +542,7 @@ async fn harvest_and_judge(
 
     Ok(Judged {
         by_key,
+        deepchecked,
         reused_judgements: outcome.reused.len(),
         reused_recognition: prepared.iter().filter(|p| p.reused).count(),
         prepared,
@@ -731,6 +754,100 @@ async fn refetch_and_rejudge(
     counts
 }
 
+/// 深核，并让深核过的待核带着条目卡重判一次（09-25 用户：深核过的最好不要还是待核）。
+///
+/// - 挑谁：主编点名的 → 待核的 → 推荐的（见 [`super::finish::first_batch`]）；同一合并组只核代表那条，
+///   待核的例外（每条的缺口不一样）。
+/// - 深核做成了的待核：条目卡作为材料重判，提示词与 R9 都不许再判待核——深核后仍缺关键资料的
+///   定为「备选·待补证」，缺口交主编。
+/// - 其余深核过的：条目卡里的「仍缺」并进缺口（影响成稿），档不动。
+#[allow(clippy::too_many_arguments)]
+async fn deepcheck_and_rejudge(
+    conn: &Connection,
+    round: &Round,
+    cfg: &Config,
+    standard: &str,
+    prepared: &[Prepared],
+    items: &mut [csw_collector_judge::pipeline::Item<'_>],
+    out: &mut csw_collector_judge::pipeline::Outcome,
+    deps: &csw_collector_judge::pipeline::Deps<'_>,
+) -> Vec<csw_collector_deepcheck::run::Outcome> {
+    use csw_collector_core::types::Tier;
+
+    let by_key: HashMap<String, Candidate> = prepared
+        .iter()
+        .map(|p| (p.candidate.candidate_key.clone(), p.candidate.clone()))
+        .collect();
+    let secondary: HashSet<&str> = out
+        .groups
+        .iter()
+        .flat_map(|g| g.members.iter().filter(|m| **m != g.primary))
+        .map(String::as_str)
+        .collect();
+    let eligible: Vec<Judgement> = out
+        .judgements
+        .iter()
+        .filter(|j| j.tier == Tier::PendingCheck || !secondary.contains(j.candidate_key.as_str()))
+        .cloned()
+        .collect();
+    let outcomes =
+        super::finish::deepcheck(conn, round, cfg, &eligible, &by_key, prepared, standard).await;
+    if outcomes.is_empty() {
+        return outcomes;
+    }
+
+    let pending: HashSet<String> = out
+        .judgements
+        .iter()
+        .filter(|j| j.tier == Tier::PendingCheck)
+        .map(|j| j.candidate_key.clone())
+        .collect();
+    let mut again = Vec::new();
+    for o in &outcomes {
+        let Some(card) = o.card.as_ref().filter(|_| o.done()) else {
+            continue;
+        };
+        if !pending.contains(&o.candidate_key) {
+            continue;
+        }
+        if let Some(i) = items
+            .iter()
+            .position(|it| it.candidate.candidate_key == o.candidate_key)
+        {
+            items[i].deep_card = super::finish::card_text(card);
+            again.push(i);
+        }
+    }
+    if !again.is_empty() {
+        let redone =
+            csw_collector_judge::pipeline::judge_again(items, &again, deps, &out.triages).await;
+        tracing::info!(
+            条数 = redone.judgements.len(),
+            "深核过的待核带着条目卡重判了"
+        );
+        for j in redone.judgements {
+            let key = j.candidate_key.clone();
+            if let Some(pos) = out.judgements.iter().position(|x| x.candidate_key == key) {
+                out.judgements[pos] = j;
+            }
+            out.flags.retain(|f| f.candidate_key != key);
+            let notes = out.rule_notes.entry(key.clone()).or_default();
+            notes.clear();
+            notes.extend(redone.rule_notes.get(&key).cloned().unwrap_or_default());
+        }
+        out.flags.extend(redone.flags);
+        for k in redone.rejudged {
+            if !out.rejudged.contains(&k) {
+                out.rejudged.push(k);
+            }
+        }
+    }
+    // 深核补出来的「仍缺」并进缺口：只留在深核日志里等于没人看得见
+    let gaps = super::finish::deepcheck_gaps(&outcomes);
+    super::finish::merge_deepcheck_gaps(&mut out.judgements, &gaps);
+    outcomes
+}
+
 /// 建选题，并对多帖的推荐 / 备选选题做一次综合。综合失败不影响选题本身。
 async fn build_topics(
     svc: &super::services::Services,
@@ -787,6 +904,8 @@ struct Judged {
     /// 选题层：每条有结论的候选恰好属于一个选题
     topics: Vec<csw_collector_core::types::Topic>,
     by_key: HashMap<String, Candidate>,
+    /// 深核做成了几条
+    deepchecked: usize,
     /// 直接拿了旧结论、没问模型的条数
     reused_judgements: usize,
     /// 直接拿了旧描述、没走网关识别的条数
@@ -814,6 +933,7 @@ pub async fn run_intake(
         Caches::default(),
         None,
         false,
+        true,
     )
     .await?;
     if j.reused_recognition > 0 || j.reused_judgements > 0 {
@@ -843,40 +963,8 @@ pub async fn run_intake(
 
     let mut counts = count_round(conn, round.id, &j.prepared)?;
 
-    // 六、深核首批。失败不抛错——条目照样登记，只在缺口里写明。
-    // 按选题核：同一选题只核代表帖，其余帖子的材料已经并进了选题综合
-    let secondary: HashSet<&str> = j
-        .topics
-        .iter()
-        .flat_map(|t| t.members.iter().filter(|m| **m != t.primary_key))
-        .map(String::as_str)
-        .collect();
-    // 主编点名的、待核的照样进：主编点名就核那一条；待核深核正是为了补缺口
-    let pinned: HashSet<String> = csw_collector_core::workbench::first_batch(conn, round.id)
-        .unwrap_or_default()
-        .into_iter()
-        .collect();
-    let primaries: Vec<Judgement> = j
-        .judgements
-        .iter()
-        .filter(|x| {
-            !secondary.contains(x.candidate_key.as_str())
-                || pinned.contains(&x.candidate_key)
-                || x.tier == csw_collector_core::types::Tier::PendingCheck
-        })
-        .cloned()
-        .collect();
-    let deep_out = super::finish::deepcheck(
-        conn,
-        round,
-        cfg,
-        &primaries,
-        &j.by_key,
-        &j.prepared,
-        &standard,
-    )
-    .await;
-    counts.deepchecked = deep_out.iter().filter(|o| o.done()).count();
+    // 深核已在判断流程里做过（登记之前），深核补的缺口已经并进台账
+    counts.deepchecked = j.deepchecked;
 
     Ok((
         counts,
@@ -885,7 +973,7 @@ pub async fn run_intake(
             topics: j.topics,
             sweeps: j.sweeps,
             by_key: j.by_key,
-            deep_gaps: super::finish::deepcheck_gaps(&deep_out),
+            deep_gaps: HashMap::new(),
         },
     ))
 }
@@ -948,7 +1036,7 @@ async fn run_local(
             "{label}：还没接过 01 的单，用空作业标准跑——描述与向量能省，判断那一段省不了"
         );
     }
-    let j = harvest_and_judge(conn, round, cfg, svc, &standard, caches, None, false).await?;
+    let j = harvest_and_judge(conn, round, cfg, svc, &standard, caches, None, false, false).await?;
     let counts = count_round(conn, round.id, &j.prepared)?;
     tracing::info!(
         候选 = counts.candidates,
@@ -973,7 +1061,18 @@ pub async fn run_backtest(
     links: &[String],
 ) -> Result<Vec<Judgement>> {
     let standard = mirror::latest_work_standard(conn, "intake")?.unwrap_or_default();
-    let j = harvest_and_judge(conn, round, cfg, svc, &standard, caches, Some(links), true).await?;
+    let j = harvest_and_judge(
+        conn,
+        round,
+        cfg,
+        svc,
+        &standard,
+        caches,
+        Some(links),
+        true,
+        false,
+    )
+    .await?;
     Ok(j.judgements)
 }
 
@@ -987,6 +1086,8 @@ pub async fn run_rejudge(
     cfg: &Config,
     svc: &super::services::Services,
     links: &[String],
+    // 也做深核（要 codex）：看「深核过的不再待核」这一段
+    deep: bool,
 ) -> Result<Vec<Judgement>> {
     let standard = mirror::latest_work_standard(conn, "intake")?.unwrap_or_default();
     let j = harvest_and_judge(
@@ -1001,6 +1102,7 @@ pub async fn run_rejudge(
         },
         Some(links),
         false,
+        deep,
     )
     .await?;
     Ok(j.judgements)
@@ -1170,6 +1272,28 @@ async fn judge_items<'a>(
             |r| r.get(0),
         )
         .unwrap_or(round_id);
+    // 选题记忆：全部采用 / 否决案例，每轮算一次「品牌｜对象」的向量，
+    // 好给每条候选挑跨品牌、对象相近的案例（同品牌的案例太少，09-25 M3）
+    let cases = csw_collector_judge::memory::load_cases(conn).unwrap_or_else(|e| {
+        tracing::warn!("读选题记忆失败，这一轮不带案例：{e:#}");
+        Vec::new()
+    });
+    let case_vectors: Option<Vec<Vec<f32>>> = if cases.is_empty() {
+        None
+    } else {
+        let inputs: Vec<csw_collector_core::vector::EmbedInput> = cases
+            .iter()
+            .map(|c| csw_collector_core::vector::EmbedInput::Text(c.embed_text()))
+            .collect();
+        match svc.vector.embed(&inputs).await {
+            Ok(v) => Some(v),
+            Err(e) => {
+                // 算不出向量只是少了跨品牌的相似案例，同品牌的照送
+                tracing::warn!("选题记忆算向量失败，只送同品牌案例：{e:#}");
+                None
+            }
+        }
+    };
     let mut out = Vec::with_capacity(prepared.len());
     let total = prepared.len();
     for (i, p) in prepared.iter().enumerate() {
@@ -1235,14 +1359,23 @@ async fn judge_items<'a>(
         if !cfg.features.send_van_quotes_to_model {
             csw_collector_judge::materials::strip_van_quotes(&mut materials);
         }
-        // 选题记忆：同品牌的采用 / 否决案例，只带对象与结论，**不带原话**。回测时不给——
-        // 被回测的那条自己的决定就在案例库里
-        if !hide_self {
-            materials.extend(
-                csw_collector_judge::memory::materials_for(conn, &brand_keys, &p.candidate.url)
-                    .unwrap_or_default(),
-            );
-        }
+        // 选题记忆：同品牌的采用 / 否决案例优先，空位由跨品牌、对象相近的补；
+        // 只带对象与结论，**不带原话**。这条贴文自己的那条案例在 `pick` 里按链接排除，
+        // 所以回测也照样给——以前回测整段不给，M3 就从没检验过选题记忆起不起作用
+        let sims: Option<Vec<f32>> = match (&case_vectors, &p.fused) {
+            (Some(cv), Some(f)) => Some(
+                cv.iter()
+                    .map(|v| csw_collector_judge::memory::cosine(v, f))
+                    .collect(),
+            ),
+            _ => None,
+        };
+        materials.extend(csw_collector_judge::memory::pick(
+            &cases,
+            &brand_keys,
+            &p.candidate.url,
+            sims.as_deref(),
+        ));
         // **真的把图读出来送进判断。**
         //
         // 这里曾经传的是 `|_| None`，于是 `pick_images` 的 filter_map 把每一张都
@@ -1269,6 +1402,7 @@ async fn judge_items<'a>(
             heat_note: csw_collector_judge::order::heat_note(&p.candidate, None),
             brand_keys,
             refetched: Vec::new(),
+            deep_card: String::new(),
         });
     }
     Ok(out)

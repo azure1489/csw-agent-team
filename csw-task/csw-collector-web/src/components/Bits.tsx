@@ -10,12 +10,17 @@ import { Badge } from '@/components/ui'
 import type { Tone } from '@/lib/constants'
 import { STATUS } from '@/lib/constants'
 
-/** 四档徽标。**没有分数色阶**：不推荐是中性灰，它是一个正常结论，不是错误。 */
-export function TierBadge({ tier, sm }: { tier: string; sm?: boolean }) {
+/**
+ * 四档徽标。**没有分数色阶**：不推荐是中性灰，它是一个正常结论，不是错误。
+ *
+ * `awaiting`：备选里还挂着「影响选题判断」的缺口——深核后仍缺关键资料的就落在这里，
+ * 显示成「备选·待补证」，免得和资料齐全的备选混在一起。
+ */
+export function TierBadge({ tier, sm, awaiting }: { tier: string; sm?: boolean; awaiting?: boolean }) {
   const s = STATUS[tier] ?? { label: tier, tone: 'gray' as Tone }
   return (
     <Badge tone={s.tone} dot={s.dot} outline={s.outline} sm={sm}>
-      {s.label}
+      {tier === 'alternate' && awaiting ? '备选·待补证' : s.label}
     </Badge>
   )
 }

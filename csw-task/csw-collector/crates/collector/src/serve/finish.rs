@@ -31,37 +31,69 @@ use csw_collector_engineapi::client::EngineClient;
 use csw_collector_engineapi::types::{IntakeCheckResult, SubmitInput};
 use csw_collector_harvest::pipeline::{Prepared, SweepCount};
 
-/// 深核首批挑哪些：**主编指定的优先，然后推荐档，再然后待核**。
+/// 深核挑哪几条：**主编点名的** → **待核的**（至多 `n_pending`）→ **推荐的**（至多 `n_recommend`）。
 ///
-/// 待核也进，是因为深核正是为了把它的缺口补上；
-/// 不推荐的不进——已经判过不做了，再核一遍没有意义。
-///
-/// 主编指定的那几条**不看档也不受 `n` 之外的条件限制**：他看完台账说要核这条，
-/// 就核这条。只有总数仍受 `n` 约束——深核一条要十分钟，首批要在 20 分钟内交出去。
+/// 待核的排在推荐前面：深核过的不再留在待核（09-25 用户），推荐一多、待核就轮不上的老挑法
+/// 让待核一直挂着。点名的不看档，但总数受两个上限之和约束——深核一条要几分钟。
+/// 不推荐、备选的不进：已经判过取舍了，再核一遍没有意义。
 pub fn first_batch<'a>(
     judgements: &'a [Judgement],
     pinned: &[String],
-    n: usize,
+    n_recommend: usize,
+    n_pending: usize,
 ) -> Vec<&'a Judgement> {
+    let cap = n_recommend + n_pending;
     let mut picked: Vec<&Judgement> = judgements
         .iter()
         .filter(|j| pinned.contains(&j.candidate_key))
+        .take(cap)
         .collect();
     let taken = |picked: &Vec<&Judgement>, j: &Judgement| {
         picked.iter().any(|p| p.candidate_key == j.candidate_key)
     };
-    for tier in [Tier::Recommend, Tier::PendingCheck] {
+    for (tier, n) in [
+        (Tier::PendingCheck, n_pending),
+        (Tier::Recommend, n_recommend),
+    ] {
+        let mut added = 0;
         for j in judgements.iter().filter(|j| j.tier == tier) {
-            if picked.len() >= n {
+            if added >= n || picked.len() >= cap {
                 break;
             }
             if !taken(&picked, j) {
                 picked.push(j);
+                added += 1;
             }
         }
     }
-    picked.truncate(n);
     picked
+}
+
+/// 深核条目卡拼成一段，给重判用。
+pub fn card_text(c: &deep::Card) -> String {
+    let mut s = String::new();
+    let mut line = |k: &str, v: &str| {
+        if !v.trim().is_empty() {
+            s.push_str(&format!("{k}：{}\n", v.trim()));
+        }
+    };
+    line("原始披露时间", &c.disclosed_at);
+    line("原始来源", &c.original_source);
+    line("对照", &c.comparison_note);
+    line("完整图", &c.figure_notes);
+    for (k, xs) in [
+        ("核到的事实", &c.facts),
+        ("证据", &c.evidence),
+        ("仍缺", &c.gaps),
+    ] {
+        if !xs.is_empty() {
+            s.push_str(&format!("{k}：\n"));
+            for x in xs {
+                s.push_str(&format!("- {}\n", x.trim()));
+            }
+        }
+    }
+    s
 }
 
 /// 第 6 步：深核首批。**失败不抛错**——条目照样登记，只在缺口里写明。
@@ -91,7 +123,12 @@ pub async fn deepcheck(
         tracing::warn!(原因 = %format!("{e:#}"), "读指定首批失败，按自动挑法来");
         Vec::new()
     });
-    let picked = first_batch(judgements, &pinned, cfg.codex.first_batch.max(1));
+    let picked = first_batch(
+        judgements,
+        &pinned,
+        cfg.codex.first_batch,
+        cfg.codex.pending_cap,
+    );
     if !pinned.is_empty() {
         tracing::info!(
             指定 = pinned.len(),
@@ -532,25 +569,25 @@ mod tests {
             j("r2", Tier::Recommend),
         ];
         // 他看完台账说要核不推荐那条，就核那条——不看档
-        let picked: Vec<&str> = first_batch(&js, &["n1".into()], 2)
+        let picked: Vec<&str> = first_batch(&js, &["n1".into()], 1, 1)
             .iter()
             .map(|x| x.candidate_key.as_str())
             .collect();
         assert_eq!(picked, ["n1", "r1"]);
 
         // 指定的已经在推荐里，不该出现两遍
-        let picked: Vec<&str> = first_batch(&js, &["r2".into()], 3)
+        let picked: Vec<&str> = first_batch(&js, &["r2".into()], 2, 1)
             .iter()
             .map(|x| x.candidate_key.as_str())
             .collect();
-        assert_eq!(picked, ["r2", "r1"]);
+        assert_eq!(picked, ["r2", "r1",]);
 
-        // 指定得比上限还多时，上限说了算：深核一条十分钟，首批要 20 分钟内交出去
-        let picked = first_batch(&js, &["n1".into(), "r1".into(), "r2".into()], 2);
+        // 指定得比上限还多时，上限说了算：深核一条要几分钟
+        let picked = first_batch(&js, &["n1".into(), "r1".into(), "r2".into()], 1, 1);
         assert_eq!(picked.len(), 2);
 
         // 指定了一条这一轮没有的，忽略它，别把自动挑法也带崩
-        let picked: Vec<&str> = first_batch(&js, &["翻篇了".into()], 1)
+        let picked: Vec<&str> = first_batch(&js, &["翻篇了".into()], 1, 0)
             .iter()
             .map(|x| x.candidate_key.as_str())
             .collect();
@@ -558,34 +595,47 @@ mod tests {
     }
 
     #[test]
-    fn 首批先推荐再待核不要不推荐的() {
+    fn 待核先核_推荐另有名额_不要不推荐和备选() {
         let js = [
             j("n1", Tier::NotRecommend),
             j("r1", Tier::Recommend),
             j("p1", Tier::PendingCheck),
             j("r2", Tier::Recommend),
             j("a1", Tier::Alternate),
+            j("p2", Tier::PendingCheck),
         ];
-        let picked: Vec<&str> = first_batch(&js, &[], 3)
+        let picked: Vec<&str> = first_batch(&js, &[], 1, 5)
             .iter()
             .map(|x| x.candidate_key.as_str())
             .collect();
-        // 待核也进——深核正是为了补它的缺口；
-        // 不推荐的不进——已经判过不做了，再核一遍没有意义
-        assert_eq!(picked, ["r1", "r2", "p1"]);
-        assert!(!picked.contains(&"n1") && !picked.contains(&"a1"));
-        // 推荐够多就不掺待核
+        // 待核的全进（深核过的不再待核），推荐按名额；不推荐、备选不进
+        assert_eq!(picked, ["p1", "p2", "r1"]);
+        // 推荐再多也不挤掉待核
         let js2 = [
             j("r1", Tier::Recommend),
             j("r2", Tier::Recommend),
             j("p1", Tier::PendingCheck),
         ];
-        assert_eq!(first_batch(&js2, &[], 2).len(), 2);
-        assert!(
-            first_batch(&js2, &[], 2)
-                .iter()
-                .all(|x| x.tier == Tier::Recommend)
-        );
+        let picked: Vec<&str> = first_batch(&js2, &[], 2, 1)
+            .iter()
+            .map(|x| x.candidate_key.as_str())
+            .collect();
+        assert_eq!(picked, ["p1", "r1", "r2"]);
+    }
+
+    #[test]
+    fn 条目卡拼成一段() {
+        let c = deep::Card {
+            original_source: "品牌官网".into(),
+            facts: vec!["重量 995 克".into()],
+            gaps: vec!["内部尺寸未公开".into()],
+            ..Default::default()
+        };
+        let t = card_text(&c);
+        assert!(t.contains("原始来源：品牌官网"));
+        assert!(t.contains("- 重量 995 克"));
+        assert!(t.contains("仍缺"));
+        assert!(!t.contains("原始披露时间"), "空的不写");
     }
 
     #[test]

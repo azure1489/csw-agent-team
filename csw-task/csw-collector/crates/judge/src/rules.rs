@@ -67,6 +67,8 @@ pub struct Ctx<'a> {
     pub allow_rejudge: bool,
     /// 这条的全部图片都已由识图步骤看过（代码算的，见 `pipeline::Item::image_seen`）
     pub images_all_read: bool,
+    /// 深核过（带着深核条目卡判的）。深核过的不许再落待核
+    pub deepchecked: bool,
     /// 这条候选的原文（正文 + 译文 + 补读正文）。**原文里本来就有的「从…改为…」不算编造**——
     /// 依据要引原话，品牌文案自己这么写，引用它不是模型虚构的对比。
     pub source_text: &'a str,
@@ -281,13 +283,55 @@ pub fn apply(j: &mut Judgement, ctx: &Ctx<'_>) -> Applied {
         ));
     }
 
-    // R3 没读到不等于没价值
-    if j.tier == Tier::NotRecommend
-        && (j.unanswered == Unanswered::MissingMaterial || j.has_decision_gap())
-    {
-        j.tier = Tier::PendingCheck;
+    // R1b 推荐还要 CSW 适配度成立：推荐位是给 Van 选题的，适配说不清的最多备选
+    // （09-25 M3：Van 否决的 8 条里 5 条被判推荐 / 备选，其中 3 条 csw 是「不明」）
+    if j.tier == Tier::Recommend && j.dim(Dim::Csw).map(|d| d.verdict) != Some(Verdict::Yes) {
+        j.tier = Tier::Alternate;
         out.notes.push(format!(
-            "{NOTE}关键资料尚未取得却判不推荐，改为待核（原判不推荐）"
+            "{NOTE}「CSW 适配度」未成立，推荐改备选（原判推荐）"
+        ));
+    }
+
+    // R3 没读到不等于没价值。**只管「贴文指向别处的内容没取到」**：贴文本身就是全部、
+    // 只是说得少，模型判了价值不足（low_value）的，不翻成待核（09-25：预取轮 17 条待核里
+    // 约 8 条是这种）
+    let points_elsewhere = j
+        .gaps
+        .iter()
+        .any(|g| g.level == GapLevel::Decision && elsewhere(g));
+    if j.tier == Tier::NotRecommend
+        && (j.unanswered == Unanswered::MissingMaterial
+            || (j.unanswered != Unanswered::LowValue && points_elsewhere))
+    {
+        j.tier = if ctx.deepchecked {
+            Tier::Alternate
+        } else {
+            Tier::PendingCheck
+        };
+        out.notes.push(format!(
+            "{NOTE}关键资料在别处尚未取得却判不推荐，改为{}（原判不推荐）",
+            if ctx.deepchecked {
+                "备选·待补证"
+            } else {
+                "待核"
+            }
+        ));
+    }
+
+    // R9 深核过的不再待核：深核后仍缺关键资料的定为备选·待补证，缺口交主编
+    if ctx.deepchecked && j.tier == Tier::PendingCheck {
+        j.tier = Tier::Alternate;
+        if !j.has_decision_gap() {
+            j.gaps.push(Gap::decision("深核后仍缺决定选题的关键资料"));
+        }
+        for g in j.gaps.iter_mut().filter(|g| g.level == GapLevel::Decision) {
+            g.owner = GapOwner::Editor;
+            if g.next.trim().is_empty() {
+                g.next = "人工补证后再定是否推荐".into();
+            }
+        }
+        out.notes.push(format!(
+            "{NOTE}深核后仍缺关键资料，定为备选·待补证（原判待核）"
         ));
     }
 
@@ -439,12 +483,30 @@ fn strip_contrast(j: &mut Judgement, found: &[String]) {
 pub fn wants_refetch(j: &Judgement) -> bool {
     j.tier == Tier::PendingCheck
         && j.image_seen
-        && j.gaps.iter().any(|g| {
-            g.level == GapLevel::Decision
-                && ["外链", "链接", "主页", "全文", "官网", "完整内容", "link"]
-                    .iter()
-                    .any(|k| format!("{}{}", g.what, g.next).contains(k))
-        })
+        && j.gaps
+            .iter()
+            .any(|g| g.level == GapLevel::Decision && elsewhere(g))
+}
+
+/// 这条缺口说的是「内容在别处」：外链、官网、主页、全文、快拍精选。
+fn elsewhere(g: &Gap) -> bool {
+    [
+        "外链",
+        "链接",
+        "主页",
+        "全文",
+        "官网",
+        "完整内容",
+        "link",
+        "详见",
+        "快拍",
+        "精选",
+        "商品页",
+        "产品页",
+        "博客",
+    ]
+    .iter()
+    .any(|k| format!("{}{}", g.what, g.next).contains(k))
 }
 
 #[cfg(test)]
@@ -458,6 +520,7 @@ mod tests {
             brand_keys: brands,
             allow_rejudge: again,
             images_all_read: false,
+            deepchecked: false,
             source_text: "",
         }
     }
@@ -769,6 +832,54 @@ mod tests {
         apply(&mut j, &ctx(&[], &[], true));
         assert_eq!(j.gaps.len(), 1);
         assert!(!j.image_seen);
+    }
+
+    #[test]
+    fn 推荐要csw也成立() {
+        let mut j = Judgement::fixture("k", Tier::Recommend);
+        for (d, dj) in &mut j.dims {
+            if *d == Dim::Csw {
+                dj.verdict = Verdict::Unclear;
+            }
+        }
+        apply(&mut j, &ctx(&[], &[], false));
+        assert_eq!(j.tier, Tier::Alternate);
+    }
+
+    #[test]
+    fn 价值不足的不推荐不翻成待核_指向外链的才翻() {
+        let mut j = Judgement::fixture("k", Tier::NotRecommend);
+        j.unanswered = Unanswered::LowValue;
+        j.gaps = vec![Gap::decision("产品看点无法确认")];
+        apply(&mut j, &ctx(&[], &[], false));
+        assert_eq!(j.tier, Tier::NotRecommend);
+
+        let mut j = Judgement::fixture("k", Tier::NotRecommend);
+        j.unanswered = Unanswered::None;
+        j.gaps = vec![Gap::decision("完整内容在官网，尚未取得")];
+        apply(&mut j, &ctx(&[], &[], false));
+        assert_eq!(j.tier, Tier::PendingCheck);
+    }
+
+    #[test]
+    fn 深核过的不再待核() {
+        let deep = |again| Ctx {
+            deepchecked: true,
+            ..ctx(&[], &[], again)
+        };
+        let mut j = Judgement::fixture("k", Tier::PendingCheck);
+        j.gaps = vec![Gap::decision("关键内容在官网")];
+        apply(&mut j, &deep(false));
+        assert_eq!(j.tier, Tier::Alternate);
+        assert!(j.gaps.iter().all(|g| g.owner == GapOwner::Editor));
+        assert!(j.violations().is_empty(), "{:?}", j.violations());
+
+        // 深核后还判不推荐、但关键内容在别处没取到的：备选·待补证，不是待核
+        let mut j = Judgement::fixture("k", Tier::NotRecommend);
+        j.unanswered = Unanswered::MissingMaterial;
+        j.gaps = vec![Gap::decision("完整内容在主页链接")];
+        apply(&mut j, &deep(false));
+        assert_eq!(j.tier, Tier::Alternate);
     }
 
     #[test]

@@ -92,7 +92,7 @@ function Item({
       )}
       <div className="p-3.5">
       <div className="mb-1.5 flex flex-wrap items-center gap-2">
-        <TierBadge tier={it.tier} sm />
+        <TierBadge tier={it.tier} sm awaiting={it.decision_gaps.length > 0} />
         <span className="text-[12px] text-muted">{it.brand}</span>
         <DedupBadge verdict={it.dedup} sm />
         {it.heat_note && <span className="ml-auto text-[11.5px] text-dim">{it.heat_note}</span>}

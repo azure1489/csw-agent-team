@@ -21,86 +21,164 @@ use csw_collector_kb::brands::brand_key;
 
 /// 采用、否决各至多几条。
 pub const PER_DECISION: usize = 3;
+/// 其中跨品牌的相似案例各至多几条：同品牌的优先，跨品牌的只补空位。
+pub const CROSS_PER_DECISION: usize = 2;
+/// 跨品牌案例的最低相似度（案例「品牌｜对象」的文本向量 与 候选融合向量 的余弦）。
+/// 低于它的不送：拿不相干的案例比「调性」，模型只会顺着字面联想。
+pub const MIN_SIMILARITY: f32 = 0.45;
 
-/// 挑这条候选的选题记忆：同品牌的先取，按决定时间倒序，采用、否决各至多 [`PER_DECISION`] 条。
-///
-/// 没有同品牌的案例就不送——跨品牌的案例拿来比「调性」，模型只会顺着字面联想。
-///
-/// **这条贴文自己的案例不送**（`self_url`）：判一条贴文时拿 Van 对它本身的决定当材料，
-/// 等于把答案递给模型——重判、回测时尤其如此。
-pub fn materials_for(
-    conn: &Connection,
-    brand_keys: &[String],
-    self_url: &str,
-) -> Result<Vec<Material>> {
-    if brand_keys.is_empty() {
-        return Ok(Vec::new());
+/// 一条可送的案例（采用或否决）。**没有原话这一列**——根本不读。
+#[derive(Debug, Clone)]
+pub struct CaseRow {
+    pub key: String,
+    pub decision: String,
+    pub brand: String,
+    pub title: String,
+    pub judged: String,
+    pub decided_at: Option<String>,
+    pub url: String,
+}
+
+impl CaseRow {
+    /// 算向量用的文本：品牌与对象
+    pub fn embed_text(&self) -> String {
+        format!("{}｜{}", self.brand, self.title)
     }
-    // 案例表几百行，全读出来按品牌键比，比在 SQL 里做归一化简单也可靠
+}
+
+/// 读全部采用 / 否决案例，按决定时间倒序。
+pub fn load_cases(conn: &Connection) -> Result<Vec<CaseRow>> {
     let mut st = conn.prepare(
         "SELECT case_key, decision, brand, title, judged_tier, decided_at, source_url
          FROM memory_cases WHERE decision IN ('adopted','rejected')
          ORDER BY decided_at DESC, case_key",
     )?;
-    let rows = st.query_map([], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, String>(3)?,
-            r.get::<_, String>(4)?,
-            r.get::<_, Option<String>>(5)?,
-            r.get::<_, String>(6)?,
-        ))
-    })?;
+    let rows = st
+        .query_map([], |r| {
+            Ok(CaseRow {
+                key: r.get(0)?,
+                decision: r.get(1)?,
+                brand: r.get(2)?,
+                title: r.get(3)?,
+                judged: r.get(4)?,
+                decided_at: r.get(5)?,
+                url: r.get(6)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// 挑这条候选的选题记忆（只按同品牌），见 [`pick`]。
+pub fn materials_for(
+    conn: &Connection,
+    brand_keys: &[String],
+    self_url: &str,
+) -> Result<Vec<Material>> {
+    Ok(pick(&load_cases(conn)?, brand_keys, self_url, None))
+}
+
+/// 挑这条候选的选题记忆：**同品牌的先取**（按决定时间倒序），采用、否决各至多 [`PER_DECISION`] 条；
+/// 空位再由**跨品牌、对象相近**的案例补（`sims` 与 `rows` 一一对应，相似度不低于
+/// [`MIN_SIMILARITY`]，各至多 [`CROSS_PER_DECISION`] 条）。
+///
+/// 只按同品牌挑的时候，大多数候选一条案例都拿不到（09-25 M3：7 条推荐 / 备选的 csw 依据
+/// 全是「选题记忆无相关」），Van 否决过的同类对象判断根本看不见。
+///
+/// **这条贴文自己的案例不送**（`self_url`）：判一条贴文时拿 Van 对它本身的决定当材料，
+/// 等于把答案递给模型——重判、回测时尤其如此。
+pub fn pick(
+    rows: &[CaseRow],
+    brand_keys: &[String],
+    self_url: &str,
+    sims: Option<&[f32]>,
+) -> Vec<Material> {
     let own = csw_collector_kb::docs::norm_url(self_url);
-    let mut adopted = 0;
-    let mut rejected = 0;
+    let not_self =
+        |c: &CaseRow| self_url.is_empty() || csw_collector_kb::docs::norm_url(&c.url) != own;
+    let same_brand =
+        |c: &CaseRow| !c.brand.trim().is_empty() && brand_keys.contains(&brand_key(&c.brand));
     let mut out = Vec::new();
-    for row in rows {
-        let (key, decision, brand, title, judged, decided_at, url) = row?;
-        if brand.trim().is_empty() || !brand_keys.contains(&brand_key(&brand)) {
-            continue;
+    let mut taken = [0usize; 2];
+    let slot = |d: &str| usize::from(d != "adopted");
+    for c in rows.iter().filter(|c| same_brand(c) && not_self(c)) {
+        let n = &mut taken[slot(&c.decision)];
+        if *n < PER_DECISION {
+            *n += 1;
+            out.push(material(c, false));
         }
-        if !self_url.is_empty() && csw_collector_kb::docs::norm_url(&url) == own {
-            continue;
-        }
-        let n = if decision == "adopted" {
-            &mut adopted
-        } else {
-            &mut rejected
-        };
-        if *n >= PER_DECISION {
-            continue;
-        }
-        *n += 1;
-        out.push(Material {
-            kind: MaterialKind::Memory,
-            ref_id: key,
-            title: format!("{brand}｜{title}"),
-            date: decided_at.as_deref().and_then(|s| s.parse().ok()),
-            source: String::new(),
-            // **不送原话**：这一列根本没读
-            quote: String::new(),
-            publish_state: format!(
-                "Van {}{}",
-                if decision == "adopted" {
-                    "采用"
-                } else {
-                    "否决"
-                },
-                if judged.trim().is_empty() {
-                    String::new()
-                } else {
-                    format!("（当时系统判 {judged}）")
-                }
-            ),
-            body_excerpt: String::new(),
-            body_available: true,
-            brand,
-        });
     }
-    Ok(out)
+    if let Some(sims) = sims.filter(|s| s.len() == rows.len()) {
+        let mut cross: Vec<(usize, f32)> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| !same_brand(c) && not_self(c))
+            .map(|(i, _)| (i, sims[i]))
+            .filter(|(_, s)| *s >= MIN_SIMILARITY)
+            .collect();
+        cross.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let mut added = [0usize; 2];
+        for (i, _) in cross {
+            let c = &rows[i];
+            let k = slot(&c.decision);
+            if taken[k] < PER_DECISION && added[k] < CROSS_PER_DECISION {
+                taken[k] += 1;
+                added[k] += 1;
+                out.push(material(c, true));
+            }
+        }
+    }
+    out
+}
+
+fn material(c: &CaseRow, cross_brand: bool) -> Material {
+    Material {
+        kind: MaterialKind::Memory,
+        ref_id: c.key.clone(),
+        title: if cross_brand {
+            format!("{}｜{}（跨品牌的相似对象）", c.brand, c.title)
+        } else {
+            format!("{}｜{}", c.brand, c.title)
+        },
+        date: c.decided_at.as_deref().and_then(|s| s.parse().ok()),
+        source: String::new(),
+        // **不送原话**：这一列根本没读
+        quote: String::new(),
+        publish_state: format!(
+            "Van {}{}",
+            if c.decision == "adopted" {
+                "采用"
+            } else {
+                "否决"
+            },
+            if c.judged.trim().is_empty() {
+                String::new()
+            } else {
+                format!("（当时系统判 {}）", c.judged)
+            }
+        ),
+        body_excerpt: String::new(),
+        body_available: true,
+        brand: c.brand.clone(),
+    }
+}
+
+/// 余弦相似度。长度不同或有零向量时给 0。
+pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let (mut dot, mut na, mut nb) = (0f32, 0f32, 0f32);
+    for (x, y) in a.iter().zip(b) {
+        dot += x * y;
+        na += x * x;
+        nb += y * y;
+    }
+    if na == 0.0 || nb == 0.0 {
+        0.0
+    } else {
+        dot / (na.sqrt() * nb.sqrt())
+    }
 }
 
 /// Van **确认过**的准则卡正文，按类别与键排序。没确认的一张都不给。
@@ -201,6 +279,39 @@ mod tests {
         assert!(!block.contains("角度太旧"), "{block}");
         // 最新的否决在前
         assert!(ms.iter().any(|m| m.title.ends_with("新色")));
+    }
+
+    #[test]
+    fn 跨品牌只补空位且要够相似() {
+        let c = conn();
+        let rows = load_cases(&c).unwrap();
+        // 全部给高相似度：同品牌之外的也能补进来，但各至多两条
+        let hi = vec![0.9; rows.len()];
+        let ms = pick(&rows, &[], "", Some(&hi));
+        assert!(!ms.is_empty());
+        assert!(ms.iter().all(|m| m.title.contains("跨品牌")));
+        assert!(ms.iter().all(|m| m.quote.is_empty()), "原话不送");
+        let rej = ms
+            .iter()
+            .filter(|m| m.publish_state.contains("否决"))
+            .count();
+        let ado = ms
+            .iter()
+            .filter(|m| m.publish_state.contains("采用"))
+            .count();
+        assert!(rej <= CROSS_PER_DECISION && ado <= CROSS_PER_DECISION);
+        // 不够相似的一条都不送
+        let lo = vec![0.1; rows.len()];
+        assert!(pick(&rows, &[], "", Some(&lo)).is_empty());
+        // 长度对不上当没给
+        assert!(pick(&rows, &[], "", Some(&[0.9])).is_empty());
+    }
+
+    #[test]
+    fn 余弦() {
+        assert!((cosine(&[1.0, 0.0], &[1.0, 0.0]) - 1.0).abs() < 1e-6);
+        assert_eq!(cosine(&[1.0, 0.0], &[0.0, 1.0]), 0.0);
+        assert_eq!(cosine(&[], &[]), 0.0);
     }
 
     #[test]

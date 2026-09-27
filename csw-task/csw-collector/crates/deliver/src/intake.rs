@@ -151,6 +151,13 @@ fn write_one(s: &mut String, j: &Judgement, c: Option<&Candidate>) {
     };
     let brand = c.map(|c| c.account.clone()).unwrap_or_default();
     let _ = writeln!(s, "### {brand}｜{title}\n");
+    if j.tier == Tier::Alternate && j.has_decision_gap() {
+        // 深核后仍缺关键资料的落在这里：不是资料齐全的备选，要主编补证后再定
+        let _ = writeln!(
+            s,
+            "- **备选·待补证**：还缺影响选题判断的资料，见下面的缺口；补齐后再定是否推荐"
+        );
+    }
     let _ = writeln!(s, "- 条目键：`{}`", j.candidate_key);
     if let Some(c) = c {
         let _ = writeln!(s, "- 链接：{}", c.url);

@@ -49,7 +49,9 @@ pub const IMAGES_PER_CANDIDATE: usize = 3;
 /// headline / novelty / readiness、查重 hits 与「未确认」、缺口三级。
 /// v4（09-24）：讲清「每张图都识别」由识图步骤完成、`image_seen` 改由代码定；
 /// 对照材料为空、03 决定不带原话都不是缺口；作业标准注明哪些步骤不归模型管。
-pub const PROMPT_VERSION: &str = "judge/v4";
+/// v5（09-25）：推荐要 gain 与 csw 都成立；待核只管「指向别处的内容没取到」，贴文本身单薄的判价值不足；
+/// 选题记忆带跨品牌的相似案例；深核过的带条目卡重判、不再判待核。
+pub const PROMPT_VERSION: &str = "judge/v5";
 /// 一批的输出上限。实测每条出 780 token，六条留三倍余量。
 const MAX_OUTPUT_TOKENS: u32 = 16000;
 
@@ -81,6 +83,8 @@ pub struct Extra<'a> {
     pub refetched: &'a [Refetched],
     /// 上一次输出违反了口径（如无旧款证据写了「从…变成…」），要它改正
     pub retry_note: String,
+    /// 深核条目卡。非空 = 深核过，不许再判待核
+    pub deep_card: &'a str,
 }
 
 /// 挑送进模型的实图：优先能当配图的，其余按原序补足。
@@ -159,15 +163,18 @@ fn preamble(work_standard: &str, confirmed_rules: &[String]) -> String {
     s.push_str(
         "\n【硬规则】\n\
          - 依据必须引正文原话或指明第几张图。**编不出来就判 unclear，不许造。**\n\
-         - 推荐必须 gain（值得推荐的价值）成立且有依据；六维不是打勾表，不按成立个数定档。\n\
+         - 推荐必须 gain（值得推荐的价值）与 csw（CSW 适配度）**都成立**且有依据；csw 不成立或说不清的最多备选。\
+           六维不是打勾表，不按成立个数定档。推荐位是给 Van 选题用的，每期只选几条，门槛要高。\n\
          - headline 写「具体对象｜一句推荐理由」，40 字以内，不写分析长句。\n\
          - novelty 区分三种：existing_feature 产品现有特点 / evidenced_change 有证据的新变化 / \
            explainable_design 值得解释的设计或文化内容。**只有 evidenced_change 且在 \
            prior_evidence 写明旧款或前代依据出处时，才许写「从……变成……」「升级为」「告别」这类前后对比。**\
            没有旧款证据，就写产品现在是什么样；非新品也可以值得报道，不要为了过框架虚构变化。\n\
-         - **没读到不等于没价值。** 关键内容没取到（如完整内容在主页外链、正文截断），\
-           unanswered 填 missing_material、tier 填 pending_check，并写一条 decision 级缺口说明补读路径；\
-           **不许因此判 not_recommend**。已读到关键内容、确认价值不足的，才判 not_recommend。\n\
+         - **没读到不等于没价值。** 贴文**明确指向别处的完整内容**（主页链接、官网、全文、详见、快拍精选、正文截断）\
+           而那部分没取到时，unanswered 填 missing_material、tier 填 pending_check，并写一条 decision 级缺口说明补读路径；\
+           **不许因此判 not_recommend**。\
+           贴文没有指向别处、它本身就是全部内容，只是信息单薄说不出具体看点（使命文案、补货通知、只有风景、只列参数、\
+           合作预告没说做了什么），这是价值不足：unanswered 填 low_value、tier 判 not_recommend，不判待核。\n\
          - 查重：comparison.hits 逐条列出命中的对照材料（ref_no 抄材料编号如 M3），写明状态与具体重复了哪条事实。\
            **生成稿（仅生成稿）不是近期已发的证据**，只能帮着复用资料；\
            命中材料的正文不可得、无法核对事实时，verdict 填 unconfirmed，不许给 unrelated。\n\
@@ -178,7 +185,8 @@ fn preamble(work_standard: &str, confirmed_rules: &[String]) -> String {
            只有 decision 级缺口能让条目落 pending_check；pending_check 必须至少有一条 decision 级缺口。\n\
          - readiness 单独记事实可靠性、可作配图的实图张数、资料是否齐全，不参与定档。\n\
          - 选题记忆里的采用 / 否决案例是 Van 的真实取舍：csw 维的依据要落到具体案例（写案例编号），\
-           引用的案例编号写进 memory_refs；不能只因出现露营、户外、旅行等词就判符合。\n\
+           引用的案例编号写进 memory_refs；不能只因出现露营、户外、旅行等词就判符合。\
+           标着「跨品牌的相似对象」的案例说明 Van 对同类对象的取舍倾向，不是同一件事，不能当查重依据。\n\
          - **图片已经看过。** 送到你这里的每条候选，全部图片都已由识图步骤逐张看过原图\
            （口径里的「每张图都识别」指的就是这一步，已经完成）：「第 N 张」后面就是那张图的看图结果，\
            另随附其中至多 3 张缩略，供你直接看外观、设计与审美。只随附了部分缩略、其余是看图结果，\
@@ -291,6 +299,16 @@ fn candidate_block(n: usize, item: &JudgeInput<'_>) -> String {
             fence(&r.url),
             fence(r.text.trim())
         ));
+    }
+    if !item.extra.deep_card.trim().is_empty() {
+        // 深核是我们自己的核查员查的，但它转述的来源内容仍是第三方写的，照样过边界
+        s.push_str("\n【深核结果（核查员已查证原始来源、事实与对照）】\n");
+        s.push_str(&fence(item.extra.deep_card.trim()));
+        s.push_str(
+            "\n本条已经深核过：tier 只能是 recommend / alternate / not_recommend，**不再判 pending_check**。\
+             深核后仍缺决定选题的关键资料、但内容本身有报道潜力的，判 alternate，\
+             并把缺的写成 decision 级缺口、owner 填 editor；已能确认价值不足的判 not_recommend。\n",
+        );
     }
     s.push_str("\n【对照材料】\n");
     s.push_str(&materials::as_prompt_block(item.materials));

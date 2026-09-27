@@ -121,8 +121,10 @@ pub struct Codex {
     pub model: String,
     /// 一条线程一个回合，所以并行度就是线程数
     pub parallel: usize,
-    /// 首批深核几条
+    /// 首批深核几条（推荐的）
     pub first_batch: usize,
+    /// 待核的至多深核几条。深核过的不再留在待核（09-25 用户），所以待核的尽量都核
+    pub pending_cap: usize,
     pub budget_secs: u64,
 }
 
@@ -348,6 +350,7 @@ impl Default for Config {
                 model: "gpt-6-astra".into(),
                 parallel: 3,
                 first_batch: 6,
+                pending_cap: 15,
                 budget_secs: 600,
             },
             schedule: Schedule {

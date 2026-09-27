@@ -24,6 +24,8 @@ pub struct Opts {
     /// 关注的条目：条目键或账号里含这些字样的（逗号分隔，不区分大小写）
     pub focus: Vec<String>,
     pub out: PathBuf,
+    /// 也做深核
+    pub deepcheck: bool,
 }
 
 pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
@@ -56,7 +58,7 @@ pub async fn run(cfg: &Config, secrets: &Secrets, o: Opts) -> Result<()> {
         },
     )?;
     println!("重判写在第 {} 轮（手动轮，只在本地）", r.id);
-    let js = match round::run_rejudge(&conn, &r, cfg, &svc, &links).await {
+    let js = match round::run_rejudge(&conn, &r, cfg, &svc, &links, o.deepcheck).await {
         Ok(j) => {
             rounds::finish_round(&conn, r.id, "done", &format!("重判第 {} 轮", o.round))?;
             j

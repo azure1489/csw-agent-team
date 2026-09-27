@@ -51,6 +51,9 @@ pub struct Item<'a> {
     pub brand_keys: Vec<String>,
     /// 定点补读抓回来的外链正文。大多数候选没有。
     pub refetched: Vec<Refetched>,
+    /// 深核条目卡（核查员查证后的原始来源、事实、对照）。非空 = 这条深核过，
+    /// 重判时**不许再判待核**（09-25 用户：深核过的最好不要还是待核）
+    pub deep_card: String,
 }
 
 /// 一批的下标与它的结果
@@ -352,6 +355,7 @@ async fn enforce(
                 brand_keys: &it.brand_keys,
                 allow_rejudge: allow,
                 images_all_read: it.image_seen,
+                deepchecked: !it.deep_card.is_empty(),
                 source_text: &src,
             },
         );
@@ -409,6 +413,7 @@ async fn enforce(
                     brand_keys: &items[*i].brand_keys,
                     allow_rejudge: false,
                     images_all_read: items[*i].image_seen,
+                    deepchecked: !items[*i].deep_card.is_empty(),
                     source_text: &src,
                 },
             );
@@ -535,6 +540,7 @@ fn judge_input<'a>(it: &'a Item<'a>, triages: &'a [Triage], retry_note: String) 
         extra: Extra {
             refetched: &it.refetched,
             retry_note,
+            deep_card: &it.deep_card,
         },
     }
 }
@@ -709,6 +715,10 @@ pub fn inputs_hash(item: &Item<'_>, work_standard: &str) -> String {
         put(&r.url);
         put(blake3::hash(r.text.as_bytes()).to_hex().as_str());
     }
+    if !item.deep_card.is_empty() {
+        put("deep");
+        put(blake3::hash(item.deep_card.as_bytes()).to_hex().as_str());
+    }
     h.finalize().to_hex().to_string()
 }
 
@@ -789,6 +799,7 @@ mod tests {
             heat_note: "369 赞".into(),
             brand_keys: vec![],
             refetched: vec![],
+            deep_card: String::new(),
         }
     }
 

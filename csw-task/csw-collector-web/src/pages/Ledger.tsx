@@ -251,7 +251,7 @@ function Row({
           </button>
         </Td>
         <Td>
-          <TierBadge tier={j.effective_tier} sm />
+          <TierBadge tier={j.effective_tier} sm awaiting={j.decision_gaps > 0} />
           {changed && (
             // 「模型判不推荐、主编捞回成备选」与「模型判备选」是两件事
             <div className="mt-1 text-[11px] text-muted">

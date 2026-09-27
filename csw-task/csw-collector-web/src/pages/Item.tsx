@@ -69,7 +69,12 @@ export function Item() {
         }
         right={
           <>
-            {d.effective_tier && <TierBadge tier={d.effective_tier} />}
+            {d.effective_tier && (
+              <TierBadge
+                tier={d.effective_tier}
+                awaiting={decision.length > 0}
+              />
+            )}
             {d.first_batch && <span className="text-[12px] text-accent">已进首批</span>}
           </>
         }
