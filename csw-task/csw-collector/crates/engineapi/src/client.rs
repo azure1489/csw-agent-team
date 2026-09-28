@@ -92,6 +92,13 @@ impl EngineClient {
         self.get(&format!("/tasks/{task_id}")).await
     }
 
+    /// 这一期派下来的窗口 `(起, 止)`：取时间线里 `run_created` 那条事件的输入 `窗口`。
+    /// 期次详情接口不带输入，只有时间线里有。取不到返回 `None`（调用方退回按水位算）。
+    pub async fn run_window(&self, run_id: i64) -> Result<Option<(String, String)>, EngineError> {
+        let v: serde_json::Value = self.get(&format!("/runs/{run_id}/timeline")).await?;
+        Ok(run_window_of(&v))
+    }
+
     /// 接单，兼作心跳——引擎没有独立心跳接口，重复调它就是心跳。
     ///
     /// 心跳不带幂等键：它本来就该可以重复调，带了反而会在第二次被幂等层挡回来。
@@ -490,4 +497,43 @@ pub fn submit_idem_key(task_id: i64, zip_sha256: &str) -> String {
         "submit-{task_id}-{}",
         &zip_sha256[..zip_sha256.len().min(16)]
     )
+}
+
+/// 从时间线里挑出 `run_created` 的 `窗口.起 / 窗口.止`。事件详情可能是字符串化的 JSON，也可能已是对象。
+pub fn run_window_of(timeline: &serde_json::Value) -> Option<(String, String)> {
+    let ev = timeline
+        .get("events")?
+        .as_array()?
+        .iter()
+        .find(|e| e.get("type").and_then(|t| t.as_str()) == Some("run_created"))?;
+    let detail = match ev.get("detail")? {
+        serde_json::Value::String(s) => serde_json::from_str::<serde_json::Value>(s).ok()?,
+        other => other.clone(),
+    };
+    let w = detail.get("窗口")?;
+    let from = w.get("起")?.as_str()?.to_string();
+    let to = w.get("止")?.as_str()?.to_string();
+    Some((from, to))
+}
+
+#[cfg(test)]
+mod run_window_tests {
+    use super::*;
+
+    #[test]
+    fn 从时间线取期次窗口() {
+        let tl = serde_json::json!({"events": [
+            {"type": "task_ready", "detail": null},
+            {"type": "run_created",
+             "detail": "{\"窗口\":{\"止\":\"2026-09-28T07:00+08:00\",\"起\":\"2026-09-25T07:00+08:00\"}}"}
+        ]});
+        assert_eq!(
+            run_window_of(&tl),
+            Some((
+                "2026-09-25T07:00+08:00".into(),
+                "2026-09-28T07:00+08:00".into()
+            ))
+        );
+        assert_eq!(run_window_of(&serde_json::json!({"events": []})), None);
+    }
 }

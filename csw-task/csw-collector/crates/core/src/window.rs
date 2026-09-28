@@ -84,6 +84,38 @@ pub fn for_round(now: Timestamp, last_end: Option<Timestamp>) -> Window {
     }
 }
 
+/// 派单轮的窗口：**引擎派的窗口起点**与**上一轮终点（水位）**取更早的那个，终点是现在。
+///
+/// 只按水位算，同一天重新触发的一期（或前一期被作废）会只剩几小时：09-28 r54 被作废后
+/// 重新触发的 r55，水位是 r54 的 05:30，窗口只剩 05:30~08:16，交出一个 0 条的空包。
+/// 只按引擎窗口算，每天 05:30 开工、引擎窗口止于 07:00，05:30~07:00 进库的那段下一期
+/// 从 07:00 算起就永远没人扫。两个取早的，两头都盖住。回溯上限照旧。
+pub fn for_task(
+    now: Timestamp,
+    engine_start: Option<Timestamp>,
+    last_end: Option<Timestamp>,
+) -> Window {
+    let Some(es) = engine_start.filter(|t| *t < now) else {
+        return for_round(now, last_end);
+    };
+    // 水位在未来（钟走回去、库被手改）不信它，只看引擎窗口
+    let want = match last_end.filter(|t| *t < now) {
+        Some(mark) => es.min(mark),
+        None => es,
+    };
+    let floor = now - Span::new().hours(MAX_LOOKBACK_HOURS);
+    let (start, truncated) = if want < floor {
+        (floor, true)
+    } else {
+        (want, false)
+    };
+    Window {
+        start,
+        end: now,
+        truncated,
+    }
+}
+
 fn default_start(now: Timestamp) -> Timestamp {
     now - Span::new().hours(default_hours(now))
 }
@@ -192,6 +224,36 @@ mod tests {
         assert_eq!(w.hours(), MAX_LOOKBACK_HOURS as f64);
         // 截断要标出来，不许悄悄发生
         assert!(w.truncated);
+    }
+
+    #[test]
+    fn 同一天重新触发的一期按引擎窗口起点扫() {
+        // r54 被作废后 08:16 重新触发 r55：水位是 r54 的 05:30，引擎窗口从 09-25 07:00 起
+        let w = for_task(
+            ts("2026-09-28T00:16:58Z"),
+            Some(ts("2026-09-24T23:00:00Z")),
+            Some(ts("2026-09-27T21:30:21Z")),
+        );
+        assert_eq!(w.start, ts("2026-09-24T23:00:00Z"));
+        assert!(!w.truncated);
+    }
+
+    #[test]
+    fn 平常一天水位更早就从水位起_不漏五点半到七点() {
+        // 昨天 05:30 开工，今天引擎窗口从昨天 07:00 起：取水位 05:30
+        let w = for_task(
+            ts("2026-09-29T21:30:00Z"),
+            Some(ts("2026-09-28T23:00:00Z")),
+            Some(ts("2026-09-28T21:30:00Z")),
+        );
+        assert_eq!(w.start, ts("2026-09-28T21:30:00Z"));
+    }
+
+    #[test]
+    fn 没有引擎窗口就按水位() {
+        let now = ts("2026-09-29T21:30:00Z");
+        let last = Some(ts("2026-09-28T21:30:00Z"));
+        assert_eq!(for_task(now, None, last), for_round(now, last));
     }
 
     #[test]

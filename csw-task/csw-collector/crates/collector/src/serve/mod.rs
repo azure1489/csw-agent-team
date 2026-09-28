@@ -387,7 +387,7 @@ async fn prefetch_job(
         // 预取轮是缓存，盘紧的时候第一个该让路的就是它
         anyhow::bail!("{why}");
     }
-    let (window_start, window_end, _) = window_for(conn);
+    let (window_start, window_end, _) = window_for(conn, None);
     let (r, _) = rounds::open_round(
         conn,
         &rounds::NewRound {
@@ -737,12 +737,38 @@ async fn start_round(
         // 镜像存不下只影响下一次预取轮的复用率，不该拦住这一轮
         tracing::warn!(任务 = t.task.id, 原因 = %format!("{e:#}"), "任务镜像没写成");
     }
-    let (window_start, window_end, truncated) = window_for(conn);
+    // 引擎派的窗口：取不到（网络、老引擎）就只按水位算
+    let engine_window = match engine.run_window(t.task.run_id).await {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!(期次 = t.task.run_id, 原因 = %format!("{e:#}"), "取不到期次窗口，按水位算");
+            None
+        }
+    };
+    let (window_start, window_end, truncated) = window_for(conn, engine_window.as_ref());
+    // 主编退回后「取消 → 重开 → 重新派工」时，任务版本号不变、本地那一轮已经收尾，
+    // 按 (任务, 版本, 触发) 查会以为「开过了」而什么都不做（09-28 r55 #581 接了单就停住）。
+    // **派工时间晚于本地那一轮收尾时间**，就是一次新的派工：当返工，版本加一
+    let mut target_version = i64::from(t.task.cur_version.max(1));
+    let mut rework = action == Action::Rework;
+    if let Ok(Some(prev)) = rounds::latest_for_task(conn, t.task.id)
+        && prev.status != "running"
+        && redispatched_after(conn, prev.id, &t.task.dispatched_at)
+    {
+        target_version = target_version.max(prev.target_version + 1);
+        rework = true;
+        tracing::info!(
+            任务 = t.task.id,
+            上一轮 = prev.id,
+            版本 = target_version,
+            "本地那一轮已收尾之后又派了一次：当返工开新一轮"
+        );
+    }
     let (r, is_new) = rounds::open_round(
         conn,
         &rounds::NewRound {
             kind: csw_collector_core::types::RoundKind::Task,
-            trigger: if action == Action::Rework {
+            trigger: if rework {
                 csw_collector_core::types::RoundTrigger::Returned
             } else {
                 csw_collector_core::types::RoundTrigger::Dispatch
@@ -750,7 +776,7 @@ async fn start_round(
             run_id: Some(t.task.run_id),
             task_id: Some(t.task.id),
             stage_code: Some(t.task.stage_code.clone()),
-            target_version: i64::from(t.task.cur_version.max(1)),
+            target_version,
             parent_round_id: None,
             window_start,
             window_end,
@@ -890,11 +916,15 @@ async fn start_round(
 /// 水位是**上一轮派单轮的窗口终点**：上一轮晚开了两小时，这一轮就该多覆盖
 /// 两小时，不然中间那段没人看过。没有水位时退回一天（周一退回三天）。
 /// 判据全在 [`csw_collector_core::window`]，这里只负责把水位查出来。
-fn window_for(conn: &rusqlite::Connection) -> (String, String, bool) {
+fn window_for(
+    conn: &rusqlite::Connection,
+    engine: Option<&(String, String)>,
+) -> (String, String, bool) {
     let last = rounds::last_task_window_end(conn)
         .unwrap_or(None)
         .and_then(|s| s.parse::<jiff::Timestamp>().ok());
-    let w = csw_collector_core::window::for_round(jiff::Timestamp::now(), last);
+    let engine_start = engine.and_then(|(from, _)| parse_engine_ts(from));
+    let w = csw_collector_core::window::for_task(jiff::Timestamp::now(), engine_start, last);
     if w.truncated {
         // 截断不许悄悄发生：它意味着这一轮少扫了一段
         tracing::warn!(
@@ -903,6 +933,34 @@ fn window_for(conn: &rusqlite::Connection) -> (String, String, bool) {
         );
     }
     (w.start.to_string(), w.end.to_string(), w.truncated)
+}
+
+/// 引擎窗口的时刻写法是 `2026-09-25T07:00+08:00`（没有秒），先按 RFC 3339 读，读不了补上秒再读。
+fn parse_engine_ts(s: &str) -> Option<jiff::Timestamp> {
+    s.parse::<jiff::Timestamp>().ok().or_else(|| {
+        // 在时区偏移前补 ":00"
+        let i = s.rfind(['+', '-']).filter(|i| *i > 10)?;
+        format!("{}:00{}", &s[..i], &s[i..]).parse().ok()
+    })
+}
+
+/// 任务的派工时间是否晚于本地那一轮的收尾时间。取不到时间就当不是（保守：不重复开轮）。
+fn redispatched_after(conn: &rusqlite::Connection, round_id: i64, dispatched_at: &str) -> bool {
+    let ended: Option<String> = conn
+        .query_row(
+            "SELECT ended_at FROM rounds WHERE id = ?1",
+            [round_id],
+            |r| r.get(0),
+        )
+        .ok()
+        .flatten();
+    match (
+        ended.and_then(|s| s.parse::<jiff::Timestamp>().ok()),
+        dispatched_at.parse::<jiff::Timestamp>().ok(),
+    ) {
+        (Some(e), Some(d)) => d > e,
+        _ => false,
+    }
 }
 
 /// 磁盘到了拒开新轮的水位吗。到了就给一句能直接发给主编的话。
@@ -935,6 +993,17 @@ fn outbox_conflicts(conn: &rusqlite::Connection) -> Result<Vec<i64>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn 引擎窗口的时刻没有秒也读得出来() {
+        let t = super::parse_engine_ts("2026-09-25T07:00+08:00").unwrap();
+        assert_eq!(
+            t,
+            "2026-09-24T23:00:00Z".parse::<jiff::Timestamp>().unwrap()
+        );
+        assert!(super::parse_engine_ts("2026-09-25T07:00:00+08:00").is_some());
+        assert!(super::parse_engine_ts("不是时间").is_none());
+    }
+
     use super::*;
 
     #[test]
