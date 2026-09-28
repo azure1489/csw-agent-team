@@ -394,19 +394,24 @@ func (q *Queries) MarkStallNotified(ctx context.Context, id int64, k domain.Stal
 	return n == 1, err
 }
 
-// condRunStalled 整期停滞：run 仍 active、没有任何已派工/进行中的任务、但还有没走完的阶段，
-// 且距最近一次**业务**事件已超过阈值。判定时排除 run_stalled 自身——否则告警一发，
-// 「最近事件」就被刷成当下，清掉标记后再也判不出停滞（自我抵消）。
+// condRunStalled 整期停滞：run 仍 active、没有任何已派工/进行中/待审的任务、但还有没走完的阶段，
+// 且距最近一次**业务**事件已超过阈值。「业务事件」不含各类提醒本身（run_stalled、逾期、未接单、
+// 无活动、待审提醒）——否则提醒一发，「最近事件」就被刷成当下，再也判不出停滞（自我抵消）。
 // 同时只看最近 24 小时内还有动静的 run：与任务级 condAckDue / condIdleDue 一致。
 // 漏了这条的代价已经付过——6 月以来 39 个一直挂着的旧 v1 run 一次性全被判停滞并 @ 了中枢。中枢报失败后正是这种状态——任务 failed、下游 blocked，任务级告警全都不触发。
+//
+// **同一次停滞只提醒一次，有了新的业务事件就算新的一次**：比较提醒时刻与最近业务事件，
+// 不靠清标记。原先的 ClearRunStallNotified 从没被调用过，r56 在 05:30 报过一次后就再也不会报（09-28）。
+// 有任务在待审的不算：那是审核方没动，由待审提醒（review_waiting）按档追，这里不重复 @。
+const runStallLastBusiness = `IFNULL((SELECT MAX(e.created_at) FROM events e WHERE e.run_id=r.id
+	AND e.type NOT IN ('run_stalled','overdue','ack_overdue','ack_escalated','task_idle','review_waiting','review_escalated')), r.created_at)`
+
 const condRunStalled = `r.status='active'
-	AND r.stalled_notified_at IS NULL
-	AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.run_id=r.id AND t.status IN ('dispatched','in_progress'))
+	AND (r.stalled_notified_at IS NULL OR r.stalled_notified_at < ` + runStallLastBusiness + `)
+	AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.run_id=r.id AND t.status IN ('dispatched','in_progress','review'))
 	AND EXISTS (SELECT 1 FROM tasks t WHERE t.run_id=r.id AND t.status IN ('ready','blocked','failed','returned'))
-	AND IFNULL((SELECT MAX(e.created_at) FROM events e WHERE e.run_id=r.id AND e.type <> 'run_stalled'), r.created_at)
-	    <= strftime('%Y-%m-%dT%H:%M:%SZ','now',-? || ' minutes')
-	AND IFNULL((SELECT MAX(e.created_at) FROM events e WHERE e.run_id=r.id AND e.type <> 'run_stalled'), r.created_at)
-	    >= strftime('%Y-%m-%dT%H:%M:%SZ','now','-24 hours')`
+	AND ` + runStallLastBusiness + ` <= strftime('%Y-%m-%dT%H:%M:%SZ','now',-? || ' minutes')
+	AND ` + runStallLastBusiness + ` >= strftime('%Y-%m-%dT%H:%M:%SZ','now','-24 hours')`
 
 // ListStalledRuns 列整期停滞且尚未提醒的 run。
 func (q *Queries) ListStalledRuns(ctx context.Context) ([]domain.Run, error) {
@@ -437,12 +442,6 @@ func (q *Queries) MarkRunStallNotified(ctx context.Context, runID int64) (bool, 
 	}
 	n, err := res.RowsAffected()
 	return n == 1, err
-}
-
-// ClearRunStallNotified 有新动作时清掉停滞标记，让下一次停滞还能再提醒一次。
-func (q *Queries) ClearRunStallNotified(ctx context.Context, runID int64) error {
-	_, err := q.ex.ExecContext(ctx, `UPDATE runs SET stalled_notified_at=NULL WHERE id=?`, runID)
-	return err
 }
 
 // RunStallSummary 停滞时的卡点摘要：还差哪些阶段、各是什么状态。

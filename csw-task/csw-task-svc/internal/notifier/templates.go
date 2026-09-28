@@ -66,8 +66,11 @@ func or(s, def string) string {
 	return s
 }
 
-// vanAllowed 白名单：只有「待 Van 闸审核」的通知才能主送 Van；其余一律降级给中枢。
+// vanAllowed 白名单：只有「待 Van 闸审核」与「待审升级」的通知才能主送 Van；其余一律降级给中枢。
 func vanAllowed(eventType string, p payload) bool {
+	if eventType == domain.EvtReviewEscalated {
+		return true
+	}
 	return (eventType == domain.EvtSubmitted || eventType == domain.EvtGatePassed) && p.s("next_reviewer") == "van"
 }
 
@@ -136,6 +139,15 @@ func render(o domain.Outbox, r roster) (string, bool) {
 		line = fmt.Sprintf("【r%s·%s·任务#%s】%s 执行方（%s）派工 %s 分钟仍未接单，请改派、重开或取消", run, stage, task, to, p.s("assignee_role"), p.s("minutes"))
 	case domain.EvtTaskIdle:
 		line = fmt.Sprintf("【r%s·%s·任务#%s】%s 接单后 %s 分钟没有心跳或产物：请提交、心跳或报告失败", run, stage, task, to, p.s("minutes"))
+	case domain.EvtReviewWaiting:
+		head := fmt.Sprintf("【r%s·%s·v%s】", run, stage, ver)
+		if p.s("relayed") == "true" {
+			line = fmt.Sprintf("%s%s %s 已等 %s 分钟（第 %s 次提醒）：请跟进 Van 的决定并代录；交付物#%s", head, to, or(p.s("gate_name"), "Van 闸"), p.s("minutes"), p.s("reminded"), p.s("deliverable_id"))
+		} else {
+			line = fmt.Sprintf("%s%s 待审已 %s 分钟（%s，第 %s 次提醒）：请审核或退回交付物#%s；审不了请在群里说明", head, to, p.s("minutes"), or(p.s("gate_name"), "当前闸"), p.s("reminded"), p.s("deliverable_id"))
+		}
+	case domain.EvtReviewEscalated:
+		line = fmt.Sprintf("【r%s·%s·v%s】%s 待审已 %s 分钟（%s），已提醒审核方 %s 次仍无动作，请过问；交付物#%s", run, stage, ver, to, p.s("minutes"), or(p.s("gate_name"), "当前闸"), p.s("reminded"), p.s("deliverable_id"))
 	case domain.EvtRunStalled:
 		// run 级事件没有 task / stage，单独成句：整期还活着却没人在动，要中枢接出下一步。
 		line = fmt.Sprintf("【r%s·整期停滞】%s 本期已 %s 分钟没有任何人在动，还没走完：%s。\n报失败或收到退回后要在同一轮接出下一步——重开/重派具体任务，或明确宣布本期停止；只发状态播报不算处置",

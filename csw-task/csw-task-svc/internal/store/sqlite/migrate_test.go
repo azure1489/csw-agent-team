@@ -26,9 +26,9 @@ func TestMigrate(t *testing.T) {
 		t.Fatalf("count tables: %v", err)
 	}
 	// 0014 outbox、0015 run_items、0020–0022 数据子系统 8 张、0028 采集留痕 3 张、
-	// 0036 intake_judgements、0039 选题记忆 2 张。
-	if n != 39 {
-		t.Fatalf("want 39 tables, got %d", n)
+	// 0036 intake_judgements、0039 选题记忆 2 张、0042 review_reminders。
+	if n != 40 {
+		t.Fatalf("want 40 tables, got %d", n)
 	}
 
 	// 0009 新增列：阶段四列 + 任务快照三列。

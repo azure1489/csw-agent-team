@@ -194,3 +194,66 @@ func (e *Engine) NotifyStall(ctx context.Context, taskID int64, k domain.StallKi
 	})
 	return sent, err
 }
+
+// NotifyReviewWaiting 待审提醒：交付物在这道闸上等了 waited 分钟还没人审，按档位再提醒一次审核方。
+// 条件记次成功（提醒次数仍是 w.Reminded）才写事件，并发扫描同一档只发一次。
+// Van 闸由中枢代录，提醒中枢去跟 Van；Van 本人只在升级时才被 @（见 NotifyReviewEscalated）。
+func (e *Engine) NotifyReviewWaiting(ctx context.Context, w sqlite.ReviewWait, waited int) (bool, error) {
+	var sent bool
+	err := e.store.Tx(ctx, func(q *sqlite.Queries) error {
+		ok, err := q.MarkReviewReminded(ctx, w.DeliverableID, w.GateOrder, w.Reminded)
+		if err != nil || !ok {
+			return err
+		}
+		task, err := q.GetTask(ctx, w.TaskID)
+		if err != nil {
+			return err
+		}
+		wf, err := taskWorkflow(ctx, q, task)
+		if err != nil {
+			return err
+		}
+		detail := reviewWaitDetail(w, waited, w.Reminded+1)
+		n := &notice{target: w.ReviewerRole, hub: wf.HubRoleCode, payload: taskPayload(task, detail)}
+		if w.RelayedByHub || w.ReviewerRole == "" {
+			n.target = wf.HubRoleCode
+		}
+		sent = true
+		return emit(ctx, q, domain.Event{RunID: &task.RunID, TaskID: &task.ID, DeliverableID: &w.DeliverableID,
+			Type: domain.EvtReviewWaiting, DetailJSON: evtDetail(detail)}, n)
+	})
+	return sent, err
+}
+
+// NotifyReviewEscalated 待审升级：提醒够次数仍无动作，@ Van、抄送中枢。同一次等待只升级一次。
+func (e *Engine) NotifyReviewEscalated(ctx context.Context, w sqlite.ReviewWait, waited int) (bool, error) {
+	var sent bool
+	err := e.store.Tx(ctx, func(q *sqlite.Queries) error {
+		ok, err := q.MarkReviewEscalated(ctx, w.DeliverableID, w.GateOrder)
+		if err != nil || !ok {
+			return err
+		}
+		task, err := q.GetTask(ctx, w.TaskID)
+		if err != nil {
+			return err
+		}
+		wf, err := taskWorkflow(ctx, q, task)
+		if err != nil {
+			return err
+		}
+		detail := reviewWaitDetail(w, waited, w.Reminded)
+		sent = true
+		return emit(ctx, q, domain.Event{RunID: &task.RunID, TaskID: &task.ID, DeliverableID: &w.DeliverableID,
+			Type: domain.EvtReviewEscalated, DetailJSON: evtDetail(detail)},
+			&notice{target: "van", hub: wf.HubRoleCode, cc: []string{wf.HubRoleCode}, payload: taskPayload(task, detail)})
+	})
+	return sent, err
+}
+
+func reviewWaitDetail(w sqlite.ReviewWait, waited, reminded int) map[string]any {
+	return map[string]any{
+		"version": w.Version, "deliverable_id": w.DeliverableID, "gate_name": w.GateName,
+		"reviewer_role": w.ReviewerRole, "relayed": w.RelayedByHub,
+		"minutes": waited, "reminded": reminded, "since": w.Since,
+	}
+}

@@ -204,12 +204,29 @@ func TestRunStalledAlert(t *testing.T) {
 		t.Fatalf("卡点摘要不该为空：%q err=%v", summary, err)
 	}
 
-	// 有新动作后清标记，下次停滞还能再提醒。
-	if err := st.Q().ClearRunStallNotified(ctx, runID); err != nil {
+	// 只有各类提醒、没有新的业务事件：还是同一次停滞，不再提醒。
+	if _, err := st.DB().ExecContext(ctx,
+		`UPDATE runs SET stalled_notified_at = strftime('%Y-%m-%dT%H:%M:%SZ','now','-30 minutes') WHERE id=?`, runID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().ExecContext(ctx,
+		`INSERT INTO events (run_id, type, created_at) VALUES (?, 'review_waiting', strftime('%Y-%m-%dT%H:%M:%SZ','now','-20 minutes'))`, runID); err != nil {
+		t.Fatal(err)
+	}
+	if runs, _ := st.Q().ListStalledRuns(ctx); len(runs) != 0 {
+		t.Fatal("提醒类事件不算新动作")
+	}
+	// 有了新的业务事件、之后又停了超过阈值：算新的一次停滞，能再提醒。不靠清标记——
+	// 原先的 ClearRunStallNotified 从没被调用，r56 在 05:30 报过一次后再也不报（09-28）。
+	if _, err := st.DB().ExecContext(ctx,
+		`INSERT INTO events (run_id, type, created_at) VALUES (?, 'task_reopened', strftime('%Y-%m-%dT%H:%M:%SZ','now','-20 minutes'))`, runID); err != nil {
 		t.Fatal(err)
 	}
 	if runs, _ := st.Q().ListStalledRuns(ctx); len(runs) != 1 {
-		t.Fatal("清掉标记后应能再次捞到")
+		t.Fatal("新动作之后再停滞应能再次捞到")
+	}
+	if sent, err := e.NotifyRunStalled(ctx, runID); err != nil || !sent {
+		t.Fatalf("第二次停滞应提醒：sent=%v err=%v", sent, err)
 	}
 }
 

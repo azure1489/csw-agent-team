@@ -208,7 +208,18 @@ func BuildProgress(ctx context.Context, q *sqlite.Queries, runID int64, now time
 			if latest != nil {
 				if g, err := q.TaskGateByOrder(ctx, t.ID, latest.CurGate+1); err == nil {
 					reviewer := roleName(g.ReviewerRole)
-					pt.Blocker = &Blocker{Kind: "gate", Text: "待闸：" + g.Name + "（" + reviewer + "）"}
+					text := "待闸：" + g.Name + "（" + reviewer + "）"
+					// 已等多久：到达这道闸的时刻 = 提交时间，或上一道闸通过的时间（09-28 r56 #592 待审八小时没人发现）
+					since := latest.CreatedAt
+					if rs, err := q.ListReviewsByDeliverable(ctx, latest.ID); err == nil && len(rs) > 0 && rs[len(rs)-1].CreatedAt > since {
+						since = rs[len(rs)-1].CreatedAt
+					}
+					if at, err := time.Parse(time.RFC3339, since); err == nil {
+						if m := int(now.Sub(at).Minutes()); m >= 15 {
+							text += fmt.Sprintf("，已等 %d 分钟", m)
+						}
+					}
+					pt.Blocker = &Blocker{Kind: "gate", Text: text}
 					pt.Next = reviewer + "审核"
 				}
 			}

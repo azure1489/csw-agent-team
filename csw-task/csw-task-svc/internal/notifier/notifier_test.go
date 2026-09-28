@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -313,3 +314,78 @@ func TestStallScanRemindsThenEscalates(t *testing.T) {
 		t.Fatalf("escalate text: %s", escalate)
 	}
 }
+
+// TestReviewWaitScanPacesThenEscalates 待审提醒：15 分钟第一次，同一档不重发，隔够了再发；
+// 提醒满三次白天升级 @Van 抄送主编，夜里不升级。09-28 r56 #592 在待审上停了八小时没人提醒。
+func TestReviewWaitScanPacesThenEscalates(t *testing.T) {
+	r := newRig(t, Options{})
+	ctx := context.Background()
+	r.trigger(t)
+	collector, _ := r.agent(t, "collector")
+	intake := r.task(t, "intake")
+	d, err := r.eng.Submit(ctx, collector, intake.ID, engine.SubmitInput{DownloadURL: "http://x/intake"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.flush(t)
+	back := func(col string, minutes int) {
+		t.Helper()
+		table := "review_reminders"
+		key := "deliverable_id"
+		if col == "created_at" {
+			table, key = "deliverables", "id"
+		}
+		if _, err := r.st.DB().Exec(`UPDATE `+table+` SET `+col+`=strftime('%Y-%m-%dT%H:%M:%SZ','now',?) WHERE `+key+`=?`,
+			"-"+itoa(minutes)+" minutes", d.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scan := func(want int) {
+		t.Helper()
+		if n, err := r.n.ScanReviewWaits(ctx); err != nil || n != want {
+			t.Fatalf("scan: n=%d want %d err=%v", n, want, err)
+		}
+	}
+
+	scan(0) // 刚交上去
+	back("created_at", 16)
+	scan(1)
+	scan(0) // 同一档不重发
+	back("last_reminded_at", 16)
+	scan(1)
+	back("last_reminded_at", 31)
+	scan(1)
+	if got := r.flush(t); got != 3 {
+		t.Fatalf("三条待审提醒，发了 %d", got)
+	}
+	remind := r.sender.texts()[len(r.sender.texts())-1]
+	if !strings.Contains(remind, "待审已") || !strings.Contains(remind, "第 3 次提醒") || !strings.Contains(remind, openEditor) {
+		t.Fatalf("提醒文案：%s", remind)
+	}
+
+	// 提醒满三次：夜里（北京时间 02:00）不升级，白天（10:00）升级 @Van 抄送主编
+	day := time.Now().In(domain.Beijing)
+	r.now = time.Date(day.Year(), day.Month(), day.Day(), 2, 0, 0, 0, domain.Beijing)
+	scan(0)
+	r.now = time.Date(day.Year(), day.Month(), day.Day(), 10, 0, 0, 0, domain.Beijing).Add(24 * time.Hour)
+	if n, err := r.n.ScanReviewWaits(ctx); err != nil || n < 1 {
+		t.Fatalf("白天该升级：n=%d err=%v", n, err)
+	}
+	// 发送按真时钟：outbox 的落库时间是数据库的 now，拨过的时钟会被当成积压丢掉
+	r.now = time.Now()
+	r.flush(t)
+	var esc string
+	for _, s := range r.sender.texts() {
+		if strings.Contains(s, "仍无动作，请过问") {
+			esc = s
+		}
+	}
+	if !strings.Contains(esc, openVan) || !strings.Contains(esc, "抄送") || !strings.Contains(esc, openEditor) {
+		t.Fatalf("升级文案：%q", esc)
+	}
+	if n, _ := r.n.ScanReviewWaits(ctx); n != 0 {
+		t.Fatalf("升级只一次、这一档也提醒过了：n=%d", n)
+	}
+}
+
+func itoa(n int) string { return strconv.Itoa(n) }

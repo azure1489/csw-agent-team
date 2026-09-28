@@ -98,6 +98,9 @@ func (n *Notifier) Run(ctx context.Context) {
 			if _, err := n.ScanStalledRuns(ctx); err != nil {
 				n.fail(err)
 			}
+			if _, err := n.ScanReviewWaits(ctx); err != nil {
+				n.fail(err)
+			}
 		case <-poll.C:
 			if _, err := n.Flush(ctx); err != nil {
 				n.fail(err)
@@ -318,6 +321,47 @@ func (n *Notifier) ScanStalls(ctx context.Context) (int, error) {
 		}
 		for _, t := range tasks {
 			ok, err := n.eng.NotifyStall(ctx, t.ID, k)
+			if err != nil {
+				return count, err
+			}
+			if ok {
+				count++
+			}
+		}
+	}
+	return count, nil
+}
+
+// ScanReviewWaits 扫待审：到档就再提醒审核方一次，提醒够次数仍无动作就升级 Van（夜间不升级）。
+// 返回本次发出的提醒与升级条数。
+func (n *Notifier) ScanReviewWaits(ctx context.Context) (int, error) {
+	waits, err := n.store.Q().ListReviewWaits(ctx)
+	if err != nil {
+		return 0, err
+	}
+	now := n.opt.Now()
+	count := 0
+	for _, w := range waits {
+		since, err := time.Parse(time.RFC3339, w.Since)
+		if err != nil {
+			continue
+		}
+		var last time.Time
+		if w.LastRemindedAt != "" {
+			last, _ = time.Parse(time.RFC3339, w.LastRemindedAt)
+		}
+		waited := int(now.Sub(since).Minutes())
+		if domain.ReviewEscalateDue(now, w.Reminded, w.EscalatedAt != "") {
+			ok, err := n.eng.NotifyReviewEscalated(ctx, w, waited)
+			if err != nil {
+				return count, err
+			}
+			if ok {
+				count++
+			}
+		}
+		if domain.ReviewRemindDue(now, since, last, w.Reminded) {
+			ok, err := n.eng.NotifyReviewWaiting(ctx, w, waited)
 			if err != nil {
 				return count, err
 			}
