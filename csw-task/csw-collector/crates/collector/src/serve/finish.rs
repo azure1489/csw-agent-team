@@ -326,6 +326,8 @@ fn cover_preview(conn: &Connection, cfg: &Config, key: &str) -> Option<intake::P
 }
 
 /// 深核结果落库：页面的条目详情读它，下一轮复用也读它。写不进去不影响这一轮。
+/// 同一轮同一条再核一次（补证、返工）就整行覆盖，`started_at` 也换成这一次的——
+/// 只换 `ended_at` 的话，按开始时间查会以为新结果没落库（09-28 第 33 轮补证）。
 fn save_deepcheck(conn: &Connection, round_id: i64, o: &deep::Outcome) {
     let now = jiff::Timestamp::now().to_string();
     let status = if o.done() {
@@ -344,7 +346,8 @@ fn save_deepcheck(conn: &Connection, round_id: i64, o: &deep::Outcome) {
         "INSERT INTO deepchecks(round_id, candidate_key, status, result_json, started_at, ended_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?5)
          ON CONFLICT(round_id, candidate_key) DO UPDATE SET
-           status = excluded.status, result_json = excluded.result_json, ended_at = excluded.ended_at",
+           status = excluded.status, result_json = excluded.result_json,
+           started_at = excluded.started_at, ended_at = excluded.ended_at",
         params![round_id, o.candidate_key, status, result.to_string(), now],
     ) {
         tracing::warn!(候选 = %o.candidate_key, "深核结果没落库：{e:#}");
