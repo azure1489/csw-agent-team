@@ -601,32 +601,14 @@ pub fn build_deliverable(
         jl.push('\n');
     }
     entries.push(pack::Entry::text("trace/judgements.jsonl", jl));
-    // 窗口内的实际 ID 集合与首次入库时间：主编要能按 first_seen_at 自己核窗口
-    // 每条判断登记到哪个条目、登记成什么：128 行判断与引擎里的登记条目逐键对得上
-    let item_of = crate::serve::register::registered_item_of(topics);
-    let mut ids = String::new();
-    for j in judgements {
-        let c = by_key.get(&j.candidate_key);
-        let item_key = item_of.get(&j.candidate_key).cloned();
-        let item_status = match (&item_key, j.tier) {
-            (None, _) => "不登记条目（只进判断台账）",
-            (Some(_), Tier::PendingCheck) => "pending_check",
-            (Some(_), _) if j.has_decision_gap() => "pending_check",
-            (Some(_), _) => "shortlisted",
-        };
-        ids.push_str(&serde_json::to_string(&serde_json::json!({
-            "candidate_key": j.candidate_key,
-            "url": c.map(|c| c.url.clone()).unwrap_or_default(),
-            "first_seen_at": c.and_then(|c| c.ingested_at).map(|t| t.to_string()),
-            "posted_at": c.and_then(|c| c.posted_at).map(|t| t.to_string()),
-            "sweep_key": c.map(|c| crate::serve::register::sweep_key_of(&c.collector)).unwrap_or_default(),
-            "tier": j.tier,
-            "item_key": item_key,
-            "item_status": item_status,
-        }))?);
-        ids.push('\n');
-    }
+    // 宽取的每一条落到哪儿、窗口内的每条判成什么登记成什么：主编要能从宽取的全部 ID
+    // 按 first_seen_at 逐条复算到窗口内的那些（09-28 r56 退回：1431 → 128 只有两个数）
+    let (ids, summary) = window_ids(conn, round.id, judgements, topics, sweeps, by_key)?;
     entries.push(pack::Entry::text("trace/window_ids.jsonl", ids));
+    entries.push(pack::Entry::text(
+        "trace/window_summary.json",
+        serde_json::to_string_pretty(&summary)?,
+    ));
 
     let name = format!(
         "情报逐条_情报收集员_r{}_v{version}",
@@ -781,6 +763,127 @@ pub fn merge_deepcheck_gaps(
         }
     }
     n
+}
+
+/// `trace/window_ids.jsonl` 与 `trace/window_summary.json`。
+///
+/// 有宽取留痕的：宽取的每一条一行（接口返回顺序），带去向与原因；窗口内的再带档位与登记。
+/// 判过、却不在留痕的「窗口内」里的（上期结转等）另起一行说明来路。
+/// 没有留痕的老轮次：只列判过的，汇总里如实写「宽取未逐条落库」。
+fn window_ids(
+    conn: &Connection,
+    round_id: i64,
+    judgements: &[Judgement],
+    topics: &[csw_collector_core::types::Topic],
+    sweeps: &[SweepCount],
+    by_key: &HashMap<String, Candidate>,
+) -> Result<(String, serde_json::Value)> {
+    use csw_collector_harvest::pipeline::TraceOutcome;
+    let item_of = crate::serve::register::registered_item_of(topics);
+    let judged: HashMap<&str, &Judgement> = judgements
+        .iter()
+        .map(|j| (j.candidate_key.as_str(), j))
+        .collect();
+    let item = |key: &str| -> serde_json::Value {
+        let Some(j) = judged.get(key) else {
+            return serde_json::json!({"tier": null, "item_key": null, "item_status": "未判（不应出现，出现即是缺陷）"});
+        };
+        let item_key = item_of.get(key).cloned();
+        let item_status = match (&item_key, j.tier) {
+            (None, _) => "不登记条目（只进判断台账）",
+            (Some(_), Tier::PendingCheck) => "pending_check",
+            (Some(_), _) if j.has_decision_gap() => "pending_check",
+            (Some(_), _) => "shortlisted",
+        };
+        serde_json::json!({"tier": j.tier, "item_key": item_key, "item_status": item_status})
+    };
+
+    let rows = csw_collector_core::window_trace::of_round(conn, round_id).unwrap_or_default();
+    let mut out = String::new();
+    let mut counts: std::collections::BTreeMap<&'static str, usize> = Default::default();
+    let mut in_window_keys = std::collections::HashSet::new();
+    for r in &rows {
+        let o = TraceOutcome::parse(&r.outcome);
+        let mut line = serde_json::json!({
+            "sweep_key": r.sweep_key,
+            "source_id": r.source_id,
+            "candidate_key": r.candidate_key,
+            "account": r.account,
+            "url": r.url,
+            "first_seen_at": r.ingested_at,
+            "posted_at": r.posted_at,
+            "media": r.media,
+            "outcome": r.outcome,
+            "reason": o.map(|o| o.cn()).unwrap_or("未知去向"),
+            "dup_of": r.dup_of,
+            "trace_source": r.source,
+        });
+        if o == Some(TraceOutcome::InWindow) {
+            in_window_keys.insert(r.candidate_key.clone());
+            if let (Some(m), Some(extra)) =
+                (line.as_object_mut(), item(&r.candidate_key).as_object())
+            {
+                m.extend(extra.clone());
+            }
+        }
+        *counts
+            .entry(o.map(|o| o.as_str()).unwrap_or("unknown"))
+            .or_default() += 1;
+        out.push_str(&serde_json::to_string(&line)?);
+        out.push('\n');
+    }
+    // 判过、却不在留痕的窗口内里的：没有留痕的老轮次是全部判过的；有留痕的是结转等
+    let mut extra = 0;
+    for j in judgements {
+        if in_window_keys.contains(&j.candidate_key) {
+            continue;
+        }
+        extra += 1;
+        let c = by_key.get(&j.candidate_key);
+        let mut line = serde_json::json!({
+            "sweep_key": c.map(|c| crate::serve::register::sweep_key_of(&c.collector)).unwrap_or_default(),
+            "source_id": c.map(|c| c.source_id.clone()),
+            "candidate_key": j.candidate_key,
+            "url": c.map(|c| c.url.clone()).unwrap_or_default(),
+            "first_seen_at": c.and_then(|c| c.ingested_at).map(|t| t.to_string()),
+            "posted_at": c.and_then(|c| c.posted_at).map(|t| t.to_string()),
+            "outcome": "judged_not_in_trace",
+            "reason": if rows.is_empty() { "判过（这一轮宽取未逐条落库）" } else { "判过，但不在宽取留痕的窗口内（点名链接或上期结转）" },
+        });
+        if let (Some(m), Some(x)) = (line.as_object_mut(), item(&j.candidate_key).as_object()) {
+            m.extend(x.clone());
+        }
+        out.push_str(&serde_json::to_string(&line)?);
+        out.push('\n');
+    }
+    let source = rows.first().map(|r| r.source.as_str()).unwrap_or("none");
+    let summary = serde_json::json!({
+        "宽取留痕": match source {
+            "live" => "当轮宽取时逐条记下",
+            "refetch" => "原宽取未逐条落库；事后按同一发布时间窗口重新取数、同一规则复算（只取元数据，未重判）",
+            _ => "这一轮宽取未逐条落库，只列判过的",
+        },
+        "trace_source": source,
+        "留痕条数": rows.len(),
+        "按去向": counts,
+        "窗口内": in_window_keys.len(),
+        "判过": judgements.len(),
+        "判过但不在留痕窗口内": extra,
+        "采集轮自报": sweeps.iter().map(|s| serde_json::json!({
+            "sweep_key": s.sweep_key, "found": s.found, "fetched_unique": s.fetched_unique, "in_window": s.in_window,
+        })).collect::<Vec<_>>(),
+        "去向说明": {
+            "in_window": TraceOutcome::InWindow.cn(),
+            "dup_in_sweep": TraceOutcome::DupInSweep.cn(),
+            "dup_across": TraceOutcome::DupAcross.cn(),
+            "not_image_only": TraceOutcome::NotImageOnly.cn(),
+            "before_window": TraceOutcome::BeforeWindow.cn(),
+            "after_window": TraceOutcome::AfterWindow.cn(),
+            "no_time": TraceOutcome::NoTime.cn(),
+            "判定次序": "先去重，再筛图文，再按首次入库时间 [起, 止) 左闭右开；没有入库时间的退回按发布时间",
+        },
+    });
+    Ok((out, summary))
 }
 
 #[cfg(test)]

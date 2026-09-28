@@ -109,6 +109,8 @@ pub async fn harvest(
     let collectors: Vec<&dyn CollectorDyn> = vec![&window, &van];
     // 只取图文是总方案定死的，不是开关
     let (mut cands, sweeps, blocked) = pipeline::collect_all(&collectors, from, to, true).await;
+    // 宽取逐条留痕：失败也记，交付包里全部列出，主编能从宽取的全部 ID 复算到窗口内的
+    save_window_trace(conn, round.id, &sweeps, "live");
 
     if let Some(why) = blocked {
         // 必扫失败不兜底：兜底会让「这一轮到底扫没扫全」没人能回答
@@ -1926,6 +1928,37 @@ fn judge_text(p: &Prepared) -> String {
         s.push_str(&d.content);
     }
     s
+}
+
+/// 把各采集器的逐条去向存下来。写不进去不拦这一轮（交付包里会少这份留痕，并如实写明）。
+pub fn save_window_trace(
+    conn: &Connection,
+    round_id: i64,
+    sweeps: &[pipeline::SweepCount],
+    source: &str,
+) {
+    for s in sweeps.iter().filter(|s| !s.trace.is_empty()) {
+        let rows: Vec<_> = s
+            .trace
+            .iter()
+            .map(|t| csw_collector_core::window_trace::TraceRow {
+                sweep_key: s.sweep_key.clone(),
+                source_id: t.source_id.clone(),
+                candidate_key: t.candidate_key.clone(),
+                account: t.account.clone(),
+                url: t.url.clone(),
+                posted_at: t.posted_at.clone(),
+                ingested_at: t.ingested_at.clone(),
+                media: t.media.clone(),
+                outcome: t.outcome.as_str().into(),
+                dup_of: t.dup_of.clone(),
+                source: source.into(),
+            })
+            .collect();
+        if let Err(e) = csw_collector_core::window_trace::put(conn, round_id, &s.sweep_key, &rows) {
+            tracing::warn!(轮次 = round_id, 采集器 = %s.sweep_key, "宽取留痕没存下：{e:#}");
+        }
+    }
 }
 
 #[cfg(test)]

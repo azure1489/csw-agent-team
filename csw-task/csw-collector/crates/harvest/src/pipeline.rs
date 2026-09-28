@@ -44,6 +44,108 @@ pub struct SweepCount {
     pub error: String,
     pub started_at: String,
     pub ended_at: String,
+    /// 接口返回的每一条落到哪儿：窗口内、窗口外、非图文、重复。
+    /// 主编要能从宽取的全部 ID 逐条复算到窗口内的那些（09-28 r56 退回：1431 → 128 只有两个数）
+    pub trace: Vec<FetchTrace>,
+}
+
+/// 宽取的一条，以及它为什么留下或没留下。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchTrace {
+    pub source_id: String,
+    pub candidate_key: String,
+    pub account: String,
+    pub url: String,
+    pub posted_at: Option<String>,
+    pub ingested_at: Option<String>,
+    /// 如 `Carousel：图 3`、`Video：视频 1`
+    pub media: String,
+    pub outcome: TraceOutcome,
+    /// 重复时，与哪一条重复（先出现的那条的 candidate_key）
+    pub dup_of: Option<String>,
+}
+
+/// 一条宽取结果的去向。**判定次序与筛选代码一致**：先去重，再筛图文，再按窗口。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraceOutcome {
+    InWindow,
+    /// 同一采集器里重复（翻页边界）
+    DupInSweep,
+    /// 前面的采集器已经取到过
+    DupAcross,
+    /// 含视频或不是图文贴（只取图文是总方案定死的）
+    NotImageOnly,
+    BeforeWindow,
+    AfterWindow,
+    /// 入库时间和发布时间都没有
+    NoTime,
+}
+
+impl TraceOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InWindow => "in_window",
+            Self::DupInSweep => "dup_in_sweep",
+            Self::DupAcross => "dup_across",
+            Self::NotImageOnly => "not_image_only",
+            Self::BeforeWindow => "before_window",
+            Self::AfterWindow => "after_window",
+            Self::NoTime => "no_time",
+        }
+    }
+    pub fn cn(self) -> &'static str {
+        match self {
+            Self::InWindow => "窗口内",
+            Self::DupInSweep => "重复：同一采集器里已取到",
+            Self::DupAcross => "重复：前面的采集器已取到",
+            Self::NotImageOnly => "排除：含视频或非图文贴",
+            Self::BeforeWindow => "排除：首次入库早于窗口",
+            Self::AfterWindow => "排除：首次入库晚于窗口",
+            Self::NoTime => "排除：没有入库时间也没有发布时间",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        [
+            Self::InWindow,
+            Self::DupInSweep,
+            Self::DupAcross,
+            Self::NotImageOnly,
+            Self::BeforeWindow,
+            Self::AfterWindow,
+            Self::NoTime,
+        ]
+        .into_iter()
+        .find(|o| o.as_str() == s)
+    }
+}
+
+fn media_summary(c: &Candidate) -> String {
+    let photos = c
+        .media
+        .iter()
+        .filter(|m| m.kind == MediaKind::Photo)
+        .count();
+    let videos = c.media.len() - photos;
+    let mut parts = Vec::new();
+    if photos > 0 {
+        parts.push(format!("图 {photos}"));
+    }
+    if videos > 0 {
+        parts.push(format!("视频 {videos}"));
+    }
+    if parts.is_empty() {
+        parts.push("无媒体".into());
+    }
+    format!("{}：{}", c.content_type, parts.join("、"))
+}
+
+fn window_outcome(c: &Candidate, from: Timestamp, to: Timestamp) -> TraceOutcome {
+    match c.ingested_at.or(c.posted_at) {
+        None => TraceOutcome::NoTime,
+        Some(t) if t < from => TraceOutcome::BeforeWindow,
+        Some(t) if t >= to => TraceOutcome::AfterWindow,
+        Some(_) => TraceOutcome::InWindow,
+    }
 }
 
 /// 一条候选在这一步的产物。
@@ -191,6 +293,9 @@ pub async fn collect_all(
     let mut all = Vec::new();
     let mut sweeps = Vec::new();
     let mut blocked = None;
+    // 前面的采集器已留下的：(平台, 来源 id) → candidate_key
+    let mut seen_across: HashMap<(csw_collector_core::types::Platform, String), String> =
+        HashMap::new();
 
     for c in collectors {
         let started = now_str();
@@ -207,6 +312,47 @@ pub async fn collect_all(
                 sc.found = h.found;
                 sc.query = h.query;
                 sc.paged_to_end = h.paged_to_end;
+                // 逐条记去向。判定与下面的筛选同一套：先去重（同一采集器内、再跨采集器），
+                // 再筛图文，再按窗口
+                let mut in_sweep: HashMap<(csw_collector_core::types::Platform, String), String> =
+                    HashMap::new();
+                for x in &h.candidates {
+                    let id = (x.platform, x.source_id.clone());
+                    let (outcome, dup_of) = if let Some(first) = in_sweep.get(&id) {
+                        (TraceOutcome::DupInSweep, Some(first.clone()))
+                    } else {
+                        in_sweep.insert(id.clone(), x.candidate_key.clone());
+                        if !image_only || x.is_image_only() {
+                            let w = if c.ignore_window() {
+                                TraceOutcome::InWindow
+                            } else {
+                                window_outcome(x, from, to)
+                            };
+                            match (w, seen_across.get(&id)) {
+                                (TraceOutcome::InWindow, Some(first)) => {
+                                    (TraceOutcome::DupAcross, Some(first.clone()))
+                                }
+                                (w, _) => (w, None),
+                            }
+                        } else {
+                            (TraceOutcome::NotImageOnly, None)
+                        }
+                    };
+                    if outcome == TraceOutcome::InWindow {
+                        seen_across.insert(id, x.candidate_key.clone());
+                    }
+                    sc.trace.push(FetchTrace {
+                        source_id: x.source_id.clone(),
+                        candidate_key: x.candidate_key.clone(),
+                        account: x.account.clone(),
+                        url: x.url.clone(),
+                        posted_at: x.posted_at.map(|t| t.to_string()),
+                        ingested_at: x.ingested_at.map(|t| t.to_string()),
+                        media: media_summary(x),
+                        outcome,
+                        dup_of,
+                    });
+                }
                 // 采集器内部可能也有重复（翻页边界），先去一遍
                 let uniq = crate::collector::dedup(h.candidates);
                 sc.fetched_unique = uniq.len() as i64;
@@ -663,6 +809,74 @@ mod tests {
             paged_to_end: true,
             query: "q".into(),
         })
+    }
+
+    #[tokio::test]
+    async fn 宽取逐条记去向且窗口内条数与候选一致() {
+        let from = ts("2026-09-22T00:00:00Z");
+        let to = ts("2026-09-23T00:00:00Z");
+        let window = Fake {
+            key: "csw-window",
+            required: true,
+            out: std::sync::Mutex::new(Some(ok(
+                vec![
+                    cand("1", Some("2026-09-22T01:00:00Z"), &[MediaKind::Photo]),
+                    cand("1", Some("2026-09-22T01:00:00Z"), &[MediaKind::Photo]),
+                    cand(
+                        "2",
+                        Some("2026-09-22T02:00:00Z"),
+                        &[MediaKind::Photo, MediaKind::Video],
+                    ),
+                    cand("3", Some("2026-09-20T02:00:00Z"), &[MediaKind::Photo]),
+                    cand("4", Some("2026-09-23T00:00:00Z"), &[MediaKind::Photo]),
+                ],
+                5,
+            ))),
+        };
+        // 点名的链接里有一条窗口采集器已经取到
+        let named = Named(Fake {
+            key: "van-links",
+            required: false,
+            out: std::sync::Mutex::new(Some(ok(
+                vec![
+                    cand("1", Some("2026-09-22T01:00:00Z"), &[MediaKind::Photo]),
+                    cand("9", Some("2026-09-01T00:00:00Z"), &[MediaKind::Photo]),
+                ],
+                2,
+            ))),
+        });
+        let (cands, sweeps, _) = collect_all(&[&window, &named], from, to, true).await;
+        let t = &sweeps[0].trace;
+        let got: Vec<_> = t
+            .iter()
+            .map(|x| (x.source_id.as_str(), x.outcome))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("1", TraceOutcome::InWindow),
+                ("1", TraceOutcome::DupInSweep),
+                ("2", TraceOutcome::NotImageOnly),
+                ("3", TraceOutcome::BeforeWindow),
+                ("4", TraceOutcome::AfterWindow), // 左闭右开
+            ]
+        );
+        assert_eq!(t[1].dup_of.as_deref(), Some("k-1"));
+        assert_eq!(t[2].media, "Carousel：图 1、视频 1");
+        assert_eq!(t.len() as i64, sweeps[0].found, "每条接口返回都有一行");
+        let n = &sweeps[1].trace;
+        assert_eq!(n[0].outcome, TraceOutcome::DupAcross);
+        assert_eq!(n[1].outcome, TraceOutcome::InWindow, "点名的不按窗口筛");
+        // 逐条记的「窗口内」与真正留下判的候选一一对上
+        let kept: std::collections::BTreeSet<_> = sweeps
+            .iter()
+            .flat_map(|s| &s.trace)
+            .filter(|x| x.outcome == TraceOutcome::InWindow)
+            .map(|x| x.candidate_key.clone())
+            .collect();
+        let judged: std::collections::BTreeSet<_> =
+            cands.iter().map(|c| c.candidate_key.clone()).collect();
+        assert_eq!(kept, judged);
     }
 
     #[tokio::test]

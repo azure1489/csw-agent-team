@@ -440,6 +440,8 @@ pub fn previous_sweeps(conn: &Connection, round_id: i64) -> Vec<SweepCount> {
             error: s(v, "error"),
             started_at: s(v, "started_at"),
             ended_at: s(v, "ended_at"),
+            // 逐条留痕在本地 window_trace，不走引擎
+            trace: Vec::new(),
         })
         .collect()
 }

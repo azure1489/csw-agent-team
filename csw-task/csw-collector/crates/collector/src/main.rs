@@ -16,6 +16,7 @@
 //!   rejudge               按现在的口径重判某一轮，对照新旧结论（只写本地）
 
 mod authprobe;
+mod backfill;
 mod bff;
 mod codexprobe;
 mod evidence;
@@ -190,6 +191,12 @@ enum Command {
         /// 只补这几条（条目键，逗号分隔）。不给 = 这一轮全部待核
         #[arg(long, value_delimiter = ',')]
         keys: Vec<String>,
+    },
+    /// 补宽取留痕：老轮次按同一窗口重新取贴文列表（只取元数据）、同一规则复算每条去向。不写引擎、不提交
+    WindowTrace {
+        /// 哪一轮
+        #[arg(long)]
+        round: i64,
     },
     /// 导出契约 JSON Schema（阶段 1 的契约冻结产物）
     Schema {
@@ -526,6 +533,12 @@ async fn main() -> anyhow::Result<()> {
                 csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
             let secrets = csw_collector_core::Secrets::from_env();
             evidence::run(&cfg, &secrets, evidence::Opts { round, keys }).await
+        }
+        Command::WindowTrace { round } => {
+            let cfg =
+                csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
+            let secrets = csw_collector_core::Secrets::from_env();
+            backfill::run(&cfg, &secrets, round).await
         }
         Command::Schema { out } => schema::run(out.as_deref()),
         Command::AuthProbe {

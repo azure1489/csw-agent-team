@@ -40,6 +40,7 @@ pub mod topics;
 pub mod types;
 pub mod vector;
 pub mod window;
+pub mod window_trace;
 pub mod workbench;
 
 pub use config::{Config, Secrets};

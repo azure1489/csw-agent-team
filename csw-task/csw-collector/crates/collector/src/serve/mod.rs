@@ -1001,9 +1001,16 @@ async fn start_round(
             let items = register::item_inputs_by_topic(&judgements, &fin.topics, |k| {
                 fin.by_key.get(k).cloned()
             });
+            // 宽取留痕也算：事后补了留痕（window-trace）就是新内容，该重交
+            let trace = csw_collector_core::window_trace::of_round(conn, r.id)
+                .unwrap_or_default()
+                .iter()
+                .map(|x| format!("{}|{}|{}|{}", x.sweep_key, x.source_id, x.outcome, x.source))
+                .collect::<Vec<_>>()
+                .join("\n");
             let state = blake3::hash(
                 format!(
-                    "{EXPORT_REV}\u{1}{}\u{1}{}\u{1}{}",
+                    "{EXPORT_REV}\u{1}{}\u{1}{}\u{1}{}\u{1}{trace}",
                     serde_json::to_string(&judgements).unwrap_or_default(),
                     serde_json::to_string(&fin.topics).unwrap_or_default(),
                     serde_json::to_string(&items).unwrap_or_default()
@@ -1087,7 +1094,7 @@ const SUBMITTED: &str = "已交状态:";
 const UNCHANGED: &str = "内容与上一版相同，未重交";
 /// 交付物 / 登记导出格式的修订号。**改了导出（字段、登记口径、包内文件）就改它**，
 /// 否则返工后内容指纹一样，修好的导出不会重交
-const EXPORT_REV: &str = "2026-09-28c";
+const EXPORT_REV: &str = "2026-09-29a";
 
 /// 引擎窗口的时刻写法是 `2026-09-25T07:00+08:00`（没有秒），先按 RFC 3339 读，读不了补上秒再读。
 fn parse_engine_ts(s: &str) -> Option<jiff::Timestamp> {
@@ -1380,9 +1387,12 @@ mod tests {
                 .mount(&srv)
                 .await;
         }
-        let engine =
-            EngineClient::new(&format!("{}/api/v1", srv.uri()), "t", Duration::from_secs(5))
-                .unwrap();
+        let engine = EngineClient::new(
+            &format!("{}/api/v1", srv.uri()),
+            "t",
+            Duration::from_secs(5),
+        )
+        .unwrap();
         let conn = csw_collector_core::store::open_in_memory().unwrap();
         let open = |run: i64, task: i64| {
             rounds::open_round(
