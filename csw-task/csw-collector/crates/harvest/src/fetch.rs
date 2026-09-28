@@ -23,8 +23,10 @@ use crate::netguard;
 
 /// 一页最多读这么多字节。
 pub const MAX_BYTES: usize = 2 * 1024 * 1024;
-/// 一页最多给判断多少字。
-pub const MAX_CHARS: usize = 8000;
+/// 一页最多读出多少字（深核的 fetch_page 用；长文、活动详情页常超过 8000 字）。
+pub const MAX_CHARS: usize = 20_000;
+/// 补读正文送进判断时每页最多多少字：判断一批几十条，每条最多 3 页，不能照 [`MAX_CHARS`] 放。
+pub const JUDGE_CHARS: usize = 8000;
 pub const TIMEOUT: Duration = Duration::from_secs(15);
 /// 一条候选最多补读几个地址。
 pub const MAX_URLS_PER_CANDIDATE: usize = 3;
@@ -297,6 +299,14 @@ mod tests {
         for x in ["alert", "菜单", "版权", "注释", "p{}"] {
             assert!(!t.contains(x), "{x} 没去掉：{t}");
         }
+    }
+
+    #[test]
+    fn 长页读到两万字为止() {
+        let h = format!("<p>{}</p>", "字".repeat(MAX_CHARS + 5000));
+        let t = html_to_text(&h);
+        assert_eq!(t.chars().count(), MAX_CHARS);
+        const { assert!(MAX_CHARS > JUDGE_CHARS) };
     }
 
     #[tokio::test]

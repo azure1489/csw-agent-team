@@ -696,7 +696,7 @@ async fn refetch_and_rejudge(
             if f.status == fetch::FetchStatus::Ok && !f.text.trim().is_empty() {
                 got.push(csw_collector_judge::verdict::Refetched {
                     url: f.url,
-                    text: f.text,
+                    text: f.text.chars().take(fetch::JUDGE_CHARS).collect(),
                 });
             }
         }
