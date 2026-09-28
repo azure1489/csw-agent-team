@@ -589,8 +589,9 @@ pub fn build_deliverable(
             status: "待审".into(),
             checks: {
                 let mut c = self_checks(judgements, extra_gaps);
+                // 对账不一致那行已经作为红灯进了 extra_gaps，不再写第二遍
                 if let Some((_, lines)) = reconciled {
-                    c.extend(lines.iter().cloned());
+                    c.extend(lines.iter().filter(|l| !extra_gaps.contains(l)).cloned());
                 }
                 c
             },
@@ -682,6 +683,44 @@ fn self_checks(judgements: &[Judgement], extra_gaps: &[String]) -> Vec<String> {
     v
 }
 
+/// 对账里「本包已撤、引擎仍挂着」的条目：补发撤下。返回补发了几条。
+///
+/// 09-28 r56：v5 撤下的 7 条被主编手动改回待核（当时包里确实是待核），之后联网补证重判成不推荐；
+/// 工作台的登记历史里它们「已撤」，不会再发，引擎就一直挂着待核。以引擎的**现状**为准纠正，写明原因。
+/// 只纠正「撤下」：别的状态要整套条目字段，由正常登记负责。
+pub fn heal_dropped(
+    conn: &Connection,
+    round: &Round,
+    run_id: i64,
+    report: &serde_json::Value,
+) -> Result<usize> {
+    let titles = crate::serve::register::registered_items(conn, round.id);
+    let items: Vec<_> = report
+        .pointer("/条目/不一致")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|d| d.get("本包").and_then(|v| v.as_str()) == Some("dropped"))
+        .filter_map(|d| {
+            let key = d.get("item_key")?.as_str()?.to_string();
+            let was = d.get("引擎").and_then(|v| v.as_str()).unwrap_or("无");
+            Some(csw_collector_engineapi::types::ItemInput {
+                title: titles.get(&key).map(|(_, t)| t.clone()).unwrap_or_default(),
+                item_key: key,
+                status: "dropped".into(),
+                reason_code: "superseded".into(),
+                reason: format!("与交付包同步：包内已判为不推荐或移出本期（引擎此前为 {was}）"),
+                ..Default::default()
+            })
+        })
+        .collect();
+    if items.is_empty() {
+        return Ok(0);
+    }
+    crate::serve::register::enqueue_items(conn, round.id, run_id, &items)?;
+    Ok(items.len())
+}
+
 /// 登记发出去之后，读回引擎里的条目与判断台账，与本包逐键对账。
 ///
 /// 返回（对账报告, 自检行, 是否一致）。不一致不拦提交——如实写进自检与 `trace/engine_reconcile.json`，
@@ -695,7 +734,7 @@ pub async fn reconcile(
     topics: &[csw_collector_core::types::Topic],
 ) -> (serde_json::Value, Vec<String>, bool) {
     let want_items = crate::serve::register::registered_items(conn, round.id);
-    let item_of = crate::serve::register::registered_item_of(topics);
+    let item_of = crate::serve::register::item_of_with_history(conn, round.id, topics);
     let (eng_items, eng_js) = match (
         engine.run_items(run_id).await,
         engine.intake_judgements(run_id).await,
@@ -917,7 +956,8 @@ fn window_ids(
     by_key: &HashMap<String, Candidate>,
 ) -> Result<(String, serde_json::Value)> {
     use csw_collector_harvest::pipeline::TraceOutcome;
-    let item_of = crate::serve::register::registered_item_of(topics);
+    let item_of = crate::serve::register::item_of_with_history(conn, round_id, topics);
+    let current = crate::serve::register::registered_item_of(topics);
     let judged: HashMap<&str, &Judgement> = judgements
         .iter()
         .map(|j| (j.candidate_key.as_str(), j))
@@ -929,6 +969,8 @@ fn window_ids(
         let item_key = item_of.get(key).cloned();
         let item_status = match (&item_key, j.tier) {
             (None, _) => "不登记条目（只进判断台账）",
+            // 这一轮登记过、后来撤掉的条目：判断仍挂在它名下
+            (Some(_), _) if !current.contains_key(key) => "dropped",
             (Some(_), Tier::PendingCheck) => "pending_check",
             (Some(_), _) if j.has_decision_gap() => "pending_check",
             (Some(_), _) => "shortlisted",

@@ -984,8 +984,32 @@ async fn start_round(
             }
 
             // 本包与引擎逐键对账（登记已发出）。结果进自检与 trace/engine_reconcile.json
-            let (reconciled, lines, consistent) =
+            let (mut reconciled, mut lines, mut consistent) =
                 finish::reconcile(conn, &r, engine, t.task.run_id, &judgements, &fin.topics).await;
+            // 本包已撤、引擎仍挂着的：补发撤下，再对一次账
+            if !consistent {
+                match finish::heal_dropped(conn, &r, t.task.run_id, &reconciled) {
+                    Ok(n) if n > 0 => {
+                        let (sent, _) = outbox_sender::drain(conn, engine).await.unwrap_or((0, 0));
+                        tracing::info!(
+                            补撤 = n,
+                            发出 = sent,
+                            "对账：本包已撤、引擎仍挂着的补发撤下"
+                        );
+                        (reconciled, lines, consistent) = finish::reconcile(
+                            conn,
+                            &r,
+                            engine,
+                            t.task.run_id,
+                            &judgements,
+                            &fin.topics,
+                        )
+                        .await;
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("对账后补撤没排进去：{e:#}"),
+                }
+            }
             if !consistent {
                 // 不一致才是红灯；一致的那两行只进自检
                 gaps.extend(
@@ -1108,7 +1132,7 @@ const SUBMITTED: &str = "已交状态:";
 const UNCHANGED: &str = "内容与上一版相同，未重交";
 /// 交付物 / 登记导出格式的修订号。**改了导出（字段、登记口径、包内文件）就改它**，
 /// 否则返工后内容指纹一样，修好的导出不会重交
-const EXPORT_REV: &str = "2026-09-29a";
+const EXPORT_REV: &str = "2026-09-29b";
 
 /// 引擎窗口的时刻写法是 `2026-09-25T07:00+08:00`（没有秒），先按 RFC 3339 读，读不了补上秒再读。
 fn parse_engine_ts(s: &str) -> Option<jiff::Timestamp> {

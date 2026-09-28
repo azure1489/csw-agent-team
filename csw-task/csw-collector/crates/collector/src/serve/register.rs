@@ -317,6 +317,26 @@ pub fn registered_item_of(topics: &[Topic]) -> HashMap<String, String> {
         .collect()
 }
 
+/// 候选 → 所属条目键，**连同这一轮登记过、后来撤掉的**。
+///
+/// 撤掉的条目在引擎里还在（状态 dropped），它名下的判断也还挂着这个条目键；
+/// 本包若把它们写成「无所属条目」，逐键对账就对不上（09-28 r56 v7：12 条判断只差所属条目）。
+pub fn item_of_with_history(
+    conn: &Connection,
+    round_id: i64,
+    topics: &[Topic],
+) -> HashMap<String, String> {
+    let mut m = registered_item_of(topics);
+    let history = registered_items(conn, round_id);
+    for t in topics.iter().filter(|t| history.contains_key(&t.topic_key)) {
+        for member in &t.members {
+            m.entry(member.clone())
+                .or_insert_with(|| t.topic_key.clone());
+        }
+    }
+    m
+}
+
 /// 判断一次最多发多少条。引擎侧限 200，**在排队时就分好批**——
 /// 一条 outbox 就是一次请求，发的时候原样发，不再切。
 /// 切在发送侧的话「重试发同样的字节」就守不住了。
@@ -395,6 +415,30 @@ pub fn dropped_since(conn: &Connection, round_id: i64, now: &[ItemInput]) -> Vec
             ..Default::default()
         })
         .collect()
+}
+
+/// 只补登条目（纠正引擎与本包不一致的）。与整套登记同一套幂等键规则。
+pub fn enqueue_items(
+    conn: &Connection,
+    round_id: i64,
+    run_id: i64,
+    items: &[ItemInput],
+) -> Result<i64> {
+    let json = serde_json::json!({ "items": items }).to_string();
+    let sha = blake3::hash(json.as_bytes()).to_hex().to_string();
+    let e = outbox::enqueue(
+        conn,
+        &NewEntry {
+            round_id,
+            kind: OutboxKind::Items,
+            idem_key: format!("r{run_id}-{}-{}", kind_slug(OutboxKind::Items), &sha[..16]),
+            body_path: String::new(),
+            body_json: json,
+            body_sha: sha,
+            depends_on: None,
+        },
+    )?;
+    Ok(e.seq)
 }
 
 /// 这一轮历次登记过的条目，每个键取最后一次的（状态, 标题）。这就是引擎里应有的样子。
@@ -750,6 +794,26 @@ mod tests {
         // 撤过之后再登记，就不再撤第二次
         put(&[it("b", "shortlisted"), it("a", "dropped")]);
         assert!(dropped_since(&c, r.id, &[it("b", "shortlisted")]).is_empty());
+
+        // 撤掉的条目名下的判断仍挂着它：a 这个选题现在不推荐，成员 a、a2 仍归 a
+        let topic = |k: &str, members: &[&str], tier| Topic {
+            topic_key: k.into(),
+            primary_key: k.into(),
+            members: members.iter().map(|m| m.to_string()).collect(),
+            merge_note: String::new(),
+            tier: Some(tier),
+            headline: String::new(),
+            synthesis: Default::default(),
+        };
+        let topics = [
+            topic("a", &["a", "a2"], Tier::NotRecommend),
+            topic("b", &["b"], Tier::Recommend),
+            topic("z", &["z"], Tier::NotRecommend), // 从没登记过
+        ];
+        let m = item_of_with_history(&c, r.id, &topics);
+        assert_eq!(m.get("a2").map(String::as_str), Some("a"));
+        assert_eq!(m.get("b").map(String::as_str), Some("b"));
+        assert!(!m.contains_key("z"), "从没登记过的不挂条目");
     }
 
     #[test]

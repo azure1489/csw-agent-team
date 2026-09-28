@@ -233,7 +233,7 @@ pub fn register_and_enqueue(
     let mut items = register::item_inputs_by_topic(judgements, topics, lookup);
     // 返工时上次登记过、这次不列的撤下来（第一次登记时没有上一份，这一步是空的）
     items.extend(register::dropped_since(conn, round.id, &items));
-    let item_of = register::registered_item_of(topics);
+    let item_of = register::item_of_with_history(conn, round.id, topics);
     // 每一路各算各的：这一路来的候选里，判了几条、没判几条
     let per = |sweep_key: &str| {
         let col = register::collector_of(sweep_key);
