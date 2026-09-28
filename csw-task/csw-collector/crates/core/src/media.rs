@@ -122,6 +122,30 @@ pub fn descriptions_for(
     Ok(rows.filter_map(Result::ok).collect())
 }
 
+/// 这条候选落过库的图片清单，按图序。返工时从库里还原候选要用它——
+/// `ledger::get_candidate` 只还原元数据，不带图。
+pub fn media_refs(conn: &Connection, candidate_key: &str) -> Result<Vec<MediaRef>> {
+    let mut st = conn.prepare(
+        "SELECT source_hash, kind, url, blake3, ordinal FROM media
+         WHERE candidate_key = ?1 ORDER BY ordinal",
+    )?;
+    let rows = st.query_map(params![candidate_key], |r| {
+        let kind: String = r.get(1)?;
+        Ok(MediaRef {
+            source_hash: r.get(0)?,
+            kind: if kind == "video" {
+                MediaKind::Video
+            } else {
+                MediaKind::Photo
+            },
+            url: r.get(2)?,
+            blake3: Some(r.get(3)?),
+            ordinal: r.get::<_, i64>(4)? as u16,
+        })
+    })?;
+    Ok(rows.filter_map(Result::ok).collect())
+}
+
 fn kind_str(k: MediaKind) -> &'static str {
     match k {
         MediaKind::Photo => "photo",

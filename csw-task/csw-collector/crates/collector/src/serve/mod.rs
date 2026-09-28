@@ -541,9 +541,11 @@ async fn tick(
     let mine = engine.my_tasks().await.context("取派单")?;
     let batch = tasks::plan(&mine.tasks);
 
-    // 一、先全接下来。ack 就是心跳，重复发是无害的
+    // 一、先全接下来。ack 就是心跳，重复发是无害的。
+    // **被退回的不接单**：引擎只让「已派工 / 进行中」的接单，退回的按意见改完直接重交
+    //（09-28 r56 #592 被退回后，这里每 30 秒接一次单被拒，两个半小时一动不动）
     for (t, action) in &batch {
-        if !matches!(action, Action::Start | Action::Rework) {
+        if *action != Action::Start {
             continue;
         }
         if beats.contains_key(&t.task.id) {
@@ -588,10 +590,14 @@ async fn tick(
             continue;
         }
         match action {
-            Action::Start | Action::Rework => {
+            Action::Start => {
                 if !beats.contains_key(&t.task.id) {
                     continue; // 上面没接下来
                 }
+                drive(conn, engine, cfg, svc, t, action, beats).await;
+            }
+            Action::Rework => {
+                tracing::info!(任务 = t.task.id, "被退回：按退回意见返工后重交");
                 drive(conn, engine, cfg, svc, t, action, beats).await;
             }
             Action::Continue
@@ -767,58 +773,76 @@ async fn start_round(
     let (window_start, window_end, truncated) = window_for(conn, engine_window.as_ref());
     // 主编退回后「取消 → 重开 → 重新派工」时，任务版本号不变、本地那一轮已经收尾，
     // 按 (任务, 版本, 触发) 查会以为「开过了」而什么都不做（09-28 r55 #581 接了单就停住）。
-    // **派工时间晚于本地那一轮收尾时间**，就是一次新的派工：当返工，版本加一
-    let mut target_version = i64::from(t.task.cur_version.max(1));
-    let mut rework = action == Action::Rework;
-    if let Ok(Some(prev)) = rounds::latest_for_task(conn, t.task.id)
-        && prev.status != "running"
-        && redispatched_after(conn, prev.id, &t.task.dispatched_at)
-    {
-        target_version = target_version.max(prev.target_version + 1);
-        rework = true;
+    // **派工时间晚于本地那一轮收尾时间**，就是一次新的派工：当返工。
+    let prev = rounds::latest_for_task(conn, t.task.id).ok().flatten();
+    let redispatched = prev.as_ref().is_some_and(|p| {
+        p.status != "running" && redispatched_after(conn, p.id, &t.task.dispatched_at)
+    });
+    let rework = action == Action::Rework || redispatched;
+    // 返工交的是下一版
+    let target_version = if rework {
+        (i64::from(t.task.cur_version) + 1).max(prev.as_ref().map_or(0, |p| p.target_version + 1))
+    } else {
+        i64::from(t.task.cur_version.max(1))
+    };
+
+    // 01 的返工**在原轮次上改，不重新采集**（09-28 用户）。原轮次重新置为进行中，版本改成这一版
+    let in_place = rework && t.task.stage_code == STAGE_INTAKE && prev.is_some();
+    let (r, is_new) = if let Some(p) = prev.filter(|_| in_place) {
+        conn.execute(
+            "UPDATE rounds SET status = 'running', ended_at = NULL, target_version = ?2,
+                    note = '返工：在原轮次上改'
+             WHERE id = ?1",
+            rusqlite::params![p.id, target_version],
+        )?;
         tracing::info!(
             任务 = t.task.id,
-            上一轮 = prev.id,
+            轮次 = p.id,
             版本 = target_version,
-            "本地那一轮已收尾之后又派了一次：当返工开新一轮"
+            "返工：在原轮次上改，不重新采集"
         );
-    }
-    let (r, is_new) = rounds::open_round(
-        conn,
-        &rounds::NewRound {
-            kind: csw_collector_core::types::RoundKind::Task,
-            trigger: if rework {
-                csw_collector_core::types::RoundTrigger::Returned
-            } else {
-                csw_collector_core::types::RoundTrigger::Dispatch
+        let r = rounds::latest_for_task(conn, t.task.id)?
+            .ok_or_else(|| anyhow::anyhow!("原轮次读不回来"))?;
+        (r, false)
+    } else {
+        let (r, is_new) = rounds::open_round(
+            conn,
+            &rounds::NewRound {
+                kind: csw_collector_core::types::RoundKind::Task,
+                trigger: if rework {
+                    csw_collector_core::types::RoundTrigger::Returned
+                } else {
+                    csw_collector_core::types::RoundTrigger::Dispatch
+                },
+                run_id: Some(t.task.run_id),
+                task_id: Some(t.task.id),
+                stage_code: Some(t.task.stage_code.clone()),
+                target_version,
+                parent_round_id: None,
+                window_start,
+                window_end,
+                plan_version: 1,
+                rubric_version: csw_collector_judge::rubric::RUBRIC_VERSION.into(),
+                kb_snapshot: cfg.vector.embed_model.clone(),
+                instructions_hash: detail.instructions_hash(),
             },
-            run_id: Some(t.task.run_id),
-            task_id: Some(t.task.id),
-            stage_code: Some(t.task.stage_code.clone()),
-            target_version,
-            parent_round_id: None,
-            window_start,
-            window_end,
-            plan_version: 1,
-            rubric_version: csw_collector_judge::rubric::RUBRIC_VERSION.into(),
-            kb_snapshot: cfg.vector.embed_model.clone(),
-            instructions_hash: detail.instructions_hash(),
-        },
-    )?;
-    if !is_new {
-        if r.status != "running" {
-            // 本地已收尾（交了、等闸、报过失败），等引擎状态跟上
-            tracing::debug!(任务 = t.task.id, 轮次 = r.id, 状态 = %r.status, "这一轮已经开过了");
-            return Ok(());
+        )?;
+        if !is_new {
+            if r.status != "running" {
+                // 本地已收尾（交了、等闸、报过失败），等引擎状态跟上
+                tracing::debug!(任务 = t.task.id, 轮次 = r.id, 状态 = %r.status, "这一轮已经开过了");
+                return Ok(());
+            }
+            // 开过、还 running，而本进程此刻没在跑它——只能是中途重启过。接着跑：
+            // 各步按输入指纹复用已完成的部分，写引擎靠幂等键不会重复
+            tracing::warn!(
+                任务 = t.task.id,
+                轮次 = r.id,
+                "上次这一轮没跑完（进程中途重启过），接着跑"
+            );
         }
-        // 开过、还 running，而本进程此刻没在跑它——只能是中途重启过。接着跑：
-        // 各步按输入指纹复用已完成的部分，写引擎靠幂等键不会重复
-        tracing::warn!(
-            任务 = t.task.id,
-            轮次 = r.id,
-            "上次这一轮没跑完（进程中途重启过），接着跑"
-        );
-    }
+        (r, is_new)
+    };
 
     // 接单与心跳在 `tick` 里已经做了——见那儿的模块注释，
     // 放在这里会让同一批的第二个任务在第一个跑完前连 ack 都发不出去
@@ -865,7 +889,15 @@ async fn start_round(
         };
     }
 
-    match round::run_intake(conn, &r, &detail, cfg, svc).await {
+    let ran = if in_place {
+        let end = engine_window
+            .as_ref()
+            .and_then(|(_, to)| parse_engine_ts(to));
+        round::rework_in_place(conn, &r, &detail, cfg, svc, end).await
+    } else {
+        round::run_intake(conn, &r, &detail, cfg, svc).await
+    };
+    match ran {
         Ok((counts, fin)) => {
             tracing::info!(轮次 = r.id, ?counts, "这一轮的账");
             // 登记要先发出去，自查才查得到真东西
@@ -943,7 +975,15 @@ fn window_for(
         .unwrap_or(None)
         .and_then(|s| s.parse::<jiff::Timestamp>().ok());
     let engine_start = engine.and_then(|(from, _)| parse_engine_ts(from));
-    let w = csw_collector_core::window::for_task(jiff::Timestamp::now(), engine_start, last);
+    let mut w = csw_collector_core::window::for_task(jiff::Timestamp::now(), engine_start, last);
+    // 止点：引擎窗口的止点已经过了就止于它——取消生产限时不等于扩大采集窗口
+    //（09-28 r56 12:18 触发、窗口止于 07:00，工作台扫到了开工那一刻，被主编退回）
+    if let Some(e) = engine.and_then(|(_, to)| parse_engine_ts(to))
+        && e < w.end
+        && e > w.start
+    {
+        w.end = e;
+    }
     if w.truncated {
         // 截断不许悄悄发生：它意味着这一轮少扫了一段
         tracing::warn!(

@@ -29,14 +29,31 @@ pub fn ledger_body(
     );
     let _ = writeln!(s, "{}\n", counts_line(judgements));
 
-    for tier in [
-        Tier::Recommend,
-        Tier::Alternate,
-        Tier::PendingCheck,
-        Tier::NotRecommend,
-    ] {
-        let group: Vec<&Judgement> = judgements.iter().filter(|j| j.tier == tier).collect();
-        let _ = writeln!(s, "## {}（{} 条）\n", tier_name(tier), group.len());
+    // 备选分两节：资料齐的是成熟备选；还挂着影响选题判断的缺口的是「备选·待补证」，
+    // 不算成熟数（09-28 r56 退回：「这些不能算成熟备选」）
+    type Keep = Box<dyn Fn(&Judgement) -> bool>;
+    let sections: [(&str, Keep); 5] = [
+        ("推荐", Box::new(|j: &Judgement| j.tier == Tier::Recommend)),
+        (
+            "备选",
+            Box::new(|j: &Judgement| j.tier == Tier::Alternate && !j.has_decision_gap()),
+        ),
+        (
+            "备选·待补证（未成熟，不计成熟数）",
+            Box::new(|j: &Judgement| j.tier == Tier::Alternate && j.has_decision_gap()),
+        ),
+        (
+            "待核",
+            Box::new(|j: &Judgement| j.tier == Tier::PendingCheck),
+        ),
+        (
+            "不推荐",
+            Box::new(|j: &Judgement| j.tier == Tier::NotRecommend),
+        ),
+    ];
+    for (name, keep) in &sections {
+        let group: Vec<&Judgement> = judgements.iter().filter(|j| keep(j)).collect();
+        let _ = writeln!(s, "## {name}（{} 条）\n", group.len());
         if group.is_empty() {
             let _ = writeln!(s, "无。\n");
             continue;
@@ -130,11 +147,17 @@ pub fn topics_section(
 fn counts_line(js: &[Judgement]) -> String {
     let n = |t: Tier| js.iter().filter(|j| j.tier == t).count();
     let unseen = js.iter().filter(|j| !j.image_seen).count();
+    let awaiting = js
+        .iter()
+        .filter(|j| j.tier == Tier::Alternate && j.has_decision_gap())
+        .count();
     format!(
-        "共 {} 条：推荐 {}、备选 {}、待核 {}、不推荐 {}；其中未读到实图 {} 条（待核，不是淘汰）。",
+        "共 {} 条：推荐 {}、备选 {}（成熟 {}、待补证 {}）、待核 {}、不推荐 {}；其中未读到实图 {} 条（待核，不是淘汰）。",
         js.len(),
         n(Tier::Recommend),
         n(Tier::Alternate),
+        n(Tier::Alternate) - awaiting,
+        awaiting,
         n(Tier::PendingCheck),
         n(Tier::NotRecommend),
         unseen
@@ -621,7 +644,7 @@ mod tests {
         ];
         let body = ledger_body(("A", "B"), &js, |k| Some(cand(k)));
         assert!(
-            body.contains("共 2 条：推荐 1、备选 0、待核 1、不推荐 0"),
+            body.contains("共 2 条：推荐 1、备选 0（成熟 0、待补证 0）、待核 1、不推荐 0"),
             "{body}"
         );
         assert!(body.contains("未读到实图 1 条（待核，不是淘汰）"), "{body}");

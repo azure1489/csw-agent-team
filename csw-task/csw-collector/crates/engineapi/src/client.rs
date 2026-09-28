@@ -89,7 +89,8 @@ impl EngineClient {
     }
 
     pub async fn task_detail(&self, task_id: i64) -> Result<TaskDetail, EngineError> {
-        self.get(&format!("/tasks/{task_id}")).await
+        let d: TaskDetail = self.get(&format!("/tasks/{task_id}")).await?;
+        Ok(d.normalize())
     }
 
     /// 这一期派下来的窗口 `(起, 止)`：取时间线里 `run_created` 那条事件的输入 `窗口`。

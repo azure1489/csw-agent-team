@@ -326,6 +326,24 @@ pub fn judgement_by_hash(
         .optional()?)
 }
 
+/// 某一轮落库的全部判断（返工时在原轮次上改，要先把它们读回来）。
+pub fn judgements_of_round(conn: &Connection, round_id: i64) -> Result<Vec<Judgement>> {
+    let mut st = conn.prepare(
+        "SELECT candidate_key, inputs_hash FROM judgements WHERE round_id = ?1 ORDER BY id",
+    )?;
+    let keys: Vec<(String, String)> = st
+        .query_map([round_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .filter_map(Result::ok)
+        .collect();
+    let mut out = Vec::with_capacity(keys.len());
+    for (k, h) in keys {
+        if let Some(j) = judgement_by_hash(conn, &k, &h)? {
+            out.push(j);
+        }
+    }
+    Ok(out)
+}
+
 /// 那条按指纹复用的旧结论当初落库时的留痕（check_flags）。
 pub fn flags_by_hash(
     conn: &Connection,

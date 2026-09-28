@@ -228,7 +228,9 @@ pub fn register_and_enqueue(
     let lookup = |k: &str| by_key.get(k).cloned();
 
     // 按选题登记：同产品、同事件的多帖只占一个条目
-    let items = register::item_inputs_by_topic(judgements, topics, lookup);
+    let mut items = register::item_inputs_by_topic(judgements, topics, lookup);
+    // 返工时上次登记过、这次不列的撤下来（第一次登记时没有上一份，这一步是空的）
+    items.extend(register::dropped_since(conn, round.id, &items));
     let item_of = register::registered_item_of(topics);
     // 每一路各算各的：这一路来的候选里，判了几条、没判几条
     let per = |sweep_key: &str| {
@@ -296,13 +298,22 @@ pub fn count_round(conn: &Connection, round_id: i64, prepared: &[Prepared]) -> R
     })
 }
 
-/// 任务下发的三段作业标准，原样拼给模型。
+/// 任务下发的三段作业标准，原样拼给模型。被退回过的，**主编的退回意见**也原样附上——
+/// 返工要改的就是它（09-28 r56：退回意见点名要补的图、要核的来源，返工时判断与深核都得看见）。
 pub fn work_standard(t: &TaskDetail) -> String {
+    let review = t
+        .latest_review
+        .as_ref()
+        .filter(|r| r.get("verdict").and_then(|v| v.as_str()) != Some("approved"))
+        .and_then(|r| r.get("comment").and_then(|c| c.as_str()))
+        .unwrap_or("")
+        .to_string();
     [
         ("作业内容", t.instructions.as_str()),
         ("自检", t.self_check_criteria.as_str()),
         ("验收", t.acceptance.as_str()),
         ("派工单备注", t.editor_note.as_str()),
+        ("主编退回意见（这一次要改的）", review.as_str()),
     ]
     .iter()
     .filter(|(_, v)| !v.trim().is_empty())
@@ -1038,6 +1049,257 @@ pub async fn run_intake(
     ))
 }
 
+/// 返工：**在原轮次上改，不重新采集**（09-28 用户：退回的话不要重新发起一轮采集，
+/// 就在原轮次里修改，改完了再交给主编审核）。
+///
+/// 1. 从库里读回原轮次的判断、选题、候选与图；
+/// 2. 按引擎窗口的止点收口：窗外的移出本期（台账里留着，不登记、不进交付物）；
+/// 3. 挑要改的：主编退回意见里点名的账号，加上推荐 / 备选选题代表帖的前几条；
+/// 4. 这几条**重新深核**（不复用旧条目卡）并带着条目卡与退回意见重判，其余保持原判；
+/// 5. 选题档位按成员重算，采集轮沿用上次的、窗口内条数按收口后的重算，再登记。
+///
+/// 交付物与提交在调用方（与正式轮同一段）。
+pub async fn rework_in_place(
+    conn: &Connection,
+    prev: &Round,
+    detail: &TaskDetail,
+    cfg: &Config,
+    svc: &super::services::Services,
+    engine_end: Option<Timestamp>,
+) -> Result<(RoundCounts, Finished)> {
+    use csw_collector_core::types::Tier;
+
+    let standard = work_standard(detail);
+    let review = detail
+        .latest_review
+        .as_ref()
+        .and_then(|r| r.get("comment").and_then(|c| c.as_str()))
+        .unwrap_or("")
+        .to_lowercase();
+
+    // 一、读回
+    let mut judgements = ledger::judgements_of_round(conn, prev.id)?;
+    let mut topics = csw_collector_core::topics::topics(conn, prev.id)?;
+    let mut by_key: HashMap<String, Candidate> = HashMap::new();
+    for j in &judgements {
+        if let Some(mut c) = ledger::get_candidate(conn, &j.candidate_key)? {
+            c.media = media::media_refs(conn, &c.candidate_key)?;
+            by_key.insert(c.candidate_key.clone(), c);
+        }
+    }
+    tracing::info!(
+        轮次 = prev.id,
+        判断 = judgements.len(),
+        选题 = topics.len(),
+        "返工：读回原轮次"
+    );
+
+    // 二、窗口收口：首次入库不早于引擎窗口止点的，不算本期
+    let now = Timestamp::now();
+    let end = engine_end.filter(|e| *e < now);
+    let outside: HashSet<String> = by_key
+        .values()
+        .filter(|c| matches!((end, c.ingested_at), (Some(e), Some(t)) if t >= e))
+        .map(|c| c.candidate_key.clone())
+        .collect();
+    if !outside.is_empty() {
+        tracing::info!(条数 = outside.len(), "返工：窗口外的移出本期");
+    }
+    judgements.retain(|j| !outside.contains(&j.candidate_key));
+    for t in &mut topics {
+        t.members.retain(|m| !outside.contains(m));
+        if outside.contains(&t.primary_key) {
+            t.primary_key = t.members.first().cloned().unwrap_or_default();
+        }
+    }
+    topics.retain(|t| !t.members.is_empty());
+
+    // 三、挑要改的：退回意见点名的账号优先，再补推荐 / 备选选题的代表帖
+    let norm = |s: &str| -> String {
+        s.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    };
+    let review_norm = norm(&review);
+    let mut focus: Vec<String> = judgements
+        .iter()
+        .filter(|j| {
+            let acc = by_key
+                .get(&j.candidate_key)
+                .map(|c| norm(&c.account))
+                .unwrap_or_default();
+            (acc.chars().count() >= 4 && review_norm.contains(&acc))
+                || review.contains(&j.candidate_key.to_lowercase())
+        })
+        .map(|j| j.candidate_key.clone())
+        .collect();
+    let named = focus.len();
+    for tier in [Tier::Recommend, Tier::Alternate] {
+        for t in topics.iter().filter(|t| t.tier == Some(tier)) {
+            if focus.len() >= REWORK_FOCUS.max(named) {
+                break;
+            }
+            if !focus.contains(&t.primary_key) {
+                focus.push(t.primary_key.clone());
+            }
+        }
+    }
+    focus.truncate(REWORK_FOCUS_MAX);
+    tracing::info!(点名 = named, 共 = focus.len(), "返工：要重核重判的");
+
+    // 四、准备这几条：从库里还原，复用识图，不重新采集
+    let cands: Vec<Candidate> = focus
+        .iter()
+        .filter_map(|k| by_key.get(k).cloned())
+        .collect();
+    let cache = DescCache { conn };
+    let (prepared, _) = pipeline::prepare(
+        cands,
+        &pipeline::Deps {
+            downloader: &svc.downloader,
+            model: &svc.model,
+            vector: &svc.vector,
+            image_only: true,
+            concurrency: cfg.model.concurrency,
+            cache: Some(&cache as &dyn pipeline::Descriptions),
+            image_vectors: cfg.features.image_vectors,
+            progress: None,
+        },
+    )
+    .await;
+    let mut items = judge_items(conn, prev.id, &prepared, svc, cfg, false, None).await?;
+
+    // 五、重新深核（不复用旧条目卡），带着条目卡与退回意见重判
+    let step = rounds::begin_step(conn, prev.id, StepCode::Deepcheck, &prev.instructions_hash)?;
+    let targets: Vec<&Judgement> = judgements
+        .iter()
+        .filter(|j| focus.contains(&j.candidate_key))
+        .collect();
+    let outcomes = super::finish::deepcheck_these(
+        conn, prev, cfg, step.id, targets, &by_key, &prepared, &standard, false,
+    )
+    .await;
+    for o in outcomes.iter().filter(|o| o.done()) {
+        if let (Some(card), Some(it)) = (
+            o.card.as_ref(),
+            items
+                .iter_mut()
+                .find(|it| it.candidate.candidate_key == o.candidate_key),
+        ) {
+            it.deep_card = super::finish::card_text(card);
+        }
+    }
+    let rules =
+        csw_collector_judge::memory::rules_for_judge(conn, cfg.features.send_draft_rules_to_model)
+            .unwrap_or_default();
+    let deps = csw_collector_judge::pipeline::Deps {
+        model: &svc.model,
+        jev: svc.jev.as_ref(),
+        work_standard: &standard,
+        batch_concurrency: cfg.model.concurrency,
+        on_batch: None,
+        cached: None,
+        confirmed_rules: &rules,
+    };
+    let idx: Vec<usize> = (0..items.len()).collect();
+    let redone = csw_collector_judge::pipeline::judge_again(&items, &idx, &deps, &[]).await;
+    let mut changed = 0;
+    for j in redone.judgements {
+        let mut flags: Vec<String> = redone
+            .rule_notes
+            .get(&j.candidate_key)
+            .cloned()
+            .unwrap_or_default();
+        flags.push("【返工】按主编退回意见重新深核、重判".into());
+        if let Err(e) =
+            ledger::put_judgement(conn, prev.id, &j, &flags, &cfg.model.model, RUBRIC_VERSION)
+        {
+            tracing::warn!(候选 = %j.candidate_key, 原因 = %format!("{e:#}"), "返工的判断没落库");
+            continue;
+        }
+        if let Some(pos) = judgements
+            .iter()
+            .position(|x| x.candidate_key == j.candidate_key)
+        {
+            judgements[pos] = j;
+            changed += 1;
+        }
+    }
+    super::finish::merge_deepcheck_gaps(&mut judgements, &super::finish::deepcheck_gaps(&outcomes));
+    tracing::info!(
+        重判 = changed,
+        未判 = redone.unjudged.len(),
+        "返工：重判完成"
+    );
+
+    // 六、选题档位按成员重算
+    let rank = |t: Tier| match t {
+        Tier::Recommend => 3,
+        Tier::Alternate => 2,
+        Tier::PendingCheck => 1,
+        Tier::NotRecommend => 0,
+    };
+    for t in &mut topics {
+        t.tier = judgements
+            .iter()
+            .filter(|j| t.members.contains(&j.candidate_key))
+            .map(|j| j.tier)
+            .max_by_key(|x| rank(*x));
+    }
+    if let Err(e) = csw_collector_core::topics::put_topics(conn, prev.id, &topics) {
+        tracing::warn!("返工的选题没落库：{e:#}");
+    }
+
+    // 七、采集轮沿用上次的，窗口内条数按收口后的重算
+    let mut sweeps = register::previous_sweeps(conn, prev.id);
+    for sw in &mut sweeps {
+        let col = register::collector_of(&sw.sweep_key);
+        let n = judgements
+            .iter()
+            .filter(|j| {
+                by_key
+                    .get(&j.candidate_key)
+                    .is_some_and(|c| c.collector == col)
+            })
+            .count() as i64;
+        sw.in_window = n;
+        sw.reviewed = n;
+        sw.unreviewed = 0;
+    }
+
+    // 八、登记（上次登记过、这次不列的撤下）
+    if let Some(run_id) = prev.run_id {
+        register_and_enqueue(
+            conn,
+            prev,
+            run_id,
+            &judgements,
+            &topics,
+            &sweeps,
+            &by_key,
+            &HashSet::new(),
+        )?;
+    }
+
+    let mut counts = count_round(conn, prev.id, &prepared)?;
+    counts.deepchecked = outcomes.iter().filter(|o| o.done()).count();
+    Ok((
+        counts,
+        Finished {
+            judgements,
+            topics,
+            sweeps,
+            by_key,
+            deep_gaps: HashMap::new(),
+        },
+    ))
+}
+
+/// 返工时至少重核重判几条（不含主编点名的）、至多几条
+const REWORK_FOCUS: usize = 8;
+const REWORK_FOCUS_MAX: usize = 12;
+
 /// 预取轮：跑第 2–6 步（含深核），**不写引擎、不群播报、不交付**。
 ///
 /// # 它是缓存，不是前置条件
@@ -1553,8 +1815,15 @@ mod tests {
             upstreams: vec![],
             latest_review: None,
             item: None,
+            dispatch: None,
+            deliverables: vec![],
         };
         let s = work_standard(&t);
+        assert!(!s.contains("退回意见"), "没退回过就不出这一段");
+        let mut back = t.clone();
+        back.latest_review =
+            Some(serde_json::json!({"verdict": "returned", "comment": "缺 images"}));
+        assert!(work_standard(&back).contains("【主编退回意见（这一次要改的）】\n缺 images"));
         assert!(s.contains("【作业内容】\n每条都判，不设 top K"));
         assert!(s.contains("【自检】"));
         assert!(s.contains("【派工单备注】"));

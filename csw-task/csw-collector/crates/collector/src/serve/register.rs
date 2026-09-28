@@ -14,7 +14,7 @@ use anyhow::Result;
 use rusqlite::Connection;
 
 use csw_collector_core::outbox::{self, NewEntry};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use csw_collector_core::types::{Candidate, Dim, Judgement, OutboxKind, Tier, Topic};
 use csw_collector_engineapi::types::{ItemInput, JudgementInput, SweepInput};
@@ -29,6 +29,15 @@ pub fn collector_of(sweep_key: &str) -> String {
         .replace('-', "_")
         .trim_end_matches('s')
         .to_string()
+}
+
+/// 采集器 → 它那一路的采集轮键（[`collector_of`] 的反向）。条目的 `discovered_via` 要写它。
+pub fn sweep_key_of(collector: &str) -> String {
+    ["csw-window", "van-links"]
+        .into_iter()
+        .find(|k| collector_of(k) == collector)
+        .map(str::to_string)
+        .unwrap_or_else(|| collector.replace('_', "-"))
 }
 
 /// 采集轮账 → 引擎格式。
@@ -238,12 +247,42 @@ pub fn item_inputs_by_topic(
                     .and_then(|c| c.posted_at)
                     .map(|t| t.to_string())
                     .unwrap_or_default(),
+                // 从哪一路采集来的、什么时候进库：引擎按 discovered_via 把条目挂到采集轮上
+                //（09-28 r56 退回：38 条条目缺 discovered_via）
+                discovered_via: c
+                    .as_ref()
+                    .map(|c| sweep_key_of(&c.collector))
+                    .unwrap_or_default(),
+                fetched_at: c
+                    .as_ref()
+                    .and_then(|c| c.ingested_at)
+                    .map(|t| t.to_string())
+                    .unwrap_or_default(),
+                first_seen_at: c
+                    .as_ref()
+                    .and_then(|c| c.ingested_at)
+                    .map(|t| t.to_string())
+                    .unwrap_or_default(),
+                origin: if c
+                    .as_ref()
+                    .is_some_and(|c| c.collector == collector_of("van-links"))
+                {
+                    "van_link".into()
+                } else {
+                    "dispatch".into()
+                },
                 // 引擎的条目状态只有 candidate / pending_check / shortlisted / dropped，
                 // 没有「备选」。v9 01 的口径是「判断过就不许留在 candidate」——推荐与备选
                 // 都是判过、成形的，登记成 shortlisted（成熟）；两者的区别在判断台账的档位里。
                 // 这里原先写的是 candidate / alternate，09-23 演练时引擎 400 bad_item_status
                 //（mock 不校验这个字段）。
-                status: "shortlisted".into(),
+                // 备选里还挂着影响选题判断的缺口的（备选·待补证），**不算成熟**，登记成待核
+                //（09-28 r56 退回：「这些不能算成熟备选」）
+                status: if j.has_decision_gap() {
+                    "pending_check".into()
+                } else {
+                    "shortlisted".into()
+                },
                 ..Default::default()
             })
         })
@@ -304,6 +343,86 @@ pub fn enqueue_registration(
         prev = Some(e.seq);
     }
     prev.ok_or_else(|| anyhow::anyhow!("一条都没排进去"))
+}
+
+/// 这一轮上次发给引擎的某类登记体（最新一份）。返工时要拿它对账。
+fn last_body(conn: &Connection, round_id: i64, kind: &str) -> Option<serde_json::Value> {
+    conn.query_row(
+        "SELECT body_json FROM engine_outbox WHERE round_id = ?1 AND kind = ?2
+         ORDER BY seq DESC LIMIT 1",
+        rusqlite::params![round_id, kind],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|s| serde_json::from_str(&s).ok())
+}
+
+/// 上次登记过、这次不再登记的条目：改登记为 `dropped` 并写明原因。
+/// 返工在原轮次上收口窗口、改档后，引擎里旧的 shortlisted 不撤掉，主编看到的就还是旧的。
+pub fn dropped_since(conn: &Connection, round_id: i64, now: &[ItemInput]) -> Vec<ItemInput> {
+    let Some(body) = last_body(conn, round_id, "items") else {
+        return Vec::new();
+    };
+    let keep: HashSet<&str> = now.iter().map(|i| i.item_key.as_str()).collect();
+    body.get("items")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|it| {
+            let key = it.get("item_key")?.as_str()?;
+            if keep.contains(key) || it.get("status").and_then(|s| s.as_str()) == Some("dropped") {
+                return None;
+            }
+            Some(ItemInput {
+                item_key: key.to_string(),
+                title: it
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                status: "dropped".into(),
+                reason_code: "superseded".into(),
+                reason: "返工后不再列入本期（移出窗口，或重判后不再是推荐 / 备选）".into(),
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
+/// 这一轮上次上报的采集轮。返工不重新采集，采集轮沿用，只把窗口内条数按收口后的重算。
+pub fn previous_sweeps(conn: &Connection, round_id: i64) -> Vec<SweepCount> {
+    let Some(body) = last_body(conn, round_id, "sweeps") else {
+        return Vec::new();
+    };
+    let s = |v: &serde_json::Value, k: &str| {
+        v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
+    };
+    let n = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
+    body.get("sweeps")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .map(|v| SweepCount {
+            sweep_key: s(v, "sweep_key"),
+            platform: s(v, "platform"),
+            source_key: s(v, "source_key"),
+            query: s(v, "query"),
+            found: n(v, "found"),
+            fetched_unique: n(v, "fetched_unique"),
+            in_window: n(v, "in_window"),
+            reviewed: n(v, "reviewed"),
+            unreviewed: n(v, "unreviewed"),
+            registered: n(v, "registered"),
+            paged_to_end: v
+                .get("paged_to_end")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false),
+            result: s(v, "result"),
+            error: s(v, "error"),
+            started_at: s(v, "started_at"),
+            ended_at: s(v, "ended_at"),
+        })
+        .collect()
 }
 
 fn kind_slug(k: OutboxKind) -> &'static str {

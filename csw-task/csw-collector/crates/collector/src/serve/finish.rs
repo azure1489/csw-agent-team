@@ -136,25 +136,52 @@ pub async fn deepcheck(
             "首批按主编指定的挑"
         );
     }
+    deepcheck_these(
+        conn, round, cfg, step.id, picked, by_key, prepared, standard, true,
+    )
+    .await
+}
+
+/// 深核指定的这几条。`reuse` = 36 小时内核过的直接用那张条目卡；返工时传 `false`——
+/// 主编退回点名要核的事，旧条目卡里没有（09-28 r56：「不能机械拼接旧深核结果」）。
+#[allow(clippy::too_many_arguments)]
+pub async fn deepcheck_these(
+    conn: &Connection,
+    round: &Round,
+    cfg: &Config,
+    step_id: i64,
+    picked: Vec<&Judgement>,
+    by_key: &HashMap<String, Candidate>,
+    prepared: &[Prepared],
+    standard: &str,
+    reuse: bool,
+) -> Vec<deep::Outcome> {
+    #[derive(Clone, Copy)]
+    struct Step {
+        id: i64,
+    }
+    let step = Step { id: step_id };
     // 36 小时内核过、做成了的直接用那张条目卡：预取轮 01:40 核过的，05:30 正式轮不再花时间，
     // 条目卡一样、重判的指纹也一样，结论也就直接复用（09-27：深核后重判占了 17 分钟）
     let mut reused: Vec<deep::Outcome> = Vec::new();
     let picked: Vec<&Judgement> = picked
         .into_iter()
-        .filter(|j| match recent_card(conn, &j.candidate_key, 36) {
-            Some((from, card)) => {
-                reused.push(deep::Outcome {
-                    candidate_key: j.candidate_key.clone(),
-                    status: "done".into(),
-                    card: Some(card),
-                    items: vec![],
-                    note: format!("复用第 {from} 轮的深核"),
-                    attempts: 0,
-                });
-                false
-            }
-            None => true,
-        })
+        .filter(
+            |j| match recent_card(conn, &j.candidate_key, 36).filter(|_| reuse) {
+                Some((from, card)) => {
+                    reused.push(deep::Outcome {
+                        candidate_key: j.candidate_key.clone(),
+                        status: "done".into(),
+                        card: Some(card),
+                        items: vec![],
+                        note: format!("复用第 {from} 轮的深核"),
+                        attempts: 0,
+                    });
+                    false
+                }
+                None => true,
+            },
+        )
         .collect();
     for o in &reused {
         save_deepcheck(conn, round.id, o);
@@ -251,6 +278,27 @@ pub async fn deepcheck(
         "",
     );
     outcomes
+}
+
+/// 一条候选的封面缩略：能当配图的第一张，没有就第一张。取不到就不放（不让一张图拦住交付）。
+fn cover_preview(conn: &Connection, cfg: &Config, key: &str) -> Option<intake::Preview> {
+    let hash: String = conn
+        .query_row(
+            "SELECT m.blake3 FROM media m
+             LEFT JOIN media_descriptions d ON d.blake3 = m.blake3
+             WHERE m.candidate_key = ?1 AND m.failed = 0
+             ORDER BY COALESCE(d.usable_as_figure, 0) DESC, m.ordinal LIMIT 1",
+            params![key],
+            |r| r.get(0),
+        )
+        .ok()?;
+    let path = csw_collector_harvest::download::blob_path(&cfg.blob_dir(), &hash);
+    let bytes = std::fs::read(&path).ok()?;
+    Some(intake::Preview {
+        candidate_key: key.to_string(),
+        bytes,
+        ext: "jpg".into(),
+    })
 }
 
 /// 深核结果落库：页面的条目详情读它，下一轮复用也读它。写不进去不影响这一轮。
@@ -456,7 +504,15 @@ pub fn build_deliverable(
         })
         .collect();
 
-    let entries = intake::assemble(
+    // 预览图：推荐与备选各一张（能当配图的第一张，没有就第一张）。以前这里传的是空的，
+    // 交付包里从来没有图（09-28 r56 退回：「缺 images……逐图证据不能直接复核」）
+    let previews: Vec<intake::Preview> = judgements
+        .iter()
+        .filter(|j| matches!(j.tier, Tier::Recommend | Tier::Alternate))
+        .filter_map(|j| cover_preview(conn, cfg, &j.candidate_key))
+        .collect();
+    let version = round.target_version.max(1);
+    let mut entries = intake::assemble(
         Meta {
             task: format!(
                 "主编 · r{} 任务#{task_id} 派工单",
@@ -465,7 +521,7 @@ pub fn build_deliverable(
             kind: "产出".into(),
             agent: "情报收集员".into(),
             stage: "01-情报逐条".into(),
-            version: "v1".into(),
+            version: format!("v{version}"),
             // **不用当前时间**：窗口终点是确定的，用它才能让 zip 两次构建一致
             at: round.window_end.clone(),
             upstreams: vec![format!(
@@ -477,12 +533,22 @@ pub fn build_deliverable(
             item_key: String::new(),
         },
         body,
-        &[],
+        &previews,
         trace::to_jsonl(&sweep_lines)?,
         trace::items_jsonl(judgements, lookup)?,
     );
+    // 逐条判断全文：六维依据、三句话、查重命中、分级缺口都在这里，主编要能直接复核
+    let mut jl = String::new();
+    for j in judgements {
+        jl.push_str(&serde_json::to_string(j)?);
+        jl.push('\n');
+    }
+    entries.push(pack::Entry::text("trace/judgements.jsonl", jl));
 
-    let name = format!("情报逐条_情报收集员_r{}_v1", round.run_id.unwrap_or(0));
+    let name = format!(
+        "情报逐条_情报收集员_r{}_v{version}",
+        round.run_id.unwrap_or(0)
+    );
     let out = cfg
         .data_dir
         .join("deliverables")

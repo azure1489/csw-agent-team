@@ -92,9 +92,39 @@ pub struct TaskDetail {
     pub latest_review: Option<serde_json::Value>,
     #[serde(default)]
     pub item: Option<serde_json::Value>,
+    /// 最新派工单（引擎把派工单备注放在这里，不在顶层）
+    #[serde(default)]
+    pub dispatch: Option<serde_json::Value>,
+    /// 各版产出；**最新审核记录挂在每一版上**，不在顶层
+    #[serde(default)]
+    pub deliverables: Vec<serde_json::Value>,
 }
 
 impl TaskDetail {
+    /// 引擎把派工单备注放在 `dispatch.editor_note`、退回意见放在 `deliverables[].latest_review`，
+    /// 顶层没有这两样——以前按顶层读，**主编的派工单备注与退回意见工作台一个字都没读到过**
+    //（09-28 r56 退回意见点名的事，返工时模型全看不见）。取完详情补到顶层。
+    pub fn normalize(mut self) -> Self {
+        if self.editor_note.trim().is_empty()
+            && let Some(n) = self
+                .dispatch
+                .as_ref()
+                .and_then(|d| d.get("editor_note"))
+                .and_then(|v| v.as_str())
+        {
+            self.editor_note = n.to_string();
+        }
+        if self.latest_review.is_none() {
+            self.latest_review = self
+                .deliverables
+                .iter()
+                .filter(|d| d.get("latest_review").is_some_and(|r| !r.is_null()))
+                .max_by_key(|d| d.get("version").and_then(|v| v.as_i64()).unwrap_or(0))
+                .and_then(|d| d.get("latest_review").cloned());
+        }
+        self
+    }
+
     /// 三段作业标准的指纹。进 `rounds.instructions_hash`。
     pub fn instructions_hash(&self) -> String {
         let joined = format!(
@@ -445,4 +475,29 @@ pub struct MemoryCaseRow {
     pub decided_at: String,
     #[serde(default)]
     pub judged_tier: String,
+}
+
+#[cfg(test)]
+mod task_detail_tests {
+    use super::*;
+
+    #[test]
+    fn 派工单备注与退回意见从引擎的实际位置读() {
+        let d: TaskDetail = serde_json::from_value(serde_json::json!({
+            "task": {"id": 592, "run_id": 56, "stage_code": "intake", "status": "returned"},
+            "instructions": "作业",
+            "dispatch": {"editor_note": "覆盖完整窗口"},
+            "deliverables": [
+                {"version": 1, "latest_review": {"verdict": "returned", "comment": "缺 images"}},
+                {"version": 0, "latest_review": null}
+            ]
+        }))
+        .unwrap();
+        let d = d.normalize();
+        assert_eq!(d.editor_note, "覆盖完整窗口");
+        assert_eq!(
+            d.latest_review.unwrap()["comment"].as_str(),
+            Some("缺 images")
+        );
+    }
 }
