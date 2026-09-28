@@ -100,6 +100,15 @@ impl EngineClient {
         Ok(run_window_of(&v))
     }
 
+    /// 这一期的状态：`active` / `paused` / `done` / `aborted`。
+    pub async fn run_status(&self, run_id: i64) -> Result<String, EngineError> {
+        let v: serde_json::Value = self.get(&format!("/runs/{run_id}")).await?;
+        Ok(v.pointer("/run/status")
+            .and_then(|s| s.as_str())
+            .unwrap_or_default()
+            .to_string())
+    }
+
     /// 接单，兼作心跳——引擎没有独立心跳接口，重复调它就是心跳。
     ///
     /// 心跳不带幂等键：它本来就该可以重复调，带了反而会在第二次被幂等层挡回来。

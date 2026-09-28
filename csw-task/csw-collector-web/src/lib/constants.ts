@@ -52,6 +52,11 @@ export const STATUS: Record<string, StatusMeta> = {
   skipped: { label: '跳过', tone: 'gray', outline: true },
   stale: { label: '已作废', tone: 'gray', outline: true },
   interrupted: { label: '被打断', tone: 'amber', outline: true },
+
+  // 轮次（running / failed 与步骤共用上面的）
+  awaiting_review: { label: '已交·等审', tone: 'blue', outline: true },
+  done: { label: '完成', tone: 'green' },
+  cancelled: { label: '已取消', tone: 'gray', outline: true },
 }
 
 /**
