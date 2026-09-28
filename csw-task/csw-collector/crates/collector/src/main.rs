@@ -284,6 +284,10 @@ async fn main() -> anyhow::Result<()> {
                     .into()
             }),
         )
+        // **日志一律写 stderr**：`mcp` 子命令的 stdout 是 MCP 协议通道，日志行混进去
+        // codex 就把这个服务判成坏的，工具一个都用不上（09-28 深核联网补证就栽在这）。
+        // tracing_subscriber 默认写的是 stdout，不是 stderr
+        .with_writer(std::io::stderr)
         .init();
 
     // rustls 走 ring（aws-lc-rs 要 cmake + nasm，交叉编译过不去）。

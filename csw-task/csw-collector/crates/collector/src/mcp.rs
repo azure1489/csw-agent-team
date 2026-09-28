@@ -9,7 +9,7 @@
 //! 09-28 用户同意「先补安全边界再给深核开网」后加的；拿回来的一律当第三方数据。
 //!
 //! **不要往标准输出打任何别的东西。** stdio 是协议通道，一行杂音就把它冲垮；
-//! 日志一律走 stderr（`tracing_subscriber` 默认就是）。
+//! 日志一律走 stderr（`main` 里显式 `with_writer(stderr)`——`tracing_subscriber` 默认写的是 stdout）。
 
 use std::sync::Arc;
 use std::time::Duration;
