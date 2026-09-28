@@ -507,6 +507,15 @@ pub fn build_deliverable(
             None => format!("{body}\n{section}"),
         };
     }
+    // 登记条目的最终归属：每个条目最终什么状态、名下有哪几帖。放在选题一览前面，
+    // 与引擎 runs/{id}/items 逐键相等（09-28 r56 v7 退回：index 登记条目最终归属）
+    let reg = registration_section(conn, round.id, topics, judgements);
+    if !reg.is_empty() {
+        body = match body.find("\n## ") {
+            Some(i) => format!("{}\n{reg}{}", &body[..i], &body[i..]),
+            None => format!("{body}\n{reg}"),
+        };
+    }
     if !extra_gaps.is_empty() {
         // 红灯写在最前面：藏在末尾等于没写
         body = format!(
@@ -940,6 +949,66 @@ pub fn merge_deepcheck_gaps(
         }
     }
     n
+}
+
+/// 「登记条目最终归属」一节：这一轮历次登记、每个条目取最后一次的状态，列出名下贴文与档位。
+/// 一个条目名下有几帖的（同产品、同事件合成一个选题）逐帖写出——引擎里一个条目键对应多条判断不是冲突。
+fn registration_section(
+    conn: &Connection,
+    round_id: i64,
+    topics: &[csw_collector_core::types::Topic],
+    judgements: &[Judgement],
+) -> String {
+    let items = crate::serve::register::registered_items(conn, round_id);
+    if items.is_empty() {
+        return String::new();
+    }
+    let item_of = crate::serve::register::item_of_with_history(conn, round_id, topics);
+    let tier: HashMap<&str, Tier> = judgements
+        .iter()
+        .map(|j| (j.candidate_key.as_str(), j.tier))
+        .collect();
+    let mut members: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (c, item) in &item_of {
+        members.entry(item.as_str()).or_default().push(c.as_str());
+    }
+    fn status_cn(s: &str) -> &str {
+        match s {
+            "shortlisted" => "采用",
+            "pending_check" => "待核",
+            "dropped" => "已撤",
+            other => other,
+        }
+    }
+    let count = |st: &str| items.values().filter(|(s, _)| s == st).count();
+    let mut out = format!(
+        "## 登记条目最终归属（{} 个：采用 {}、待核 {}、已撤 {}）\n\n\
+         本轮历次登记、每个条目取最后一次的状态，与引擎 `runs/{{id}}/items` 逐键相等（见 `trace/engine_reconcile.json`）。\
+         一个条目名下有多帖的，是同产品或同事件合成的一个选题，逐帖列出。\n\n\
+         | 条目键 | 最终状态 | 名下贴文（档位） |\n|---|---|---|\n",
+        items.len(),
+        count("shortlisted"),
+        count("pending_check"),
+        count("dropped")
+    );
+    for (key, (st, _)) in &items {
+        let mut ms = members.get(key.as_str()).cloned().unwrap_or_default();
+        ms.sort_by_key(|m| (*m != key.as_str(), *m));
+        let list = if ms.is_empty() {
+            "（本轮已无贴文归到它）".to_string()
+        } else {
+            ms.iter()
+                .map(|m| {
+                    let t = tier.get(m).map(|t| intake::tier_name(*t)).unwrap_or("未判");
+                    format!("`{m}`（{t}）")
+                })
+                .collect::<Vec<_>>()
+                .join("、")
+        };
+        out.push_str(&format!("| `{key}` | {} | {list} |\n", status_cn(st)));
+    }
+    out.push('\n');
+    out
 }
 
 /// `trace/window_ids.jsonl` 与 `trace/window_summary.json`。

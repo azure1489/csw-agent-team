@@ -391,7 +391,7 @@ fn first_line(s: &str) -> String {
         .collect()
 }
 
-fn tier_name(t: Tier) -> &'static str {
+pub fn tier_name(t: Tier) -> &'static str {
     match t {
         Tier::Recommend => "推荐",
         Tier::Alternate => "备选",
