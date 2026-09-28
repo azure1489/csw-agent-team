@@ -1121,7 +1121,13 @@ pub async fn rework_in_place(
             .flat_map(char::to_lowercase)
             .collect()
     };
-    let review_norm = norm(&review);
+    // 退回意见里点名用的是品牌词（SATISFY、NANGA），账号是 satisfyrunning、nanga_official：
+    // 抽出意见里 4 个字母以上的英文词，**账号里含这个词**就算被点名
+    let words: Vec<String> = review
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| w.len() >= 4 && w.chars().any(|c| c.is_ascii_alphabetic()))
+        .map(str::to_lowercase)
+        .collect();
     let mut focus: Vec<String> = judgements
         .iter()
         .filter(|j| {
@@ -1129,7 +1135,7 @@ pub async fn rework_in_place(
                 .get(&j.candidate_key)
                 .map(|c| norm(&c.account))
                 .unwrap_or_default();
-            (acc.chars().count() >= 4 && review_norm.contains(&acc))
+            words.iter().any(|w| acc.contains(w.as_str()))
                 || review.contains(&j.candidate_key.to_lowercase())
         })
         .map(|j| j.candidate_key.clone())

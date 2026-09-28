@@ -795,6 +795,17 @@ async fn start_round(
              WHERE id = ?1",
             rusqlite::params![p.id, target_version],
         )?;
+        // 窗口终点改成本期的止点：v1 把开工时刻当终点写进了交付物（09-28 r56 退回第 2 条）
+        if let Some(e) = engine_window
+            .as_ref()
+            .and_then(|(_, to)| parse_engine_ts(to))
+            && p.window_end.parse::<jiff::Timestamp>().is_ok_and(|w| e < w)
+        {
+            conn.execute(
+                "UPDATE rounds SET window_end = ?2 WHERE id = ?1",
+                rusqlite::params![p.id, e.to_string()],
+            )?;
+        }
         tracing::info!(
             任务 = t.task.id,
             轮次 = p.id,
