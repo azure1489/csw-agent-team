@@ -568,6 +568,25 @@ async fn tick(
 
     // 二、再一个个做
     for (t, action) in batch {
+        // 引擎说在做、本地那一轮却已收尾，而派工时间晚于收尾：是主编退回后「取消 → 重开 →
+        // 重新派工」来的新活（09-28 r55 #581）。**直接返工**，不等、也不走时限前报失败——
+        // 晚交比报失败强，报了失败主编还得再重开一次
+        if action == Action::Continue
+            && let Ok(Some(prev)) = rounds::latest_for_task(conn, t.task.id)
+            && prev.status != "running"
+            && redispatched_after(conn, prev.id, &t.task.dispatched_at)
+        {
+            tracing::info!(任务 = t.task.id, 上一轮 = prev.id, "收尾后又派了一次：返工");
+            beats.entry(t.task.id).or_insert_with(|| {
+                tasks::start_heartbeat(
+                    engine.clone(),
+                    t.task.id,
+                    Duration::from_secs(cfg.engine.ack_secs.max(30)),
+                )
+            });
+            drive(conn, engine, cfg, svc, t, Action::Rework, beats).await;
+            continue;
+        }
         match action {
             Action::Start | Action::Rework => {
                 if !beats.contains_key(&t.task.id) {
