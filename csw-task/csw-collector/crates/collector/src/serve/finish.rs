@@ -599,9 +599,18 @@ pub fn build_deliverable(
     }
     entries.push(pack::Entry::text("trace/judgements.jsonl", jl));
     // 窗口内的实际 ID 集合与首次入库时间：主编要能按 first_seen_at 自己核窗口
+    // 每条判断登记到哪个条目、登记成什么：128 行判断与引擎里的登记条目逐键对得上
+    let item_of = crate::serve::register::registered_item_of(topics);
     let mut ids = String::new();
     for j in judgements {
         let c = by_key.get(&j.candidate_key);
+        let item_key = item_of.get(&j.candidate_key).cloned();
+        let item_status = match (&item_key, j.tier) {
+            (None, _) => "不登记条目（只进判断台账）",
+            (Some(_), Tier::PendingCheck) => "pending_check",
+            (Some(_), _) if j.has_decision_gap() => "pending_check",
+            (Some(_), _) => "shortlisted",
+        };
         ids.push_str(&serde_json::to_string(&serde_json::json!({
             "candidate_key": j.candidate_key,
             "url": c.map(|c| c.url.clone()).unwrap_or_default(),
@@ -609,6 +618,8 @@ pub fn build_deliverable(
             "posted_at": c.and_then(|c| c.posted_at).map(|t| t.to_string()),
             "sweep_key": c.map(|c| crate::serve::register::sweep_key_of(&c.collector)).unwrap_or_default(),
             "tier": j.tier,
+            "item_key": item_key,
+            "item_status": item_status,
         }))?);
         ids.push('\n');
     }

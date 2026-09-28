@@ -790,6 +790,20 @@ async fn start_round(
 
     // 01 的返工**在原轮次上改，不重新采集**（09-28 用户）。原轮次重新置为进行中，版本改成这一版
     let in_place = rework && t.task.stage_code == STAGE_INTAKE && prev.is_some();
+    // 上一次返工算下来与已交的一模一样、没重交的：同一版退回意见不再反复重做
+    //（否则每 30 秒一次轮询就重做一遍）。主编给了新意见（版本变了）才再做
+    let unchanged_mark = format!("{UNCHANGED}@v{}", t.task.cur_version);
+    if in_place && prev.as_ref().is_some_and(|p| p.note == unchanged_mark) {
+        tracing::debug!(
+            任务 = t.task.id,
+            "上次返工与已交内容相同、未重交，等主编新意见"
+        );
+        return Ok(());
+    }
+    // 上一次交出去的内容指纹（记在轮次备注里）：返工算完一样就不重交
+    let last_state: Option<String> = prev
+        .as_ref()
+        .and_then(|p| p.note.strip_prefix(SUBMITTED).map(str::to_string));
     let (r, is_new) = if let Some(p) = prev.filter(|_| in_place) {
         conn.execute(
             "UPDATE rounds SET status = 'running', ended_at = NULL, target_version = ?2,
@@ -951,9 +965,40 @@ async fn start_round(
                 &fin.by_key,
                 &gaps,
             )?;
+            // 这一版的内容指纹：判断与选题（不含版本号）。返工算完与已交的一样就不重交——
+            // 主编明说「修复前不重复整包重交相同缺陷」（09-28 r56 v4 退回后 30 秒交了一样的 v5）
+            // 登记条目也算进去、再加导出格式修订号：维护者改了导出（格式、登记口径）就算有变化
+            let items = register::item_inputs_by_topic(&judgements, &fin.topics, |k| {
+                fin.by_key.get(k).cloned()
+            });
+            let state = blake3::hash(
+                format!(
+                    "{EXPORT_REV}\u{1}{}\u{1}{}\u{1}{}",
+                    serde_json::to_string(&judgements).unwrap_or_default(),
+                    serde_json::to_string(&fin.topics).unwrap_or_default(),
+                    serde_json::to_string(&items).unwrap_or_default()
+                )
+                .as_bytes(),
+            )
+            .to_hex()
+            .to_string();
+            if in_place && last_state.as_deref() == Some(state.as_str()) {
+                tracing::warn!(
+                    任务 = t.task.id,
+                    轮次 = r.id,
+                    "返工后内容与已交的一样，不重交：退回意见要的是维护者或主编那边的动作"
+                );
+                rounds::finish_round(conn, r.id, "awaiting_review", &unchanged_mark)?;
+                return Ok(());
+            }
             finish::submit(conn, &r, engine, t.task.id, &built).await?;
 
-            rounds::finish_round(conn, r.id, "awaiting_review", "")?;
+            rounds::finish_round(
+                conn,
+                r.id,
+                "awaiting_review",
+                &format!("{SUBMITTED}{state}"),
+            )?;
             Ok(())
         }
         Err(e) => {
@@ -1006,6 +1051,13 @@ fn window_for(
     }
     (w.start.to_string(), w.end.to_string(), w.truncated)
 }
+
+/// 轮次备注里记「已交的内容指纹」与「返工后没变、未重交」的前缀
+const SUBMITTED: &str = "已交状态:";
+const UNCHANGED: &str = "内容与上一版相同，未重交";
+/// 交付物 / 登记导出格式的修订号。**改了导出（字段、登记口径、包内文件）就改它**，
+/// 否则返工后内容指纹一样，修好的导出不会重交
+const EXPORT_REV: &str = "2026-09-28c";
 
 /// 引擎窗口的时刻写法是 `2026-09-25T07:00+08:00`（没有秒），先按 RFC 3339 读，读不了补上秒再读。
 fn parse_engine_ts(s: &str) -> Option<jiff::Timestamp> {

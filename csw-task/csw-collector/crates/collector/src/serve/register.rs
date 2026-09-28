@@ -201,9 +201,16 @@ pub fn item_inputs_by_topic(
     topics: &[Topic],
     by_key: impl Fn(&str) -> Option<Candidate>,
 ) -> Vec<ItemInput> {
+    // 待核的选题也登记（pending_check）：只登推荐 / 备选的话，待核在引擎里被撤成 dropped，
+    // 等于把缺证当淘汰（09-28 r56 #616：19 条待核在 intake-trace 里是 dropped）
     topics
         .iter()
-        .filter(|t| matches!(t.tier, Some(Tier::Recommend | Tier::Alternate)))
+        .filter(|t| {
+            matches!(
+                t.tier,
+                Some(Tier::Recommend | Tier::Alternate | Tier::PendingCheck)
+            )
+        })
         .filter_map(|t| {
             let j = js.iter().find(|j| j.candidate_key == t.primary_key)?;
             let c = by_key(&j.candidate_key);
@@ -278,11 +285,18 @@ pub fn item_inputs_by_topic(
                 //（mock 不校验这个字段）。
                 // 备选里还挂着影响选题判断的缺口的（备选·待补证），**不算成熟**，登记成待核
                 //（09-28 r56 退回：「这些不能算成熟备选」）
-                status: if j.has_decision_gap() {
+                status: if j.tier == Tier::PendingCheck || j.has_decision_gap() {
                     "pending_check".into()
                 } else {
                     "shortlisted".into()
                 },
+                // 待核写明缺什么：主编看登记就知道为什么没成熟
+                reason: j
+                    .gaps
+                    .iter()
+                    .find(|g| g.level == csw_collector_core::types::GapLevel::Decision)
+                    .map(|g| format!("待核：{}", g.what))
+                    .unwrap_or_default(),
                 ..Default::default()
             })
         })
@@ -293,7 +307,12 @@ pub fn item_inputs_by_topic(
 pub fn registered_item_of(topics: &[Topic]) -> HashMap<String, String> {
     topics
         .iter()
-        .filter(|t| matches!(t.tier, Some(Tier::Recommend | Tier::Alternate)))
+        .filter(|t| {
+            matches!(
+                t.tier,
+                Some(Tier::Recommend | Tier::Alternate | Tier::PendingCheck)
+            )
+        })
         .flat_map(|t| t.members.iter().map(|m| (m.clone(), t.topic_key.clone())))
         .collect()
 }
@@ -555,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn 只登记推荐与备选() {
+    fn 登记推荐备选与待核_不登记不推荐() {
         let js = [
             j("k1", Tier::Recommend),
             j("k2", Tier::Alternate),
@@ -564,12 +583,13 @@ mod tests {
         ];
         let items = item_inputs(&js, |k| Some(cand(k)));
         let keys: Vec<&str> = items.iter().map(|i| i.item_key.as_str()).collect();
-        // 不推荐的是「看过并判了」，不是「要做的条目」；
-        // 待核还没定论，登记了下游会以为可以开工
-        assert_eq!(keys, ["k1", "k2"]);
+        // 不推荐的是「看过并判了」，不是「要做的条目」，不登记；
+        // 待核登记成 pending_check——不登记的话引擎里就成了 dropped，缺证被当淘汰（09-28 r56 #616）
+        assert_eq!(keys, ["k1", "k2", "k4"]);
         // 引擎只认四个值，推荐与备选都是 shortlisted
         assert_eq!(items[0].status, "shortlisted");
         assert_eq!(items[1].status, "shortlisted");
+        assert_eq!(items[2].status, "pending_check");
         assert_eq!(items[0].title, "k1｜背板结构值得解释");
         assert_eq!(items[0].published_at, "2026-09-17T08:00:00Z");
     }
@@ -854,7 +874,9 @@ mod tests {
             &judgements,
         );
         let items = item_inputs_by_topic(&judgements, &topics, lookup);
-        assert_eq!(items.len(), 1);
+        // a、b 一个选题 + c 待核（登记成 pending_check）
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1].status, "pending_check");
         let item_of = registered_item_of(&topics);
         let sweeps = sweep_inputs(
             &[SweepCount {
