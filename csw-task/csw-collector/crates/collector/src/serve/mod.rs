@@ -659,8 +659,7 @@ async fn tick(
         }
     }
     // 三、本地还挂着「进行中」、引擎上这一期已作废或已结束的：收尾成已取消
-    let live: std::collections::HashSet<i64> = mine.tasks.iter().map(|t| t.task.id).collect();
-    if let Err(e) = close_orphans(conn, engine, &live).await {
+    if let Err(e) = close_orphans(conn, engine).await {
         tracing::warn!(原因 = %format!("{e:#}"), "核对挂着的轮次没做成，下次再核");
     }
     let (sent, conflicts) = outbox_sender::drain(conn, engine).await?;
@@ -670,20 +669,18 @@ async fn tick(
     Ok(())
 }
 
-/// 本地是「进行中」、任务已不在派单里、所属一期在引擎上已作废或已结束的任务轮次，收尾成已取消。
+/// 本地是「进行中」、所属一期在引擎上已作废或已结束的任务轮次，收尾成已取消。
 ///
 /// 09-28 r55 作废时 #581 的返工轮（第 32 轮）正跑到一半，之后再没人续跑，页面上一直挂着「进行中」。
-/// 一期还在进行的不动：可能是交完进程就重启了、本地没来得及改状态，下一次派单会接上。
-async fn close_orphans(
-    conn: &rusqlite::Connection,
-    engine: &EngineClient,
-    live: &std::collections::HashSet<i64>,
-) -> Result<()> {
+/// **不看任务还在不在派单里**：#581 在作废的一期里又被重开成 ready，一直留在派单列表上
+///（那时引擎还没拦「作废的一期不能重开」）。一期还在进行的不动：可能是交完进程就重启了、
+/// 本地没来得及改状态，下一次派单会接上。本函数在 `tick` 末尾跑，这时本进程没有在跑的轮次。
+async fn close_orphans(conn: &rusqlite::Connection, engine: &EngineClient) -> Result<()> {
     for r in rounds::running_rounds(conn)? {
         let (Some(task), Some(run)) = (r.task_id, r.run_id) else {
             continue;
         };
-        if r.kind != "task" || live.contains(&task) {
+        if r.kind != "task" {
             continue;
         }
         let status = engine.run_status(run).await?;
@@ -1410,15 +1407,14 @@ mod tests {
             .0
         };
         let dead = open(55, 581); // 一期作废
-        let alive = open(56, 592); // 一期还在进行，只是这一刻不在派单里
-        let working = open(56, 593); // 还在派单里
-        let live: std::collections::HashSet<i64> = [593].into();
-        close_orphans(&conn, &engine, &live).await.unwrap();
+        let alive = open(56, 592); // 一期还在进行
+        let reopened = open(55, 582); // 作废的一期里又被重开、还挂在派单列表上
+        close_orphans(&conn, &engine).await.unwrap();
 
         let st = |id| rounds::get(&conn, id).unwrap().unwrap();
         assert_eq!(st(dead.id).status, "cancelled");
         assert!(st(dead.id).note.contains("r55 已作废"));
         assert_eq!(st(alive.id).status, "running");
-        assert_eq!(st(working.id).status, "running");
+        assert_eq!(st(reopened.id).status, "cancelled");
     }
 }
