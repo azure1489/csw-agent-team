@@ -18,6 +18,7 @@
 mod authprobe;
 mod bff;
 mod codexprobe;
+mod evidence;
 mod kb;
 mod m1;
 mod m2;
@@ -180,6 +181,15 @@ enum Command {
         /// 也做深核（要 codex），看深核过的待核重判后落到哪
         #[arg(long)]
         deepcheck: bool,
+    },
+    /// 定向补证：某一轮的待核重新深核（可联网）并重判，写回原轮次。**要花模型钱**。不写引擎、不提交
+    Evidence {
+        /// 哪一轮
+        #[arg(long)]
+        round: i64,
+        /// 只补这几条（条目键，逗号分隔）。不给 = 这一轮全部待核
+        #[arg(long, value_delimiter = ',')]
+        keys: Vec<String>,
     },
     /// 导出契约 JSON Schema（阶段 1 的契约冻结产物）
     Schema {
@@ -506,6 +516,12 @@ async fn main() -> anyhow::Result<()> {
                 },
             )
             .await
+        }
+        Command::Evidence { round, keys } => {
+            let cfg =
+                csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
+            let secrets = csw_collector_core::Secrets::from_env();
+            evidence::run(&cfg, &secrets, evidence::Opts { round, keys }).await
         }
         Command::Schema { out } => schema::run(out.as_deref()),
         Command::AuthProbe {

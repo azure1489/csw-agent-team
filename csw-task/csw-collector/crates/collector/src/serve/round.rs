@@ -1076,27 +1076,7 @@ pub async fn rework_in_place(
         .to_lowercase();
 
     // 一、读回
-    let mut judgements = ledger::judgements_of_round(conn, prev.id)?;
-    let mut topics = csw_collector_core::topics::topics(conn, prev.id)?;
-    let mut by_key: HashMap<String, Candidate> = HashMap::new();
-    // 采集来源不在 candidates 表里，在这一轮的 round_candidates 里。不读回来的话
-    // 采集轮的窗口内条数对不上（算成 0）、条目的 discovered_via 也写不出（09-28 r56 #615 退回）
-    let collectors: HashMap<String, String> = {
-        let mut st = conn
-            .prepare("SELECT candidate_key, collector FROM round_candidates WHERE round_id = ?1")?;
-        st.query_map([prev.id], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .filter_map(Result::ok)
-            .collect()
-    };
-    for j in &judgements {
-        if let Some(mut c) = ledger::get_candidate(conn, &j.candidate_key)? {
-            c.media = media::media_refs(conn, &c.candidate_key)?;
-            if let Some(col) = collectors.get(&c.candidate_key) {
-                c.collector = col.clone();
-            }
-            by_key.insert(c.candidate_key.clone(), c);
-        }
-    }
+    let (mut judgements, mut topics, by_key) = load_round_state(conn, prev.id)?;
     tracing::info!(
         轮次 = prev.id,
         判断 = judgements.len(),
@@ -1175,90 +1155,19 @@ pub async fn rework_in_place(
         "返工：要重核重判的"
     );
 
-    // 四、准备这几条：从库里还原，复用识图，不重新采集
-    let cands: Vec<Candidate> = focus
-        .iter()
-        .filter_map(|k| by_key.get(k).cloned())
-        .collect();
-    let cache = DescCache { conn };
-    let (prepared, _) = pipeline::prepare(
-        cands,
-        &pipeline::Deps {
-            downloader: &svc.downloader,
-            model: &svc.model,
-            vector: &svc.vector,
-            image_only: true,
-            concurrency: cfg.model.concurrency,
-            cache: Some(&cache as &dyn pipeline::Descriptions),
-            image_vectors: cfg.features.image_vectors,
-            progress: None,
-        },
+    // 四、五：这几条重新深核（不复用旧条目卡）并带着条目卡与退回意见重判
+    let (prepared, outcomes) = evidence_pass(
+        conn,
+        prev,
+        cfg,
+        svc,
+        &standard,
+        &focus,
+        &mut judgements,
+        &by_key,
+        "【返工】按主编退回意见重新深核、重判",
     )
-    .await;
-    let mut items = judge_items(conn, prev.id, &prepared, svc, cfg, false, None).await?;
-
-    // 五、重新深核（不复用旧条目卡），带着条目卡与退回意见重判
-    let step = rounds::begin_step(conn, prev.id, StepCode::Deepcheck, &prev.instructions_hash)?;
-    let targets: Vec<&Judgement> = judgements
-        .iter()
-        .filter(|j| focus.contains(&j.candidate_key))
-        .collect();
-    let outcomes = super::finish::deepcheck_these(
-        conn, prev, cfg, step.id, targets, &by_key, &prepared, &standard, false,
-    )
-    .await;
-    for o in outcomes.iter().filter(|o| o.done()) {
-        if let (Some(card), Some(it)) = (
-            o.card.as_ref(),
-            items
-                .iter_mut()
-                .find(|it| it.candidate.candidate_key == o.candidate_key),
-        ) {
-            it.deep_card = super::finish::card_text(card);
-        }
-    }
-    let rules =
-        csw_collector_judge::memory::rules_for_judge(conn, cfg.features.send_draft_rules_to_model)
-            .unwrap_or_default();
-    let deps = csw_collector_judge::pipeline::Deps {
-        model: &svc.model,
-        jev: svc.jev.as_ref(),
-        work_standard: &standard,
-        batch_concurrency: cfg.model.concurrency,
-        on_batch: None,
-        cached: None,
-        confirmed_rules: &rules,
-    };
-    let idx: Vec<usize> = (0..items.len()).collect();
-    let redone = csw_collector_judge::pipeline::judge_again(&items, &idx, &deps, &[]).await;
-    let mut changed = 0;
-    for j in redone.judgements {
-        let mut flags: Vec<String> = redone
-            .rule_notes
-            .get(&j.candidate_key)
-            .cloned()
-            .unwrap_or_default();
-        flags.push("【返工】按主编退回意见重新深核、重判".into());
-        if let Err(e) =
-            ledger::put_judgement(conn, prev.id, &j, &flags, &cfg.model.model, RUBRIC_VERSION)
-        {
-            tracing::warn!(候选 = %j.candidate_key, 原因 = %format!("{e:#}"), "返工的判断没落库");
-            continue;
-        }
-        if let Some(pos) = judgements
-            .iter()
-            .position(|x| x.candidate_key == j.candidate_key)
-        {
-            judgements[pos] = j;
-            changed += 1;
-        }
-    }
-    super::finish::merge_deepcheck_gaps(&mut judgements, &super::finish::deepcheck_gaps(&outcomes));
-    tracing::info!(
-        重判 = changed,
-        未判 = redone.unjudged.len(),
-        "返工：重判完成"
-    );
+    .await?;
 
     // 主编退回意见里明确要「停止 / 移出」的对象：不交给模型，直接移出本期主备选
     //（09-28 r56：v1 就说停止 KEEN 访谈、RAYWOOD 纯促销，重判后 KEEN 仍在备选）
@@ -1308,19 +1217,7 @@ pub async fn rework_in_place(
     }
 
     // 六、选题档位按成员重算
-    let rank = |t: Tier| match t {
-        Tier::Recommend => 3,
-        Tier::Alternate => 2,
-        Tier::PendingCheck => 1,
-        Tier::NotRecommend => 0,
-    };
-    for t in &mut topics {
-        t.tier = judgements
-            .iter()
-            .filter(|j| t.members.contains(&j.candidate_key))
-            .map(|j| j.tier)
-            .max_by_key(|x| rank(*x));
-    }
+    retier_topics(&mut topics, &judgements);
     if let Err(e) = csw_collector_core::topics::put_topics(conn, prev.id, &topics) {
         tracing::warn!("返工的选题没落库：{e:#}");
     }
@@ -1375,6 +1272,164 @@ pub async fn rework_in_place(
             deep_gaps: HashMap::new(),
         },
     ))
+}
+
+/// 读回的一轮：判断、选题、候选（按条目键）
+pub type RoundState = (
+    Vec<Judgement>,
+    Vec<csw_collector_core::types::Topic>,
+    HashMap<String, Candidate>,
+);
+
+/// 从库里读回一轮：判断、选题、候选（带图片清单与采集来源）。返工与定向补证都走它。
+///
+/// 采集来源不在 candidates 表里，在这一轮的 round_candidates 里。不读回来的话
+/// 采集轮的窗口内条数对不上（算成 0）、条目的 discovered_via 也写不出（09-28 r56 #615 退回）。
+pub fn load_round_state(conn: &Connection, round_id: i64) -> Result<RoundState> {
+    let judgements = ledger::judgements_of_round(conn, round_id)?;
+    let topics = csw_collector_core::topics::topics(conn, round_id)?;
+    let collectors: HashMap<String, String> = {
+        let mut st = conn
+            .prepare("SELECT candidate_key, collector FROM round_candidates WHERE round_id = ?1")?;
+        st.query_map([round_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .filter_map(Result::ok)
+            .collect()
+    };
+    let mut by_key: HashMap<String, Candidate> = HashMap::new();
+    for j in &judgements {
+        if let Some(mut c) = ledger::get_candidate(conn, &j.candidate_key)? {
+            c.media = media::media_refs(conn, &c.candidate_key)?;
+            if let Some(col) = collectors.get(&c.candidate_key) {
+                c.collector = col.clone();
+            }
+            by_key.insert(c.candidate_key.clone(), c);
+        }
+    }
+    Ok((judgements, topics, by_key))
+}
+
+/// 选题档位按成员重算：取组内最好的那一档。
+pub fn retier_topics(topics: &mut [csw_collector_core::types::Topic], judgements: &[Judgement]) {
+    use csw_collector_core::types::Tier;
+    let rank = |t: Tier| match t {
+        Tier::Recommend => 3,
+        Tier::Alternate => 2,
+        Tier::PendingCheck => 1,
+        Tier::NotRecommend => 0,
+    };
+    for t in topics.iter_mut() {
+        t.tier = judgements
+            .iter()
+            .filter(|j| t.members.contains(&j.candidate_key))
+            .map(|j| j.tier)
+            .max_by_key(|x| rank(*x));
+    }
+}
+
+/// 定向补证：这几条**重新深核**（不复用旧条目卡；深核能联网就去找官网、商品页、全文）
+/// 并带着条目卡重判，写回原轮次。返工与 `csw-collector evidence` 都走它。
+#[allow(clippy::too_many_arguments)]
+pub async fn evidence_pass(
+    conn: &Connection,
+    round: &Round,
+    cfg: &Config,
+    svc: &super::services::Services,
+    standard: &str,
+    focus: &[String],
+    judgements: &mut [Judgement],
+    by_key: &HashMap<String, Candidate>,
+    flag: &str,
+) -> Result<(Vec<Prepared>, Vec<csw_collector_deepcheck::run::Outcome>)> {
+    // 四、准备这几条：从库里还原，复用识图，不重新采集
+    let cands: Vec<Candidate> = focus
+        .iter()
+        .filter_map(|k| by_key.get(k).cloned())
+        .collect();
+    let cache = DescCache { conn };
+    let (prepared, _) = pipeline::prepare(
+        cands,
+        &pipeline::Deps {
+            downloader: &svc.downloader,
+            model: &svc.model,
+            vector: &svc.vector,
+            image_only: true,
+            concurrency: cfg.model.concurrency,
+            cache: Some(&cache as &dyn pipeline::Descriptions),
+            image_vectors: cfg.features.image_vectors,
+            progress: None,
+        },
+    )
+    .await;
+    let mut items = judge_items(conn, round.id, &prepared, svc, cfg, false, None).await?;
+
+    // 五、重新深核（不复用旧条目卡），带着条目卡与退回意见重判
+    let step = rounds::begin_step(
+        conn,
+        round.id,
+        StepCode::Deepcheck,
+        &round.instructions_hash,
+    )?;
+    let targets: Vec<&Judgement> = judgements
+        .iter()
+        .filter(|j| focus.contains(&j.candidate_key))
+        .collect();
+    let outcomes = super::finish::deepcheck_these(
+        conn, round, cfg, step.id, targets, by_key, &prepared, standard, false,
+    )
+    .await;
+    for o in outcomes.iter().filter(|o| o.done()) {
+        if let (Some(card), Some(it)) = (
+            o.card.as_ref(),
+            items
+                .iter_mut()
+                .find(|it| it.candidate.candidate_key == o.candidate_key),
+        ) {
+            it.deep_card = super::finish::card_text(card);
+        }
+    }
+    let rules =
+        csw_collector_judge::memory::rules_for_judge(conn, cfg.features.send_draft_rules_to_model)
+            .unwrap_or_default();
+    let deps = csw_collector_judge::pipeline::Deps {
+        model: &svc.model,
+        jev: svc.jev.as_ref(),
+        work_standard: standard,
+        batch_concurrency: cfg.model.concurrency,
+        on_batch: None,
+        cached: None,
+        confirmed_rules: &rules,
+    };
+    let idx: Vec<usize> = (0..items.len()).collect();
+    let redone = csw_collector_judge::pipeline::judge_again(&items, &idx, &deps, &[]).await;
+    let mut changed = 0;
+    for j in redone.judgements {
+        let mut flags: Vec<String> = redone
+            .rule_notes
+            .get(&j.candidate_key)
+            .cloned()
+            .unwrap_or_default();
+        flags.push(flag.to_string());
+        if let Err(e) =
+            ledger::put_judgement(conn, round.id, &j, &flags, &cfg.model.model, RUBRIC_VERSION)
+        {
+            tracing::warn!(候选 = %j.candidate_key, 原因 = %format!("{e:#}"), "返工的判断没落库");
+            continue;
+        }
+        if let Some(pos) = judgements
+            .iter()
+            .position(|x| x.candidate_key == j.candidate_key)
+        {
+            judgements[pos] = j;
+            changed += 1;
+        }
+    }
+    super::finish::merge_deepcheck_gaps(judgements, &super::finish::deepcheck_gaps(&outcomes));
+    tracing::info!(
+        重判 = changed,
+        未判 = redone.unjudged.len(),
+        "补证：重判完成"
+    );
+    Ok((prepared, outcomes))
 }
 
 /// 退回意见里要「停止 / 移出 / 不进入」的对象：取这类句子里 4 个字母以上的英文词。
