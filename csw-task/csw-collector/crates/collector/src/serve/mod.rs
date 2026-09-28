@@ -780,8 +780,10 @@ async fn start_round(
     });
     let rework = action == Action::Rework || redispatched;
     // 返工交的是下一版
+    // 返工交的是引擎的下一版（当前版本 + 1）。**不按本地轮次累加**：返工中途重启一次，
+    // 本地就多加一，交付物页头写 v4、引擎里却是 v2（09-28 r56）
     let target_version = if rework {
-        (i64::from(t.task.cur_version) + 1).max(prev.as_ref().map_or(0, |p| p.target_version + 1))
+        i64::from(t.task.cur_version) + 1
     } else {
         i64::from(t.task.cur_version.max(1))
     };
