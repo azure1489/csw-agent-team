@@ -983,6 +983,19 @@ async fn start_round(
                 tracing::info!(条数 = added, "深核补了几条缺口进台账");
             }
 
+            // 本包与引擎逐键对账（登记已发出）。结果进自检与 trace/engine_reconcile.json
+            let (reconciled, lines, consistent) =
+                finish::reconcile(conn, &r, engine, t.task.run_id, &judgements, &fin.topics).await;
+            if !consistent {
+                // 不一致才是红灯；一致的那两行只进自检
+                gaps.extend(
+                    lines
+                        .iter()
+                        .filter(|l| l.contains("不一致") || l.contains("没做成"))
+                        .cloned(),
+                );
+            }
+
             // 七、交付物；十、提交
             let built = finish::build_deliverable(
                 conn,
@@ -994,6 +1007,7 @@ async fn start_round(
                 &fin.sweeps,
                 &fin.by_key,
                 &gaps,
+                Some((&reconciled, &lines)),
             )?;
             // 这一版的内容指纹：判断与选题（不含版本号）。返工算完与已交的一样就不重交——
             // 主编明说「修复前不重复整包重交相同缺陷」（09-28 r56 v4 退回后 30 秒交了一样的 v5）

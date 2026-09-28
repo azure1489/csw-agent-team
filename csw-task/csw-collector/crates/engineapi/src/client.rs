@@ -236,6 +236,11 @@ impl EngineClient {
         self.get(&format!("/runs/{run_id}/items")).await
     }
 
+    /// 这一期引擎里的判断台账（逐条）。对账用。
+    pub async fn intake_judgements(&self, run_id: i64) -> Result<serde_json::Value, EngineError> {
+        self.get(&format!("/runs/{run_id}/intake-judgements")).await
+    }
+
     pub async fn memory_feedback(&self, limit: u32) -> Result<serde_json::Value, EngineError> {
         self.get(&format!("/memory/feedback?limit={limit}")).await
     }

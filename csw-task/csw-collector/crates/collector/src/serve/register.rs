@@ -376,36 +376,66 @@ fn last_body(conn: &Connection, round_id: i64, kind: &str) -> Option<serde_json:
     .and_then(|s| serde_json::from_str(&s).ok())
 }
 
-/// 上次登记过、这次不再登记的条目：改登记为 `dropped` 并写明原因。
-/// 返工在原轮次上收口窗口、改档后，引擎里旧的 shortlisted 不撤掉，主编看到的就还是旧的。
+/// 这一轮登记过、还没撤、这次不再登记的条目：改登记为 `dropped` 并写明原因。
+/// 返工在原轮次上收口窗口、改档后，引擎里旧的 shortlisted / pending_check 不撤掉，主编看到的就还是旧的。
+///
+/// **比的是这一轮历次登记的并集**（每个键取最后一次的状态），不只是上一次：09-28 r56 v5 只补登了
+/// 一部分条目，v6 只跟 v5 比，v4 登记成待核、后来判成不推荐的 7 条就一直挂在引擎里（主编 v6 退回点名）。
 pub fn dropped_since(conn: &Connection, round_id: i64, now: &[ItemInput]) -> Vec<ItemInput> {
-    let Some(body) = last_body(conn, round_id, "items") else {
-        return Vec::new();
-    };
     let keep: HashSet<&str> = now.iter().map(|i| i.item_key.as_str()).collect();
-    body.get("items")
-        .and_then(|v| v.as_array())
+    registered_items(conn, round_id)
         .into_iter()
-        .flatten()
-        .filter_map(|it| {
-            let key = it.get("item_key")?.as_str()?;
-            if keep.contains(key) || it.get("status").and_then(|s| s.as_str()) == Some("dropped") {
-                return None;
-            }
-            Some(ItemInput {
-                item_key: key.to_string(),
-                title: it
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                status: "dropped".into(),
-                reason_code: "superseded".into(),
-                reason: "返工后不再列入本期（移出窗口，或重判后不再是推荐 / 备选）".into(),
-                ..Default::default()
-            })
+        .filter(|(k, (status, _))| !keep.contains(k.as_str()) && status != "dropped")
+        .map(|(key, (_, title))| ItemInput {
+            item_key: key,
+            title,
+            status: "dropped".into(),
+            reason_code: "superseded".into(),
+            reason: "返工后不再列入本期（移出窗口，或重判后不再是推荐 / 备选 / 待核）".into(),
+            ..Default::default()
         })
         .collect()
+}
+
+/// 这一轮历次登记过的条目，每个键取最后一次的（状态, 标题）。这就是引擎里应有的样子。
+pub fn registered_items(
+    conn: &Connection,
+    round_id: i64,
+) -> std::collections::BTreeMap<String, (String, String)> {
+    // 按登记顺序覆盖
+    let mut last: std::collections::BTreeMap<String, (String, String)> = Default::default();
+    for body in all_bodies(conn, round_id, "items") {
+        for it in body
+            .get("items")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let Some(key) = it.get("item_key").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let status = it.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            let title = it.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            last.insert(key.to_string(), (status.to_string(), title.to_string()));
+        }
+    }
+    last
+}
+
+/// 这一轮某类登记历次排队的内容，按排队顺序。
+fn all_bodies(conn: &Connection, round_id: i64, kind: &str) -> Vec<serde_json::Value> {
+    let Ok(mut st) = conn.prepare(
+        "SELECT body_json FROM engine_outbox WHERE round_id = ?1 AND kind = ?2 ORDER BY seq",
+    ) else {
+        return Vec::new();
+    };
+    st.query_map(rusqlite::params![round_id, kind], |r| r.get::<_, String>(0))
+        .map(|it| {
+            it.filter_map(Result::ok)
+                .filter_map(|s| serde_json::from_str(&s).ok())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 这一轮上次上报的采集轮。返工不重新采集，采集轮沿用，只把窗口内条数按收口后的重算。
@@ -668,6 +698,58 @@ mod tests {
         assert_eq!(all[2].seq, last);
         assert_eq!(all[1].depends_on, Some(all[0].seq));
         assert_eq!(all[2].depends_on, Some(all[1].seq));
+    }
+
+    #[test]
+    fn 撤条目比这一轮历次登记的并集而不只是上一次() {
+        let c = csw_collector_core::store::open_in_memory().unwrap();
+        let (r, _) = csw_collector_core::rounds::open_round(
+            &c,
+            &csw_collector_core::rounds::NewRound {
+                kind: csw_collector_core::types::RoundKind::Task,
+                trigger: csw_collector_core::types::RoundTrigger::Dispatch,
+                run_id: Some(56),
+                task_id: Some(592),
+                stage_code: Some("intake".into()),
+                target_version: 1,
+                parent_round_id: None,
+                window_start: "A".into(),
+                window_end: "B".into(),
+                plan_version: 1,
+                rubric_version: "v1".into(),
+                kb_snapshot: "s".into(),
+                instructions_hash: "h".into(),
+            },
+        )
+        .unwrap();
+        let it = |k: &str, st: &str| ItemInput {
+            item_key: k.into(),
+            title: format!("{k} 标题"),
+            status: st.into(),
+            ..Default::default()
+        };
+        let put = |items: &[ItemInput]| {
+            enqueue_registration(&c, r.id, 56, items, &[], &[]).unwrap();
+        };
+        // v4：a 待核、b 采用、x 已撤；v5 只补登了 b（09-28 r56 就是这样）
+        put(&[
+            it("a", "pending_check"),
+            it("b", "shortlisted"),
+            it("x", "dropped"),
+        ]);
+        put(&[it("b", "shortlisted")]);
+        // v6：只列 b。a 在 v4 登记成待核、之后没撤，要撤；x 早撤过，不再发
+        let out = dropped_since(&c, r.id, &[it("b", "shortlisted")]);
+        assert_eq!(
+            out.iter()
+                .map(|i| (i.item_key.as_str(), i.status.as_str()))
+                .collect::<Vec<_>>(),
+            [("a", "dropped")]
+        );
+        assert_eq!(out[0].title, "a 标题");
+        // 撤过之后再登记，就不再撤第二次
+        put(&[it("b", "shortlisted"), it("a", "dropped")]);
+        assert!(dropped_since(&c, r.id, &[it("b", "shortlisted")]).is_empty());
     }
 
     #[test]

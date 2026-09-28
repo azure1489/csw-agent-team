@@ -492,6 +492,7 @@ pub fn build_deliverable(
     sweeps: &[SweepCount],
     by_key: &HashMap<String, Candidate>,
     extra_gaps: &[String],
+    reconciled: Option<(&serde_json::Value, &[String])>,
 ) -> Result<pack::Built> {
     let step = rounds::begin_step(conn, round.id, StepCode::Build, &round.instructions_hash)?;
     let lookup = |k: &str| by_key.get(k).cloned();
@@ -586,7 +587,13 @@ pub fn build_deliverable(
                 round.run_id.unwrap_or(0)
             )],
             status: "待审".into(),
-            checks: self_checks(judgements, extra_gaps),
+            checks: {
+                let mut c = self_checks(judgements, extra_gaps);
+                if let Some((_, lines)) = reconciled {
+                    c.extend(lines.iter().cloned());
+                }
+                c
+            },
             item_key: String::new(),
         },
         body,
@@ -609,6 +616,13 @@ pub fn build_deliverable(
         "trace/window_summary.json",
         serde_json::to_string_pretty(&summary)?,
     ));
+    // 本包与引擎逐键对账：条目、判断各一份，不一致的逐键列出
+    if let Some((r, _)) = reconciled {
+        entries.push(pack::Entry::text(
+            "trace/engine_reconcile.json",
+            serde_json::to_string_pretty(r)?,
+        ));
+    }
 
     let name = format!(
         "情报逐条_情报收集员_r{}_v{version}",
@@ -657,10 +671,134 @@ fn self_checks(judgements: &[Judgement], extra_gaps: &[String]) -> Vec<String> {
             n(Tier::PendingCheck),
             n(Tier::NotRecommend)
         ),
-        format!("未读到实图 {unseen} 条，已落待核（不是淘汰）"),
     ];
+    // 0 条就只说 0 条：写「0 条，已落待核」自相矛盾（09-28 r56 v6 退回点名）
+    v.push(if unseen == 0 {
+        "未读到实图 0 条（每条的全部图都已识别）".into()
+    } else {
+        format!("未读到实图 {unseen} 条，已落待核（不是淘汰）")
+    });
     v.extend(extra_gaps.iter().cloned());
     v
+}
+
+/// 登记发出去之后，读回引擎里的条目与判断台账，与本包逐键对账。
+///
+/// 返回（对账报告, 自检行, 是否一致）。不一致不拦提交——如实写进自检与 `trace/engine_reconcile.json`，
+/// 主编看得见；拦了反而是一期交不出东西（09-28 r56 v6 退回：包里待核 6、引擎里还挂着 13）。
+pub async fn reconcile(
+    conn: &Connection,
+    round: &Round,
+    engine: &EngineClient,
+    run_id: i64,
+    judgements: &[Judgement],
+    topics: &[csw_collector_core::types::Topic],
+) -> (serde_json::Value, Vec<String>, bool) {
+    let want_items = crate::serve::register::registered_items(conn, round.id);
+    let item_of = crate::serve::register::registered_item_of(topics);
+    let (eng_items, eng_js) = match (
+        engine.run_items(run_id).await,
+        engine.intake_judgements(run_id).await,
+    ) {
+        (Ok(i), Ok(j)) => (i, j),
+        (i, j) => {
+            let why = [
+                i.err().map(|e| format!("条目：{e:#}")),
+                j.err().map(|e| format!("判断：{e:#}")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("；");
+            return (
+                serde_json::json!({"对账": "没做成", "原因": why}),
+                vec![format!(
+                    "引擎逐键对账没做成（{why}），本包与引擎是否一致未核"
+                )],
+                false,
+            );
+        }
+    };
+    let got_items: HashMap<&str, &str> = eng_items
+        .items
+        .iter()
+        .map(|i| (i.item_key.as_str(), i.status.as_str()))
+        .collect();
+    let mut item_diff = Vec::new();
+    for (k, (st, _)) in &want_items {
+        match got_items.get(k.as_str()) {
+            Some(g) if g == st => {}
+            g => item_diff.push(serde_json::json!({"item_key": k, "本包": st, "引擎": g})),
+        }
+    }
+    for (k, g) in &got_items {
+        if !want_items.contains_key(*k) {
+            item_diff.push(serde_json::json!({"item_key": k, "本包": null, "引擎": g}));
+        }
+    }
+    // 引擎判断台账：同一条多次上报取最后一次
+    let mut got_js: HashMap<String, (String, String)> = HashMap::new();
+    for j in eng_js
+        .get("judgements")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+    {
+        let s = |k: &str| j.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        got_js.insert(s("candidate_key"), (s("tier"), s("item_key")));
+    }
+    let mut j_diff = Vec::new();
+    for j in judgements {
+        let tier = serde_json::to_value(j.tier)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default();
+        let item = item_of.get(&j.candidate_key).cloned().unwrap_or_default();
+        match got_js.get(&j.candidate_key) {
+            Some((t, i)) if *t == tier && *i == item => {}
+            g => j_diff.push(serde_json::json!({
+                "candidate_key": j.candidate_key,
+                "本包": {"tier": tier, "item_key": item},
+                "引擎": g.map(|(t, i)| serde_json::json!({"tier": t, "item_key": i})),
+            })),
+        }
+    }
+    let package_keys: std::collections::HashSet<&str> = judgements
+        .iter()
+        .map(|j| j.candidate_key.as_str())
+        .collect();
+    for k in got_js.keys().filter(|k| !package_keys.contains(k.as_str())) {
+        j_diff.push(serde_json::json!({"candidate_key": k, "本包": null, "引擎": "有"}));
+    }
+    let count = |st: &str| want_items.values().filter(|(s, _)| s == st).count();
+    let consistent = item_diff.is_empty() && j_diff.is_empty();
+    let mut lines = vec![format!(
+        "登记条目：采用 {}、待核 {}、已撤 {}（本轮历次登记的最终状态）",
+        count("shortlisted"),
+        count("pending_check"),
+        count("dropped")
+    )];
+    lines.push(if consistent {
+        format!(
+            "引擎逐键对账一致：条目 {} 个、判断 {} 条（trace/engine_reconcile.json）",
+            want_items.len(),
+            judgements.len()
+        )
+    } else {
+        format!(
+            "引擎逐键对账不一致：条目 {} 个、判断 {} 条，逐键见 trace/engine_reconcile.json",
+            item_diff.len(),
+            j_diff.len()
+        )
+    });
+    let report = serde_json::json!({
+        "核对时间": jiff::Timestamp::now().to_string(),
+        "run_id": run_id,
+        "条目": {"本包应有": want_items.len(), "引擎": got_items.len(), "不一致": item_diff},
+        "判断": {"本包": judgements.len(), "引擎": got_js.len(), "不一致": j_diff},
+        "口径": "本包应有的条目 = 这一轮历次登记、每个键取最后一次的状态；判断按 candidate_key 比档位与所属条目",
+    });
+    (report, lines, consistent)
 }
 
 /// 第 10 步：提交。**只发已落盘的那一份 zip**。
@@ -813,6 +951,9 @@ fn window_ids(
             "first_seen_at": r.ingested_at,
             "posted_at": r.posted_at,
             "media": r.media,
+            "has_video": r.media.contains("视频"),
+            // 去重按（平台, 来源 id）：同一条贴文不论从哪个采集器来都只算一次
+            "dedup_key": format!("instagram:{}", r.source_id),
             "outcome": r.outcome,
             "reason": o.map(|o| o.cn()).unwrap_or("未知去向"),
             "dup_of": r.dup_of,
