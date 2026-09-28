@@ -303,24 +303,16 @@ pub fn apply(j: &mut Judgement, ctx: &Ctx<'_>) -> Applied {
         && (j.unanswered == Unanswered::MissingMaterial
             || (j.unanswered != Unanswered::LowValue && points_elsewhere))
     {
-        j.tier = if ctx.deepchecked {
-            Tier::Alternate
-        } else {
-            Tier::PendingCheck
-        };
+        j.tier = Tier::PendingCheck;
         out.notes.push(format!(
-            "{NOTE}关键资料在别处尚未取得却判不推荐，改为{}（原判不推荐）",
-            if ctx.deepchecked {
-                "备选·待补证"
-            } else {
-                "待核"
-            }
+            "{NOTE}关键资料在别处尚未取得却判不推荐，改为待核（原判不推荐）"
         ));
     }
 
-    // R9 深核过的不再待核：深核后仍缺关键资料的定为备选·待补证，缺口交主编
+    // R9 深核过、仍缺核心证据的：**待核·已深核**，缺口交主编补证。
+    // 原先定为「备选·待补证」，09-28 主编验收要求核心证据不足的一律落 pending_check 并同步统计
+    //（r56 #614/#615 退回），改回待核；与没核过的待核靠「已深核」区分，补证由主编接手
     if ctx.deepchecked && j.tier == Tier::PendingCheck {
-        j.tier = Tier::Alternate;
         if !j.has_decision_gap() {
             j.gaps.push(Gap::decision("深核后仍缺决定选题的关键资料"));
         }
@@ -330,9 +322,8 @@ pub fn apply(j: &mut Judgement, ctx: &Ctx<'_>) -> Applied {
                 g.next = "人工补证后再定是否推荐".into();
             }
         }
-        out.notes.push(format!(
-            "{NOTE}深核后仍缺关键资料，定为备选·待补证（原判待核）"
-        ));
+        out.notes
+            .push(format!("{NOTE}已深核，仍缺核心证据：待核，缺口交主编补证"));
     }
 
     // R6 缺口
@@ -862,24 +853,18 @@ mod tests {
     }
 
     #[test]
-    fn 深核过的不再待核() {
+    fn 深核过仍缺核心证据的是待核且缺口交主编() {
         let deep = |again| Ctx {
             deepchecked: true,
             ..ctx(&[], &[], again)
         };
         let mut j = Judgement::fixture("k", Tier::PendingCheck);
         j.gaps = vec![Gap::decision("关键内容在官网")];
-        apply(&mut j, &deep(false));
-        assert_eq!(j.tier, Tier::Alternate);
+        let a = apply(&mut j, &deep(false));
+        assert_eq!(j.tier, Tier::PendingCheck);
         assert!(j.gaps.iter().all(|g| g.owner == GapOwner::Editor));
+        assert!(a.notes.iter().any(|n| n.contains("已深核")));
         assert!(j.violations().is_empty(), "{:?}", j.violations());
-
-        // 深核后还判不推荐、但关键内容在别处没取到的：备选·待补证，不是待核
-        let mut j = Judgement::fixture("k", Tier::NotRecommend);
-        j.unanswered = Unanswered::MissingMaterial;
-        j.gaps = vec![Gap::decision("完整内容在主页链接")];
-        apply(&mut j, &deep(false));
-        assert_eq!(j.tier, Tier::Alternate);
     }
 
     #[test]

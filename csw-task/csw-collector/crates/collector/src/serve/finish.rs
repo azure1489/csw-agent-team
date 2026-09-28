@@ -280,6 +280,30 @@ pub async fn deepcheck_these(
     outcomes
 }
 
+/// 一条候选落过库的全部图，按图序，文件名 `候选键_N`（N 从 1 起，与「第 N 张」对上）。
+fn all_previews(conn: &Connection, cfg: &Config, key: &str) -> Vec<intake::Preview> {
+    let Ok(mut st) = conn.prepare(
+        "SELECT blake3, ordinal FROM media WHERE candidate_key = ?1 AND failed = 0 ORDER BY ordinal",
+    ) else {
+        return Vec::new();
+    };
+    let rows: Vec<(String, i64)> = st
+        .query_map(params![key], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map(|it| it.filter_map(Result::ok).collect())
+        .unwrap_or_default();
+    rows.into_iter()
+        .filter_map(|(hash, ordinal)| {
+            let path = csw_collector_harvest::download::blob_path(&cfg.blob_dir(), &hash);
+            let bytes = std::fs::read(&path).ok()?;
+            Some(intake::Preview {
+                candidate_key: format!("{key}_{}", ordinal + 1),
+                bytes,
+                ext: "jpg".into(),
+            })
+        })
+        .collect()
+}
+
 /// 一条候选的封面缩略：能当配图的第一张，没有就第一张。取不到就不放（不让一张图拦住交付）。
 fn cover_preview(conn: &Connection, cfg: &Config, key: &str) -> Option<intake::Preview> {
     let hash: String = conn
@@ -506,11 +530,41 @@ pub fn build_deliverable(
 
     // 预览图：推荐与备选各一张（能当配图的第一张，没有就第一张）。以前这里传的是空的，
     // 交付包里从来没有图（09-28 r56 退回：「缺 images……逐图证据不能直接复核」）
-    let previews: Vec<intake::Preview> = judgements
-        .iter()
-        .filter(|j| matches!(j.tier, Tier::Recommend | Tier::Alternate))
-        .filter_map(|j| cover_preview(conn, cfg, &j.candidate_key))
-        .collect();
+    //
+    // 推荐与深核过的待核**带全部原图**：主编要按「第几张图」复核论据，只放封面等于没给
+    //（09-28 r56 #615：SATISFY 引用的第 5 张图没交）。其余备选只放封面。
+    let mut previews: Vec<intake::Preview> = Vec::new();
+    let mut image_index: Vec<(String, Vec<String>)> = Vec::new();
+    for j in judgements {
+        let deep = j.gaps.iter().any(|g| g.tried.contains("深核"));
+        let all = j.tier == Tier::Recommend || (j.tier == Tier::PendingCheck && deep);
+        if all {
+            let ps = all_previews(conn, cfg, &j.candidate_key);
+            if !ps.is_empty() {
+                image_index.push((
+                    j.candidate_key.clone(),
+                    ps.iter()
+                        .map(|p| format!("images/{}.jpg", p.candidate_key))
+                        .collect(),
+                ));
+                previews.extend(ps);
+            }
+        } else if j.tier == Tier::Alternate
+            && let Some(p) = cover_preview(conn, cfg, &j.candidate_key)
+        {
+            image_index.push((
+                j.candidate_key.clone(),
+                vec![format!("images/{}.jpg", p.candidate_key)],
+            ));
+            previews.push(p);
+        }
+    }
+    if !image_index.is_empty() {
+        body.push_str("\n## 随包图片（按条目，`_N` 是原帖第 N 张）\n\n");
+        for (k, files) in &image_index {
+            body.push_str(&format!("- `{k}`：{}\n", files.join("、")));
+        }
+    }
     let version = round.target_version.max(1);
     let mut entries = intake::assemble(
         Meta {
@@ -544,6 +598,21 @@ pub fn build_deliverable(
         jl.push('\n');
     }
     entries.push(pack::Entry::text("trace/judgements.jsonl", jl));
+    // 窗口内的实际 ID 集合与首次入库时间：主编要能按 first_seen_at 自己核窗口
+    let mut ids = String::new();
+    for j in judgements {
+        let c = by_key.get(&j.candidate_key);
+        ids.push_str(&serde_json::to_string(&serde_json::json!({
+            "candidate_key": j.candidate_key,
+            "url": c.map(|c| c.url.clone()).unwrap_or_default(),
+            "first_seen_at": c.and_then(|c| c.ingested_at).map(|t| t.to_string()),
+            "posted_at": c.and_then(|c| c.posted_at).map(|t| t.to_string()),
+            "sweep_key": c.map(|c| crate::serve::register::sweep_key_of(&c.collector)).unwrap_or_default(),
+            "tier": j.tier,
+        }))?);
+        ids.push('\n');
+    }
+    entries.push(pack::Entry::text("trace/window_ids.jsonl", ids));
 
     let name = format!(
         "情报逐条_情报收集员_r{}_v{version}",

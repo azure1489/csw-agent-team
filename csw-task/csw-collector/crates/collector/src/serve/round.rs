@@ -876,8 +876,7 @@ async fn deepcheck_and_rejudge(
             }
         }
     }
-    // 重判两次都没成的深核过的待核：按「深核后仍缺关键资料」由代码定为备选·待补证，
-    // 与 R9 同一个处理——深核过的不再留在待核
+    // 深核过、仍是待核的（含重判两次都没成的）：与 R9 同一个处理——待核·已深核，缺口交主编补证
     let deepchecked: HashSet<&str> = outcomes
         .iter()
         .filter(|o| o.done())
@@ -888,7 +887,6 @@ async fn deepcheck_and_rejudge(
         .iter_mut()
         .filter(|j| j.tier == Tier::PendingCheck && deepchecked.contains(j.candidate_key.as_str()))
     {
-        j.tier = Tier::Alternate;
         if !j.has_decision_gap() {
             j.gaps.push(csw_collector_core::types::Gap::decision(
                 "深核后仍缺决定选题的关键资料",
@@ -904,13 +902,13 @@ async fn deepcheck_and_rejudge(
                 g.next = "人工补证后再定是否推荐".into();
             }
         }
-        out.rule_notes
-            .entry(j.candidate_key.clone())
-            .or_default()
-            .push(format!(
-                "{}深核后重判没成（网关），按深核后仍缺资料定为备选·待补证（原判待核）",
+        let notes = out.rule_notes.entry(j.candidate_key.clone()).or_default();
+        if !notes.iter().any(|n| n.contains("已深核")) {
+            notes.push(format!(
+                "{}已深核，仍缺核心证据：待核，缺口交主编补证",
                 csw_collector_judge::rules::NOTE
             ));
+        }
     }
 
     // 深核补出来的「仍缺」并进缺口：只留在深核日志里等于没人看得见
@@ -1081,9 +1079,21 @@ pub async fn rework_in_place(
     let mut judgements = ledger::judgements_of_round(conn, prev.id)?;
     let mut topics = csw_collector_core::topics::topics(conn, prev.id)?;
     let mut by_key: HashMap<String, Candidate> = HashMap::new();
+    // 采集来源不在 candidates 表里，在这一轮的 round_candidates 里。不读回来的话
+    // 采集轮的窗口内条数对不上（算成 0）、条目的 discovered_via 也写不出（09-28 r56 #615 退回）
+    let collectors: HashMap<String, String> = {
+        let mut st = conn
+            .prepare("SELECT candidate_key, collector FROM round_candidates WHERE round_id = ?1")?;
+        st.query_map([prev.id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .filter_map(Result::ok)
+            .collect()
+    };
     for j in &judgements {
         if let Some(mut c) = ledger::get_candidate(conn, &j.candidate_key)? {
             c.media = media::media_refs(conn, &c.candidate_key)?;
+            if let Some(col) = collectors.get(&c.candidate_key) {
+                c.collector = col.clone();
+            }
             by_key.insert(c.candidate_key.clone(), c);
         }
     }
@@ -1152,7 +1162,18 @@ pub async fn rework_in_place(
         }
     }
     focus.truncate(REWORK_FOCUS_MAX);
-    tracing::info!(点名 = named, 共 = focus.len(), "返工：要重核重判的");
+    // **只在第一次返工时重新深核、重判**。之后的退回是导出、登记不一致的问题，
+    // 主编明说「禁止另一次模型重评」「不再整池重评」（09-28 r56 #615）
+    let rejudge = prev.target_version <= 2;
+    if !rejudge {
+        focus.clear();
+    }
+    tracing::info!(
+        点名 = named,
+        共 = focus.len(),
+        重判 = rejudge,
+        "返工：要重核重判的"
+    );
 
     // 四、准备这几条：从库里还原，复用识图，不重新采集
     let cands: Vec<Candidate> = focus
@@ -1239,6 +1260,53 @@ pub async fn rework_in_place(
         "返工：重判完成"
     );
 
+    // 主编退回意见里明确要「停止 / 移出」的对象：不交给模型，直接移出本期主备选
+    //（09-28 r56：v1 就说停止 KEEN 访谈、RAYWOOD 纯促销，重判后 KEEN 仍在备选）
+    let stops = stop_words(&review);
+    for j in judgements.iter_mut() {
+        let acc = by_key
+            .get(&j.candidate_key)
+            .map(|c| norm(&c.account))
+            .unwrap_or_default();
+        if matches!(j.tier, Tier::Recommend | Tier::Alternate)
+            && stops.iter().any(|w| acc.contains(w.as_str()))
+        {
+            j.tier = Tier::NotRecommend;
+            j.gaps
+                .retain(|g| g.level != csw_collector_core::types::GapLevel::Decision);
+            let flags =
+                vec!["【返工】主编退回意见要求移出本期主备选（不是品牌永久排除）".to_string()];
+            if let Err(e) =
+                ledger::put_judgement(conn, prev.id, j, &flags, &cfg.model.model, RUBRIC_VERSION)
+            {
+                tracing::warn!(候选 = %j.candidate_key, 原因 = %format!("{e:#}"), "移出主备选没落库");
+            }
+            tracing::info!(候选 = %j.candidate_key, "返工：按退回意见移出主备选");
+        }
+    }
+
+    // 旧口径留下的「备选·待补证」（备选但挂着影响选题判断的缺口）：核心证据不足，一律待核
+    //（主编验收：「核心证据不足落 pending_check 并同步统计」）
+    for j in judgements
+        .iter_mut()
+        .filter(|j| j.tier == Tier::Alternate && j.has_decision_gap())
+    {
+        j.tier = Tier::PendingCheck;
+        for g in j
+            .gaps
+            .iter_mut()
+            .filter(|g| g.level == csw_collector_core::types::GapLevel::Decision)
+        {
+            g.owner = csw_collector_core::types::GapOwner::Editor;
+        }
+        let flags = vec!["【口径】已深核，仍缺核心证据：待核，缺口交主编补证".to_string()];
+        if let Err(e) =
+            ledger::put_judgement(conn, prev.id, j, &flags, &cfg.model.model, RUBRIC_VERSION)
+        {
+            tracing::warn!(候选 = %j.candidate_key, 原因 = %format!("{e:#}"), "改待核没落库");
+        }
+    }
+
     // 六、选题档位按成员重算
     let rank = |t: Tier| match t {
         Tier::Recommend => 3,
@@ -1272,6 +1340,13 @@ pub async fn rework_in_place(
         sw.in_window = n;
         sw.reviewed = n;
         sw.unreviewed = 0;
+        if col == register::collector_of("csw-window") {
+            // 查询文字写本期窗口：旧的写的是开工时刻的止点（主编 #615：query 仍是旧止点）
+            sw.query = format!(
+                "按首次入库时间收口：{} ~ {}（本期窗口，左闭右开）；接口按发布时间取宽，取回 {} 条、去重 {} 条",
+                prev.window_start, prev.window_end, sw.found, sw.fetched_unique
+            );
+        }
     }
 
     // 八、登记（上次登记过、这次不列的撤下）
@@ -1300,6 +1375,24 @@ pub async fn rework_in_place(
             deep_gaps: HashMap::new(),
         },
     ))
+}
+
+/// 退回意见里要「停止 / 移出 / 不进入」的对象：取这类句子里 4 个字母以上的英文词。
+fn stop_words(review: &str) -> Vec<String> {
+    review
+        .split(['。', '；', '\n', ';'])
+        .filter(|sent| {
+            ["停止", "移出", "不进入", "不再进入", "停掉"]
+                .iter()
+                .any(|k| sent.contains(k))
+        })
+        .flat_map(|sent| {
+            sent.split(|c: char| !c.is_ascii_alphanumeric())
+                .filter(|w| w.len() >= 4 && w.chars().any(|c| c.is_ascii_alphabetic()))
+                .map(str::to_lowercase)
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// 返工时至少重核重判几条（不含主编点名的）、至多几条

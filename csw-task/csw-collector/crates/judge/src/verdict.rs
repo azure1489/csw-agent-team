@@ -353,9 +353,9 @@ fn candidate_block(n: usize, item: &JudgeInput<'_>) -> String {
         s.push_str("\n【深核结果（核查员已查证原始来源、事实与对照）】\n");
         s.push_str(&fence(item.extra.deep_card.trim()));
         s.push_str(
-            "\n本条已经深核过：tier 只能是 recommend / alternate / not_recommend，**不再判 pending_check**。\
-             深核后仍缺决定选题的关键资料、但内容本身有报道潜力的，判 alternate，\
-             并把缺的写成 decision 级缺口、owner 填 editor；已能确认价值不足的判 not_recommend。\n",
+            "\n本条已经深核过：按深核结果定档。深核后仍缺决定选题的核心证据的，判 pending_check，\
+             把缺的写成 decision 级缺口、owner 填 editor、next 写清要补什么；\
+             证据已齐的判 recommend / alternate；已能确认价值不足的判 not_recommend。\n",
         );
     }
     s.push_str("\n【对照材料】\n");
