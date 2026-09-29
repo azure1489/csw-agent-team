@@ -124,24 +124,38 @@ impl TraceOutcome {
 ///
 /// 09-29 r57：csw 贴文库 09-25 17:29 之后再没入库，工作台照样交了 0 条的空台账，被退回后又停住，
 /// 一整天没人知道是上游断了。
-pub fn source_stalled(sweep: &SweepCount, from: Timestamp) -> Option<String> {
+pub fn source_stalled(sweep: &SweepCount, from: Timestamp, to: Timestamp) -> Option<String> {
     if sweep.sweep_key != "csw-window" || sweep.result != "ok" || sweep.in_window > 0 {
         return None;
     }
     if sweep.found == 0 {
         return Some("上游 csw 贴文库在宽取的发布时间范围内一条都没返回：贴文库很可能没在入库，需先恢复上游采集".into());
     }
-    let newest = sweep
+    let times: Vec<Timestamp> = sweep
         .trace
         .iter()
         .filter_map(|t| t.ingested_at.as_deref()?.parse::<Timestamp>().ok())
-        .max()?;
-    (newest < from).then(|| {
-        format!(
-            "上游 csw 贴文库自 {newest} 起没有新入库：宽取 {} 条，最新一条的入库时间早于本期窗口起点 {from}，\
+        .collect();
+    // 窗口里有入库、只是都被筛掉（比如全是视频）：不是断料
+    if times.iter().any(|t| *t >= from && *t < to) {
+        return None;
+    }
+    let before = times.iter().filter(|t| **t < from).max();
+    let after = times.iter().filter(|t| **t >= to).min();
+    Some(match (before, after) {
+        (Some(b), Some(a)) => format!(
+            "上游 csw 贴文库在本期窗口 {from} ~ {to} 内没有任何入库：最后一次入库 {b}，恢复入库 {a}。\
+             不是本期没有料，是上游采集中断；断料期间发布的贴文随恢复补入库，按首次入库时间归入之后的一期"
+        ),
+        (Some(b), None) => format!(
+            "上游 csw 贴文库自 {b} 起没有新入库：宽取 {} 条，最新一条的入库时间早于本期窗口起点 {from}，\
              窗口内 0 条。不是本期没有料，是上游采集停了，需先恢复上游再重做本期",
             sweep.found
-        )
+        ),
+        _ => format!(
+            "上游 csw 贴文库在本期窗口 {from} ~ {to} 内没有任何入库，宽取 {} 条都不在窗口里",
+            sweep.found
+        ),
     })
 }
 
@@ -858,19 +872,24 @@ mod tests {
             dup_of: None,
         };
         s.trace = vec![t("2026-09-20T00:00:00Z"), t("2026-09-25T17:29:16Z")];
-        let why = source_stalled(&s, from).expect("该认出断料");
+        let to = ts("2026-09-28T23:00:00Z");
+        let why = source_stalled(&s, from, to).expect("该认出断料");
         assert!(why.contains("2026-09-25T17:29:16Z"), "{why}");
         // 窗口内有条目，不算断料
         s.in_window = 1;
-        assert!(source_stalled(&s, from).is_none());
+        assert!(source_stalled(&s, from, to).is_none());
         // 最新入库在窗口里、只是都被筛掉（比如全是视频）：不算断料
         s.in_window = 0;
         s.trace = vec![t("2026-09-28T01:00:00Z")];
-        assert!(source_stalled(&s, from).is_none());
+        assert!(source_stalled(&s, from, to).is_none());
+        // 窗口正好落在断料空档里：前后都有入库、窗口里没有（09-29 r57：恢复后补的都在窗口之后）
+        s.trace = vec![t("2026-09-25T17:29:16Z"), t("2026-09-29T15:25:15Z")];
+        let why = source_stalled(&s, from, to).expect("该认出断料空档");
+        assert!(why.contains("恢复入库 2026-09-29T15:25:15Z"), "{why}");
         // 接口一条都没回
         s.found = 0;
         s.trace.clear();
-        assert!(source_stalled(&s, from).is_some());
+        assert!(source_stalled(&s, from, to).is_some());
     }
 
     #[tokio::test]

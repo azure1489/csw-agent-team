@@ -115,7 +115,7 @@ pub async fn harvest(
     let blocked = blocked.or_else(|| {
         sweeps
             .iter()
-            .find_map(|s| pipeline::source_stalled(s, from))
+            .find_map(|s| pipeline::source_stalled(s, from, to))
     });
 
     if let Some(why) = blocked {
