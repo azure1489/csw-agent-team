@@ -1128,18 +1128,29 @@ pub async fn rework_in_place(
         .filter(|w| w.len() >= 4 && w.chars().any(|c| c.is_ascii_alphabetic()))
         .map(str::to_lowercase)
         .collect();
-    let mut focus: Vec<String> = judgements
+    // 意见里写了条目键的，**只认条目键**：品牌词会误中一片（09-29 r56 v8 意见里有 gooutcamp，
+    // 按「账号含这个词」把 picacamp、camphills、unocampfes 等 9 条不相干的也拉进来重判）。
+    // 只写了品牌、没写条目键的，才退回按品牌词找
+    let by_keyname: Vec<String> = judgements
         .iter()
-        .filter(|j| {
-            let acc = by_key
-                .get(&j.candidate_key)
-                .map(|c| norm(&c.account))
-                .unwrap_or_default();
-            words.iter().any(|w| acc.contains(w.as_str()))
-                || review.contains(&j.candidate_key.to_lowercase())
-        })
+        .filter(|j| review.contains(&j.candidate_key.to_lowercase()))
         .map(|j| j.candidate_key.clone())
         .collect();
+    let mut focus: Vec<String> = if !by_keyname.is_empty() {
+        by_keyname
+    } else {
+        judgements
+            .iter()
+            .filter(|j| {
+                let acc = by_key
+                    .get(&j.candidate_key)
+                    .map(|c| norm(&c.account))
+                    .unwrap_or_default();
+                words.iter().any(|w| acc.contains(w.as_str()))
+            })
+            .map(|j| j.candidate_key.clone())
+            .collect()
+    };
     let named = focus.len();
     // 同类误用：以「同一事实无增量」判了不推荐，命中里却没有一条是正式发布、已推草稿箱或 03 决定
     //（只有上一轮台账、生成稿）。主编 v8：「其余同类仅检查同类误用」「不整池重评」——
