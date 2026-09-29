@@ -819,7 +819,17 @@ async fn start_round(
     };
 
     // 01 的返工**在原轮次上改，不重新采集**（09-28 用户）。原轮次重新置为进行中，版本改成这一版
-    let in_place = rework && t.task.stage_code == STAGE_INTAKE && prev.is_some();
+    // 原轮次一条候选都没有（上游断料、窗口开错）的，原轮次上没有可改的：重新采集（09-29 r57）
+    let prev_empty = prev.as_ref().is_some_and(|p| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM round_candidates WHERE round_id = ?1",
+            [p.id],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+            == 0
+    });
+    let in_place = rework && t.task.stage_code == STAGE_INTAKE && prev.is_some() && !prev_empty;
     // 上一次返工算下来与已交的一模一样、没重交的：同一版退回意见不再反复重做
     //（否则每 30 秒一次轮询就重做一遍）。主编给了新意见（版本变了）才再做
     let unchanged_mark = format!("{UNCHANGED}@v{}", t.task.cur_version);

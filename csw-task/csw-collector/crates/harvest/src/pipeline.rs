@@ -119,6 +119,32 @@ impl TraceOutcome {
     }
 }
 
+/// 主力窗口采集器断料：接口有返回、窗口内却 0 条，且返回里最新的入库时间早于窗口起点——
+/// 上游贴文库没有在入库（爬虫停了），不是「这期没有料」。返回写给人看的原因。
+///
+/// 09-29 r57：csw 贴文库 09-25 17:29 之后再没入库，工作台照样交了 0 条的空台账，被退回后又停住，
+/// 一整天没人知道是上游断了。
+pub fn source_stalled(sweep: &SweepCount, from: Timestamp) -> Option<String> {
+    if sweep.sweep_key != "csw-window" || sweep.result != "ok" || sweep.in_window > 0 {
+        return None;
+    }
+    if sweep.found == 0 {
+        return Some("上游 csw 贴文库在宽取的发布时间范围内一条都没返回：贴文库很可能没在入库，需先恢复上游采集".into());
+    }
+    let newest = sweep
+        .trace
+        .iter()
+        .filter_map(|t| t.ingested_at.as_deref()?.parse::<Timestamp>().ok())
+        .max()?;
+    (newest < from).then(|| {
+        format!(
+            "上游 csw 贴文库自 {newest} 起没有新入库：宽取 {} 条，最新一条的入库时间早于本期窗口起点 {from}，\
+             窗口内 0 条。不是本期没有料，是上游采集停了，需先恢复上游再重做本期",
+            sweep.found
+        )
+    })
+}
+
 fn media_summary(c: &Candidate) -> String {
     let photos = c
         .media
@@ -809,6 +835,42 @@ mod tests {
             paged_to_end: true,
             query: "q".into(),
         })
+    }
+
+    #[test]
+    fn 上游停止入库认得出来() {
+        let from = ts("2026-09-27T23:00:00Z");
+        let mut s = SweepCount {
+            sweep_key: "csw-window".into(),
+            result: "ok".into(),
+            found: 2,
+            ..Default::default()
+        };
+        let t = |ing: &str| FetchTrace {
+            source_id: "1".into(),
+            candidate_key: "k".into(),
+            account: String::new(),
+            url: String::new(),
+            posted_at: None,
+            ingested_at: Some(ing.into()),
+            media: String::new(),
+            outcome: TraceOutcome::BeforeWindow,
+            dup_of: None,
+        };
+        s.trace = vec![t("2026-09-20T00:00:00Z"), t("2026-09-25T17:29:16Z")];
+        let why = source_stalled(&s, from).expect("该认出断料");
+        assert!(why.contains("2026-09-25T17:29:16Z"), "{why}");
+        // 窗口内有条目，不算断料
+        s.in_window = 1;
+        assert!(source_stalled(&s, from).is_none());
+        // 最新入库在窗口里、只是都被筛掉（比如全是视频）：不算断料
+        s.in_window = 0;
+        s.trace = vec![t("2026-09-28T01:00:00Z")];
+        assert!(source_stalled(&s, from).is_none());
+        // 接口一条都没回
+        s.found = 0;
+        s.trace.clear();
+        assert!(source_stalled(&s, from).is_some());
     }
 
     #[tokio::test]

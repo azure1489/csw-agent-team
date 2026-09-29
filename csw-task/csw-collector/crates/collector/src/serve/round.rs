@@ -111,6 +111,12 @@ pub async fn harvest(
     let (mut cands, sweeps, blocked) = pipeline::collect_all(&collectors, from, to, true).await;
     // 宽取逐条留痕：失败也记，交付包里全部列出，主编能从宽取的全部 ID 复算到窗口内的
     save_window_trace(conn, round.id, &sweeps, "live");
+    // 上游断料按必扫失败处理：交 0 条的空台账会让人以为「这期没有料」（09-29 r57）
+    let blocked = blocked.or_else(|| {
+        sweeps
+            .iter()
+            .find_map(|s| pipeline::source_stalled(s, from))
+    });
 
     if let Some(why) = blocked {
         // 必扫失败不兜底：兜底会让「这一轮到底扫没扫全」没人能回答
