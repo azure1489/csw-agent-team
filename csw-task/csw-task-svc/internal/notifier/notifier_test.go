@@ -389,3 +389,20 @@ func TestReviewWaitScanPacesThenEscalates(t *testing.T) {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// TestIdleTextForHubOwnTask 中枢自己产出的任务（03 / 07）无活动提醒不给「心跳」这个出口；
+// 执行者的照旧可以心跳。09-29 r56 #594：主编每次被叫醒补一次心跳就收尾，03 挪了一个下午。
+func TestIdleTextForHubOwnTask(t *testing.T) {
+	r := roster{"editor": {OpenID: openEditor, Name: "主编"}, "collector": {OpenID: openCollector, Name: "情报收集员"}}
+	hub := domain.Outbox{EventType: domain.EvtTaskIdle, TargetRole: "editor",
+		PayloadJSON: `{"run_id":56,"task_id":594,"stage_name":"03-选题方案","role_code":"editor","hub_role":"editor","minutes":10}`}
+	text, _ := render(hub, r)
+	if strings.Contains(text, "心跳或产物：请提交、心跳") || !strings.Contains(text, "连续做到提交") {
+		t.Fatalf("中枢自产任务的提醒：%s", text)
+	}
+	worker := domain.Outbox{EventType: domain.EvtTaskIdle, TargetRole: "collector",
+		PayloadJSON: `{"run_id":56,"task_id":592,"stage_name":"01-情报逐条","role_code":"collector","hub_role":"editor","minutes":10}`}
+	if text, _ := render(worker, r); !strings.Contains(text, "请提交、心跳或报告失败") {
+		t.Fatalf("执行者的提醒照旧：%s", text)
+	}
+}

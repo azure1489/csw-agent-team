@@ -138,13 +138,19 @@ func render(o domain.Outbox, r roster) (string, bool) {
 	case domain.EvtAckEscalated:
 		line = fmt.Sprintf("【r%s·%s·任务#%s】%s 执行方（%s）派工 %s 分钟仍未接单，请改派、重开或取消", run, stage, task, to, p.s("assignee_role"), p.s("minutes"))
 	case domain.EvtTaskIdle:
-		line = fmt.Sprintf("【r%s·%s·任务#%s】%s 接单后 %s 分钟没有心跳或产物：请提交、心跳或报告失败", run, stage, task, to, p.s("minutes"))
+		if p.s("role_code") != "" && p.s("role_code") == hub {
+			// 中枢自己产出的（03 选题方案 / 07 整合稿）：心跳不算进展。给了「心跳」这个出口，
+			// 主编每次被叫醒就补一次心跳、看一张图就收尾，03 一步一步挪了一个下午（09-29 r56 #594）
+			line = fmt.Sprintf("【r%s·%s·任务#%s】%s 接单后 %s 分钟没有产物：请在这一轮里连续做到提交，只回心跳或进度不算进展；做不了就报告失败并写明原因", run, stage, task, to, p.s("minutes"))
+		} else {
+			line = fmt.Sprintf("【r%s·%s·任务#%s】%s 接单后 %s 分钟没有心跳或产物：请提交、心跳或报告失败", run, stage, task, to, p.s("minutes"))
+		}
 	case domain.EvtReviewWaiting:
 		head := fmt.Sprintf("【r%s·%s·v%s】", run, stage, ver)
 		if p.s("relayed") == "true" {
 			line = fmt.Sprintf("%s%s %s 已等 %s 分钟（第 %s 次提醒）：请跟进 Van 的决定并代录；交付物#%s", head, to, or(p.s("gate_name"), "Van 闸"), p.s("minutes"), p.s("reminded"), p.s("deliverable_id"))
 		} else {
-			line = fmt.Sprintf("%s%s 待审已 %s 分钟（%s，第 %s 次提醒）：请审核或退回交付物#%s；审不了请在群里说明", head, to, p.s("minutes"), or(p.s("gate_name"), "当前闸"), p.s("reminded"), p.s("deliverable_id"))
+			line = fmt.Sprintf("%s%s 待审已 %s 分钟（%s，第 %s 次提醒）：请在这一轮里给出结论——通过或退回交付物#%s；只回进度不算处理，审不了请写明原因", head, to, p.s("minutes"), or(p.s("gate_name"), "当前闸"), p.s("reminded"), p.s("deliverable_id"))
 		}
 	case domain.EvtReviewEscalated:
 		line = fmt.Sprintf("【r%s·%s·v%s】%s 待审已 %s 分钟（%s），已提醒审核方 %s 次仍无动作，请过问；交付物#%s", run, stage, ver, to, p.s("minutes"), or(p.s("gate_name"), "当前闸"), p.s("reminded"), p.s("deliverable_id"))
