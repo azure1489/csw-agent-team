@@ -823,7 +823,8 @@ async fn start_round(
     // 上一次返工算下来与已交的一模一样、没重交的：同一版退回意见不再反复重做
     //（否则每 30 秒一次轮询就重做一遍）。主编给了新意见（版本变了）才再做
     let unchanged_mark = format!("{UNCHANGED}@v{}", t.task.cur_version);
-    if in_place && prev.as_ref().is_some_and(|p| p.note == unchanged_mark) {
+    // 主编重开、重新派工的（redispatched）不算：那是新的一次派工，要接着做
+    if in_place && !redispatched && prev.as_ref().is_some_and(|p| p.note == unchanged_mark) {
         tracing::debug!(
             任务 = t.task.id,
             "上次返工与已交内容相同、未重交，等主编新意见"
@@ -1064,6 +1065,19 @@ async fn start_round(
                     "返工后内容与已交的一样，不重交：退回意见要的是维护者或主编那边的动作"
                 );
                 rounds::finish_round(conn, r.id, "awaiting_review", &unchanged_mark)?;
+                // **不能悄悄等**：主编以为工作台还在改，工作台在等主编的新意见，两边一起停住
+                //（09-29 r56 v8 退回后停了 11 个小时）。报失败并写明原因，引擎会 @ 主编；
+                // 主编重开再派工，工作台就接着在原轮次上返工
+                let why = format!(
+                    "按 v{v} 的退回意见在原轮次返工后，判断、选题与登记与已交的 v{v} 完全相同，\
+                     没有重交。意见要求的改动工作台没能自动完成，需主编定点编辑、换个说法点名条目键，\
+                     或重开后另给指示。本地轮次保留，重开派工后接着返工，不重新采集",
+                    v = t.task.cur_version
+                );
+                let idem = format!("fail-{}-v{}-unchanged", t.task.id, t.task.cur_version);
+                if let Err(e) = engine.fail(t.task.id, &why, &idem).await {
+                    tracing::error!(任务 = t.task.id, 原因 = %format!("{e:#}"), "返工无变化，连失败都没报出去");
+                }
                 return Ok(());
             }
             finish::submit(conn, &r, engine, t.task.id, &built).await?;

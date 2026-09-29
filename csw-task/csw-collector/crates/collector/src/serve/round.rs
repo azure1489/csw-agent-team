@@ -1070,11 +1070,19 @@ pub async fn rework_in_place(
     use csw_collector_core::types::Tier;
 
     let standard = work_standard(detail);
+    // 退回意见 = 意见 + 方向 + 位置。**点名的条目键常在方向与位置里**，只读意见就漏
+    //（09-28 r56 v8：satisfyrunning-b499a6、asimocrafts-8b3c65 写在位置里）
     let review = detail
         .latest_review
         .as_ref()
-        .and_then(|r| r.get("comment").and_then(|c| c.as_str()))
-        .unwrap_or("")
+        .map(|r| {
+            ["comment", "return_direction", "return_location"]
+                .iter()
+                .filter_map(|k| r.get(*k).and_then(|c| c.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
         .to_lowercase();
 
     // 一、读回
@@ -1133,7 +1141,41 @@ pub async fn rework_in_place(
         .map(|j| j.candidate_key.clone())
         .collect();
     let named = focus.len();
+    // 同类误用：以「同一事实无增量」判了不推荐，命中里却没有一条是正式发布、已推草稿箱或 03 决定
+    //（只有上一轮台账、生成稿）。主编 v8：「其余同类仅检查同类误用」「不整池重评」——
+    // 只查**这一轮登记过条目**的（主编看得见、点得着的那些），由代码找出来一并重判。
+    // 没登记过的同类判断不在这次返工里动，由新规则在下一期正式轮纠正
+    let registered = register::item_of_with_history(conn, prev.id, &topics);
+    let misuse: Vec<String> = judgements
+        .iter()
+        .filter(|j| {
+            registered.contains_key(&j.candidate_key)
+                && j.tier == Tier::NotRecommend
+                && j.comparison.verdict
+                    == csw_collector_core::types::ComparisonVerdict::SameFactNoGain
+                && !j.comparison.hits.iter().any(|h| {
+                    matches!(
+                        h.state,
+                        csw_collector_core::types::HitState::Published
+                            | csw_collector_core::types::HitState::Draft
+                            | csw_collector_core::types::HitState::Decision
+                    )
+                })
+        })
+        .map(|j| j.candidate_key.clone())
+        .collect();
+    for k in &misuse {
+        if !focus.contains(k) {
+            focus.push(k.clone());
+        }
+    }
+    let must = focus.len();
+    // 推荐 / 备选的代表帖只在第一次返工时补进来重核；点名的与同类误用的每次都重判
+    let first = prev.target_version <= 2;
     for tier in [Tier::Recommend, Tier::Alternate] {
+        if !first {
+            break;
+        }
         for t in topics.iter().filter(|t| t.tier == Some(tier)) {
             if focus.len() >= REWORK_FOCUS.max(named) {
                 break;
@@ -1143,17 +1185,14 @@ pub async fn rework_in_place(
             }
         }
     }
-    focus.truncate(REWORK_FOCUS_MAX);
-    // **只在第一次返工时重新深核、重判**。之后的退回是导出、登记不一致的问题，
-    // 主编明说「禁止另一次模型重评」「不再整池重评」（09-28 r56 #615）
-    let rejudge = prev.target_version <= 2;
-    if !rejudge {
-        focus.clear();
-    }
+    focus.truncate(REWORK_FOCUS_MAX.max(must));
+    // 之后的退回不整池重评（主编「禁止另一次模型重评」「不再整池重评」，09-28 r56 #615），
+    // 但**点名的条目要定点重判**——否则同一版意见永远改不动，一轮轮退回成死循环（09-29 r56 v8）
     tracing::info!(
         点名 = named,
+        同类误用 = misuse.len(),
         共 = focus.len(),
-        重判 = rejudge,
+        第一次返工 = first,
         "返工：要重核重判的"
     );
 

@@ -208,7 +208,9 @@ pub fn assemble(retrieved: &Retrieved, prior: &[PriorLedgerItem]) -> Vec<Materia
             ref_id: p.candidate_key.clone(),
             title: p.title.clone(),
             date: parse_ts(&p.decided_at),
-            source: "上一轮台账".into(),
+            // 写明它是什么：模型曾把它当「已被报道」（09-28 r56 v8 退回）
+            source: "上一轮台账：工作台自己之前的判断，不是发布、不是否决，不能作为重复报道的依据"
+                .into(),
             quote: p.note.clone(),
             publish_state: p.tier.clone(),
             body_excerpt: String::new(),

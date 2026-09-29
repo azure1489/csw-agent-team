@@ -192,24 +192,32 @@ pub fn apply(j: &mut Judgement, ctx: &Ctx<'_>) -> Applied {
         }
     }
 
-    // R5「同一事实无增量」要有站得住的命中：命中的材料得在我们给的材料里、不是生成稿、正文取得到。
-    // 否则只能是查重未确认——生成稿不是近期已发的证据，只看到标题也核不了事实
+    // R5「同一事实无增量」要有站得住的命中：命中的材料得在我们给的材料里、不是生成稿、
+    // **不是上一轮台账**、正文取得到。否则只能是查重未确认——生成稿不是近期已发的证据，
+    // 上一轮台账是工作台自己之前的判断（待核也在里面），既不是发布也不是否决
+    //（09-28 r56 v8 退回：SATISFY、asimocrafts 拿历史待核台账当「已被重复报道」淘汰）
     if j.comparison.verdict == ComparisonVerdict::SameFactNoGain {
         let solid = j.comparison.hits.iter().any(|h| {
             numbered.iter().any(|(n, m)| {
-                n == h.ref_no.trim() && m.kind != MaterialKind::GeneratedPost && m.body_available
+                n == h.ref_no.trim()
+                    && !matches!(
+                        m.kind,
+                        MaterialKind::GeneratedPost | MaterialKind::PriorLedger
+                    )
+                    && m.body_available
             })
         });
         if !solid {
             j.comparison.verdict = ComparisonVerdict::Unconfirmed;
             out.notes.push(format!(
-                "{NOTE}判「同一事实无增量」，但命中的只有生成稿、正文不可得的材料或不存在的编号，改为查重未确认"
+                "{NOTE}判「同一事实无增量」，但命中的只有生成稿、上一轮台账、正文不可得的材料或不存在的编号，改为查重未确认"
             ));
             if j.tier == Tier::NotRecommend {
                 if ctx.allow_rejudge {
                     retry.push(
-                        "你以「同一事实无增量」判了不推荐，但依据只有生成稿、正文不可得的材料或不存在的编号。\
-                         生成稿不是近期已发的证据；请只凭正文取得到的正式发布 / 已推草稿箱 / 03 决定查重，\
+                        "你以「同一事实无增量」判了不推荐，但依据只有生成稿、上一轮台账、正文不可得的材料或不存在的编号。\
+                         生成稿不是近期已发的证据，上一轮台账是工作台自己之前的判断、不是发布也不是否决；\
+                         请只凭正文取得到的正式发布 / 已推草稿箱 / 03 决定查重，\
                          核不了就填 unconfirmed，并按内容本身的价值重新定档。"
                             .into(),
                     );
@@ -741,6 +749,34 @@ mod tests {
             },
         );
         assert!(a.rejudge.is_none(), "{a:?}");
+    }
+
+    #[test]
+    fn 上一轮台账不能当已被报道的证据() {
+        // 09-28 r56 v8：SATISFY、asimocrafts 拿工作台自己之前的待核台账当「已被重复报道」淘汰
+        let ms = [material(
+            MaterialKind::PriorLedger,
+            "SATISFY女装｜水瓶与杆具",
+            "",
+            true,
+        )];
+        let mut j = Judgement::fixture("k", Tier::NotRecommend);
+        j.comparison.verdict = ComparisonVerdict::SameFactNoGain;
+        j.comparison.hits = vec![ComparisonHit {
+            ref_no: "M1".into(),
+            ..Default::default()
+        }];
+        let a = apply(&mut j, &ctx(&ms, &[], true));
+        assert_eq!(j.comparison.verdict, ComparisonVerdict::Unconfirmed);
+        assert!(a.rejudge.is_some(), "能重判就退回重判：{a:?}");
+        let mut j = Judgement::fixture("k", Tier::NotRecommend);
+        j.comparison.verdict = ComparisonVerdict::SameFactNoGain;
+        j.comparison.hits = vec![ComparisonHit {
+            ref_no: "M1".into(),
+            ..Default::default()
+        }];
+        apply(&mut j, &ctx(&ms, &[], false));
+        assert_eq!(j.tier, Tier::PendingCheck, "不能重判就交人核，不留在不推荐");
     }
 
     #[test]
