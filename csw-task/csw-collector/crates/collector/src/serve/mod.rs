@@ -1090,7 +1090,16 @@ async fn start_round(
             let pinned: Vec<String> = if calib.is_empty() {
                 round::named_in_review(&review_text, &judgements, &fin.by_key)
             } else {
-                calib.iter().map(|c| c.key.clone()).collect()
+                // 继续在前，再备选、待核、停止（主编「首页恢复四继续，另加上述四条」）
+                let rank = |t: csw_collector_core::types::Tier| match t {
+                    csw_collector_core::types::Tier::Recommend => 0,
+                    csw_collector_core::types::Tier::Alternate => 1,
+                    csw_collector_core::types::Tier::PendingCheck => 2,
+                    csw_collector_core::types::Tier::NotRecommend => 3,
+                };
+                let mut v: Vec<&calibration::Calibration> = calib.iter().collect();
+                v.sort_by_key(|c| rank(c.tier));
+                v.into_iter().map(|c| c.key.clone()).collect()
             };
             let calib_labels: HashMap<String, String> = calib
                 .iter()

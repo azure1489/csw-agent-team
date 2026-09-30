@@ -198,6 +198,11 @@ enum Command {
         #[arg(long)]
         round: i64,
     },
+    /// 打印某个任务当前认到的主编校准（只读：读退回意见与引擎条目流转，不改任何东西）
+    Calibration {
+        #[arg(long)]
+        task: i64,
+    },
     /// 补采一段窗口并留证据（只取元数据，不判断、不写引擎、不提交）
     PatchWindow {
         #[arg(long)]
@@ -550,6 +555,26 @@ async fn main() -> anyhow::Result<()> {
                 csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
             let secrets = csw_collector_core::Secrets::from_env();
             backfill::run(&cfg, &secrets, round).await
+        }
+        Command::Calibration { task } => {
+            let cfg =
+                csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
+            let secrets = csw_collector_core::Secrets::from_env();
+            let engine = csw_collector_engineapi::client::EngineClient::new(
+                &cfg.engine.base_url,
+                &secrets.engine_token,
+                std::time::Duration::from_secs(30),
+            )?;
+            let detail = engine.task_detail(task).await?;
+            let mut c = serve::calibration::from_reviews(&detail);
+            println!("退回意见里认到 {} 条", c.len());
+            let tr = engine.intake_trace(detail.task.run_id).await?;
+            serve::calibration::from_traces(&tr, "editor", &mut c);
+            println!("合上引擎里主编改的状态后 {} 条：", c.len());
+            for x in &c {
+                println!("  {} → {}（{}）", x.key, x.label(), x.source);
+            }
+            Ok(())
         }
         Command::PatchWindow { round, from, to } => {
             let cfg =
