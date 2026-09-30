@@ -13,6 +13,7 @@
 //! 不接飞书、不接 webhook。引擎是唯一真相，派单从 `GET /me/tasks` 来。
 //! 群消息只是提示。
 
+pub mod calibration;
 pub mod finish;
 pub mod http;
 pub mod item;
@@ -31,6 +32,7 @@ use anyhow::{Context, Result};
 use csw_collector_core::rounds;
 use csw_collector_core::{Config, Secrets};
 use csw_collector_engineapi::client::EngineClient;
+use std::collections::HashMap;
 
 use tasks::Action;
 
@@ -842,9 +844,19 @@ async fn start_round(
         return Ok(());
     }
     // 上一次交出去的内容指纹（记在轮次备注里）：返工算完一样就不重交
-    let last_state: Option<String> = prev
-        .as_ref()
-        .and_then(|p| p.note.strip_prefix(SUBMITTED).map(str::to_string));
+    // 上次交出去的内容指纹：先读专门的一列（不会被「未重交」标记盖掉），老轮次退回读备注
+    //（09-30 r58：指纹只在备注里，被盖掉后主编重开再派时把同样的包又交了 8 遍）
+    let last_state: Option<String> = prev.as_ref().and_then(|p| {
+        conn.query_row(
+            "SELECT submitted_state FROM rounds WHERE id = ?1",
+            [p.id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .or_else(|| p.note.strip_prefix(SUBMITTED).map(str::to_string))
+    });
     let (r, is_new) = if let Some(p) = prev.filter(|_| in_place) {
         conn.execute(
             "UPDATE rounds SET status = 'running', ended_at = NULL, target_version = ?2,
@@ -975,11 +987,20 @@ async fn start_round(
         };
     }
 
+    // 主编校准：历次退回意见写明的去向 + 引擎里主编亲手改的条目状态（后者优先）。
+    // 返工套用它；首页首批卡按它排
+    let mut calib = calibration::from_reviews(&detail);
+    if in_place {
+        match engine.intake_trace(t.task.run_id).await {
+            Ok(tr) => calibration::from_traces(&tr, "editor", &mut calib),
+            Err(e) => tracing::warn!("读引擎条目流转失败，只按退回意见校准：{e:#}"),
+        }
+    }
     let ran = if in_place {
         let end = engine_window
             .as_ref()
             .and_then(|(_, to)| parse_engine_ts(to));
-        round::rework_in_place(conn, &r, &detail, cfg, svc, end).await
+        round::rework_in_place(conn, &r, &detail, cfg, svc, end, &calib).await
     } else {
         round::run_intake(conn, &r, &detail, cfg, svc).await
     };
@@ -1065,7 +1086,21 @@ async fn start_round(
                         .join("\n")
                 })
                 .unwrap_or_default();
-            let pinned = round::named_in_review(&review_text, &judgements, &fin.by_key);
+            // 有主编校准就按校准的条目排卡（主编「八键不换」）；没有才按点名找
+            let pinned: Vec<String> = if calib.is_empty() {
+                round::named_in_review(&review_text, &judgements, &fin.by_key)
+            } else {
+                calib.iter().map(|c| c.key.clone()).collect()
+            };
+            let calib_labels: HashMap<String, String> = calib
+                .iter()
+                .map(|c| {
+                    (
+                        c.key.clone(),
+                        format!("主编校准：{}（{}）", c.label(), c.source),
+                    )
+                })
+                .collect();
             // 返工补采可能改了窗口止点：页头时间、台账窗口按库里的最新值（09-30 r58 v2 还写着 06:00:12）
             let r = rounds::get(conn, r.id)?.unwrap_or(r);
             let built = finish::build_deliverable(
@@ -1080,6 +1115,7 @@ async fn start_round(
                 &gaps,
                 Some((&reconciled, &lines)),
                 &pinned,
+                &calib_labels,
             )?;
             // 这一版的内容指纹：判断与选题（不含版本号）。返工算完与已交的一样就不重交——
             // 主编明说「修复前不重复整包重交相同缺陷」（09-28 r56 v4 退回后 30 秒交了一样的 v5）
@@ -1121,13 +1157,22 @@ async fn start_round(
                      或重开后另给指示。本地轮次保留，重开派工后接着返工，不重新采集",
                     v = t.task.cur_version
                 );
-                let idem = format!("fail-{}-v{}-unchanged", t.task.id, t.task.cur_version);
+                let idem = format!(
+                    "fail-{}-v{}-unchanged-{}",
+                    t.task.id,
+                    t.task.cur_version,
+                    t.task.dispatched_at.replace([':', '-', '.'], "")
+                );
                 if let Err(e) = engine.fail(t.task.id, &why, &idem).await {
                     tracing::error!(任务 = t.task.id, 原因 = %format!("{e:#}"), "返工无变化，连失败都没报出去");
                 }
                 return Ok(());
             }
             finish::submit(conn, &r, engine, t.task.id, &built).await?;
+            conn.execute(
+                "UPDATE rounds SET submitted_state = ?2 WHERE id = ?1",
+                rusqlite::params![r.id, state],
+            )?;
 
             rounds::finish_round(
                 conn,
@@ -1199,7 +1244,7 @@ const SUBMITTED: &str = "已交状态:";
 const UNCHANGED: &str = "内容与上一版相同，未重交";
 /// 交付物 / 登记导出格式的修订号。**改了导出（字段、登记口径、包内文件）就改它**，
 /// 否则返工后内容指纹一样，修好的导出不会重交
-const EXPORT_REV: &str = "2026-09-30b";
+const EXPORT_REV: &str = "2026-09-30c";
 
 /// 引擎窗口的时刻写法是 `2026-09-25T07:00+08:00`（没有秒），先按 RFC 3339 读，读不了补上秒再读。
 fn parse_engine_ts(s: &str) -> Option<jiff::Timestamp> {

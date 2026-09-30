@@ -19,10 +19,14 @@ const MIGRATIONS: &[(u32, &str)] = &[
     (4, include_str!("../migrations/0004_feedback.sql")),
     (5, include_str!("../migrations/0005_window_trace.sql")),
     (6, include_str!("../migrations/0006_judge_checkpoints.sql")),
+    (
+        7,
+        include_str!("../migrations/0007_submitted_state_patches.sql"),
+    ),
 ];
 
 /// 当前 schema 版本。与 `MIGRATIONS` 最后一项对齐。
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 pub fn open(path: &Path) -> Result<Connection> {
     if let Some(dir) = path.parent() {

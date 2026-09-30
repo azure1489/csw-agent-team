@@ -1092,6 +1092,7 @@ pub async fn rework_in_place(
     cfg: &Config,
     svc: &super::services::Services,
     engine_end: Option<Timestamp>,
+    calibrations: &[super::calibration::Calibration],
 ) -> Result<(RoundCounts, Finished)> {
     use csw_collector_core::types::Tier;
 
@@ -1169,6 +1170,7 @@ pub async fn rework_in_place(
             true,
         )
         .await?;
+        record_patch(conn, prev.id, &slice, &j.sweeps);
         // 留痕：原来的全留着（补采那一趟的宽取会整份覆盖），只把这一段新入窗的接在后面
         let known: HashSet<String> = kept_trace.iter().map(|t| t.source_id.clone()).collect();
         let slice_trace =
@@ -1214,7 +1216,17 @@ pub async fn rework_in_place(
     }
 
     // 三、挑要改的：退回意见点名的条目优先，再补推荐 / 备选选题的代表帖
+    // 二·校准：主编定过去向的条目直接采用，不交给模型重判（09-30 r58：连退十几版的根因）
+    let calibrated: HashSet<String> = apply_calibrations(
+        conn,
+        prev.id,
+        cfg,
+        calibrations,
+        &mut judgements,
+        &mut topics,
+    );
     let mut focus: Vec<String> = named_in_review(&review_raw, &judgements, &by_key);
+    focus.retain(|k| !calibrated.contains(k));
     let norm = |s: &str| -> String {
         s.chars()
             .filter(|c| c.is_alphanumeric())
@@ -1395,6 +1407,97 @@ pub async fn rework_in_place(
             deep_gaps: HashMap::new(),
         },
     ))
+}
+
+/// 套用主编校准：改档、待核补一条交主编的决定级缺口、单独成一个选题（登记的条目键就是它自己），
+/// 留痕写明来源。返回套用了的条目键。
+fn apply_calibrations(
+    conn: &Connection,
+    round_id: i64,
+    cfg: &Config,
+    calibrations: &[super::calibration::Calibration],
+    judgements: &mut [Judgement],
+    topics: &mut Vec<csw_collector_core::types::Topic>,
+) -> HashSet<String> {
+    use csw_collector_core::types::{Gap, GapLevel, GapOwner, Tier, Topic};
+    let mut done = HashSet::new();
+    for c in calibrations {
+        let Some(j) = judgements.iter_mut().find(|j| j.candidate_key == c.key) else {
+            continue;
+        };
+        let before = j.tier;
+        j.tier = c.tier;
+        if c.tier == Tier::PendingCheck && !j.has_decision_gap() {
+            j.gaps.push(Gap {
+                level: GapLevel::Decision,
+                what: format!("主编校准为待核（{}），核心证据待补", c.source),
+                owner: GapOwner::Editor,
+                tried: String::new(),
+                next: "按主编退回意见补证后再定档".into(),
+            });
+        }
+        let flags = vec![format!(
+            "【主编校准】{}（{}；工作台原判 {before:?}，不交模型重判）",
+            c.label(),
+            c.source
+        )];
+        if let Err(e) =
+            ledger::put_judgement(conn, round_id, j, &flags, &cfg.model.model, RUBRIC_VERSION)
+        {
+            tracing::warn!(候选 = %c.key, "主编校准没落库：{e:#}");
+        }
+        // 单独成一个选题：条目键就是它，登记状态跟着主编走，不被组里别的帖子带偏
+        let solo = topics
+            .iter()
+            .any(|t| t.topic_key == c.key && t.members.len() == 1);
+        if !solo {
+            for t in topics.iter_mut() {
+                t.members.retain(|m| m != &c.key);
+                if t.primary_key == c.key {
+                    t.primary_key = t.members.first().cloned().unwrap_or_default();
+                    t.topic_key = t.primary_key.clone();
+                }
+            }
+            topics.retain(|t| !t.members.is_empty());
+            topics.push(Topic {
+                topic_key: c.key.clone(),
+                primary_key: c.key.clone(),
+                members: vec![c.key.clone()],
+                merge_note: "主编校准单列".into(),
+                tier: Some(c.tier),
+                headline: j.headline.clone(),
+                synthesis: Default::default(),
+            });
+        }
+        done.insert(c.key.clone());
+    }
+    if !done.is_empty() {
+        tracing::info!(条数 = done.len(), "返工：套用主编校准");
+    }
+    done
+}
+
+/// 记一次补采（主力窗口采集器那一路）。0 条也记：这就是「这一段扫过、没有新入库」的证据。
+pub fn record_patch(conn: &Connection, round_id: i64, slice: &Round, sweeps: &[SweepCount]) {
+    let Some(sw) = sweeps.iter().find(|s| s.sweep_key == "csw-window") else {
+        return;
+    };
+    let p = csw_collector_core::window_trace::Patch {
+        window_from: slice.window_start.clone(),
+        window_to: slice.window_end.clone(),
+        fetched_at: if sw.ended_at.is_empty() {
+            Timestamp::now().to_string()
+        } else {
+            sw.ended_at.clone()
+        },
+        found: sw.found,
+        fetched_unique: sw.fetched_unique,
+        in_window: sw.in_window,
+        query: sw.query.clone(),
+    };
+    if let Err(e) = csw_collector_core::window_trace::put_patch(conn, round_id, &p) {
+        tracing::warn!("补采记录没存下：{e:#}");
+    }
 }
 
 /// 退回意见点名了哪些条目。
@@ -2238,6 +2341,75 @@ pub fn save_window_trace(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 主编校准直接改档并单独成题() {
+        use crate::serve::calibration::Calibration;
+        use csw_collector_core::types::{Tier, Topic};
+        let conn = csw_collector_core::store::open_in_memory().unwrap();
+        let (r, _) = rounds::open_round(
+            &conn,
+            &rounds::NewRound {
+                kind: csw_collector_core::types::RoundKind::Task,
+                trigger: csw_collector_core::types::RoundTrigger::Dispatch,
+                run_id: Some(58),
+                task_id: Some(614),
+                stage_code: Some("intake".into()),
+                target_version: 1,
+                parent_round_id: None,
+                window_start: "A".into(),
+                window_end: "B".into(),
+                plan_version: 1,
+                rubric_version: "v".into(),
+                kb_snapshot: "k".into(),
+                instructions_hash: String::new(),
+            },
+        )
+        .unwrap();
+        let mut js = vec![
+            Judgement::fixture("coleman-e9591e", Tier::NotRecommend),
+            Judgement::fixture("coleman-aaaaaa", Tier::Recommend),
+            Judgement::fixture("drlv-cf21b4", Tier::Recommend),
+        ];
+        let mut topics = vec![Topic {
+            topic_key: "coleman-aaaaaa".into(),
+            primary_key: "coleman-aaaaaa".into(),
+            members: vec!["coleman-aaaaaa".into(), "coleman-e9591e".into()],
+            merge_note: String::new(),
+            tier: Some(Tier::Recommend),
+            headline: String::new(),
+            synthesis: Default::default(),
+        }];
+        let cal = [
+            Calibration {
+                key: "coleman-e9591e".into(),
+                tier: Tier::Recommend,
+                source: "v6 退回意见".into(),
+            },
+            Calibration {
+                key: "drlv-cf21b4".into(),
+                tier: Tier::PendingCheck,
+                source: "引擎条目".into(),
+            },
+        ];
+        let cfg = Config::default();
+        let done = apply_calibrations(&conn, r.id, &cfg, &cal, &mut js, &mut topics);
+        assert_eq!(done.len(), 2);
+        assert_eq!(js[0].tier, Tier::Recommend, "主编说继续，模型的不推荐不算");
+        assert_eq!(js[2].tier, Tier::PendingCheck);
+        assert!(js[2].has_decision_gap(), "待核要有交主编的决定级缺口");
+        // 从合并的选题里拆出来单列，条目键就是它自己
+        assert!(
+            topics
+                .iter()
+                .any(|t| t.topic_key == "coleman-e9591e" && t.members == ["coleman-e9591e"])
+        );
+        assert!(
+            topics
+                .iter()
+                .any(|t| t.topic_key == "coleman-aaaaaa" && t.members == ["coleman-aaaaaa"])
+        );
+    }
 
     #[test]
     fn 点名认品牌词串与产品词不误中技术词() {

@@ -198,6 +198,17 @@ enum Command {
         #[arg(long)]
         round: i64,
     },
+    /// 补采一段窗口并留证据（只取元数据，不判断、不写引擎、不提交）
+    PatchWindow {
+        #[arg(long)]
+        round: i64,
+        /// 起点（UTC，RFC3339）
+        #[arg(long)]
+        from: String,
+        /// 止点（UTC，RFC3339）
+        #[arg(long)]
+        to: String,
+    },
     /// 导出契约 JSON Schema（阶段 1 的契约冻结产物）
     Schema {
         /// 写到哪；不给就打到标准输出
@@ -539,6 +550,12 @@ async fn main() -> anyhow::Result<()> {
                 csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
             let secrets = csw_collector_core::Secrets::from_env();
             backfill::run(&cfg, &secrets, round).await
+        }
+        Command::PatchWindow { round, from, to } => {
+            let cfg =
+                csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
+            let secrets = csw_collector_core::Secrets::from_env();
+            backfill::patch(&cfg, &secrets, round, &from, &to).await
         }
         Command::Schema { out } => schema::run(out.as_deref()),
         Command::AuthProbe {

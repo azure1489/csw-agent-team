@@ -529,6 +529,7 @@ pub fn build_deliverable(
     extra_gaps: &[String],
     reconciled: Option<(&serde_json::Value, &[String])>,
     pinned: &[String],
+    calib_labels: &HashMap<String, String>,
 ) -> Result<pack::Built> {
     let step = rounds::begin_step(conn, round.id, StepCode::Build, &round.instructions_hash)?;
     let lookup = |k: &str| by_key.get(k).cloned();
@@ -561,8 +562,26 @@ pub fn build_deliverable(
             "\n\n> 以上档位是工作台初判，未经主编首批校准，也不是 Van 采用；推荐 / 备选的总清单只作附件核对用。",
         );
     }
+    // 窗口行后写补采记录：补过的一段扫了多少、窗口内多少，0 条照写（不是只改止点）
+    let patches = csw_collector_core::window_trace::patches_of(conn, round.id).unwrap_or_default();
+    if !patches.is_empty()
+        && let Some(i) = body.find("窗口（按首次入库时间")
+        && let Some(end) = body[i..].find('\n')
+    {
+        let lines: Vec<String> = patches
+            .iter()
+            .map(|p| {
+                format!(
+                    "> 补采 {} ~ {}：{} 补采，接口按发布时间宽取 {} 条，按首次入库收口后窗口内 {} 条（见 trace/window_summary.json「补采记录」）",
+                    p.window_from, p.window_to, p.fetched_at, p.found, p.in_window
+                )
+            })
+            .collect();
+        body.insert_str(i + end, &format!("\n\n{}", lines.join("\n>\n")));
+    }
     // 首页先放 4–8 张独立首批卡（点名的优先），其余清单在后（09-30 r58 退回）
-    let (cards, card_keys) = first_cards(conn, cfg, judgements, topics, by_key, pinned);
+    let (cards, card_keys) =
+        first_cards(conn, cfg, judgements, topics, by_key, pinned, calib_labels);
     body = format!("{cards}{body}");
     // 口径冲突单独说明，不混进红灯
     if let Some((_, lines)) = reconciled
@@ -890,7 +909,7 @@ pub async fn reconcile(
     let count = |st: &str| want_items.values().filter(|(s, _)| s == st).count();
     let consistent = item_diff.is_empty() && j_diff.is_empty();
     let mut lines = vec![format!(
-        "登记条目：采用 {}、待核 {}、已撤 {}（本轮历次登记的最终状态）",
+        "工作台登记：shortlisted {}（只是登记，不等于成熟或 Van 采用）、待核 {}、已撤 {}（本轮历次登记的最终状态）",
         count("shortlisted"),
         count("pending_check"),
         count("dropped")
@@ -1043,7 +1062,7 @@ fn registration_section(
     }
     fn status_cn(s: &str) -> &str {
         match s {
-            "shortlisted" => "采用",
+            "shortlisted" => "shortlisted（登记，非采用）",
             "pending_check" => "待核",
             "dropped" => "已撤",
             other => other,
@@ -1051,7 +1070,7 @@ fn registration_section(
     }
     let count = |st: &str| items.values().filter(|(s, _)| s == st).count();
     let mut out = format!(
-        "## 登记条目最终归属（{} 个：采用 {}、待核 {}、已撤 {}）\n\n\
+        "## 登记条目最终归属（{} 个：shortlisted {}、待核 {}、已撤 {}；shortlisted 是工作台登记，不等于采用）\n\n\
          本轮历次登记、每个条目取最后一次的状态，与引擎 `runs/{{id}}/items` 逐键相等（见 `trace/engine_reconcile.json`）。\
          一个条目名下有多帖的，是同产品或同事件合成的一个选题，逐帖列出。\n\n\
          | 条目键 | 最终状态 | 名下贴文（档位） |\n|---|---|---|\n",
@@ -1090,6 +1109,7 @@ fn first_cards(
     topics: &[csw_collector_core::types::Topic],
     by_key: &HashMap<String, Candidate>,
     pinned: &[String],
+    calib_labels: &HashMap<String, String>,
 ) -> (String, Vec<String>) {
     const MAX: usize = 8;
     let by_j: HashMap<&str, &Judgement> = judgements
@@ -1140,10 +1160,10 @@ fn first_cards(
         s.push_str(&format!(
             "- 条目 `{k}` ｜档位：{}{}\n",
             intake::tier_name(j.tier),
-            if pinned.contains(k) {
-                "（主编点名）"
-            } else {
-                ""
+            match calib_labels.get(k) {
+                Some(l) => format!("｜{l}；供 02 研究，不是 Van 采用"),
+                None if pinned.contains(k) => "（主编点名）".to_string(),
+                None => String::new(),
             }
         ));
         if let Some(c) = c {
@@ -1347,6 +1367,19 @@ fn window_ids(
         "留痕条数": rows.len(),
         "按去向": counts,
         "窗口内": in_window_keys.len(),
+        // 返工补采的记录：0 条也记，这是「这一段扫过」的证据（09-30 r58 退回：不能只改 window_to）
+        "补采记录": csw_collector_core::window_trace::patches_of(conn, round_id)
+            .unwrap_or_default()
+            .iter()
+            .map(|p| serde_json::json!({
+                "时段": format!("{} ~ {}", p.window_from, p.window_to),
+                "补采时间": p.fetched_at,
+                "接口返回": p.found,
+                "去重后": p.fetched_unique,
+                "窗口内": p.in_window,
+                "query": p.query,
+            }))
+            .collect::<Vec<_>>(),
         // 引擎自查按登记条目数；这里是逐帖数，两者口径不同
         "披露早于窗口（逐帖）": rows
             .iter()

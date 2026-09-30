@@ -88,6 +88,48 @@ pub fn of_round(conn: &Connection, round_id: i64) -> Result<Vec<TraceRow>> {
     Ok(rows)
 }
 
+/// 一次补采：返工时补窗口缺的那一段。0 条也记。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Patch {
+    pub window_from: String,
+    pub window_to: String,
+    pub fetched_at: String,
+    pub found: i64,
+    pub fetched_unique: i64,
+    pub in_window: i64,
+    pub query: String,
+}
+
+pub fn put_patch(conn: &Connection, round_id: i64, p: &Patch) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO window_patches (round_id, window_from, window_to, fetched_at, found, fetched_unique, in_window, query)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        params![round_id, p.window_from, p.window_to, p.fetched_at, p.found, p.fetched_unique, p.in_window, p.query],
+    )?;
+    Ok(())
+}
+
+pub fn patches_of(conn: &Connection, round_id: i64) -> Result<Vec<Patch>> {
+    let mut st = conn.prepare(
+        "SELECT window_from, window_to, fetched_at, found, fetched_unique, in_window, query
+         FROM window_patches WHERE round_id = ?1 ORDER BY fetched_at",
+    )?;
+    let rows = st
+        .query_map(params![round_id], |r| {
+            Ok(Patch {
+                window_from: r.get(0)?,
+                window_to: r.get(1)?,
+                fetched_at: r.get(2)?,
+                found: r.get(3)?,
+                fetched_unique: r.get(4)?,
+                in_window: r.get(5)?,
+                query: r.get(6)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

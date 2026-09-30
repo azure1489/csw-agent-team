@@ -85,3 +85,58 @@ pub async fn run(cfg: &Config, secrets: &Secrets, round_id: i64) -> Result<()> {
     println!("已存为 source=refetch；不写引擎、不提交");
     Ok(())
 }
+
+/// 补采一段窗口并留证据：只取元数据、按同一规则复算，窗口内的接进留痕，记一条补采记录。
+/// 不下载图、不判断、不写引擎、不提交。窗口内有新条目时如实打出来，由返工去判。
+pub async fn patch(
+    cfg: &Config,
+    secrets: &Secrets,
+    round_id: i64,
+    from: &str,
+    to: &str,
+) -> Result<()> {
+    let conn = csw_collector_core::store::open(&cfg.db_path())
+        .with_context(|| format!("打开本地库 {}", cfg.db_path().display()))?;
+    let r = rounds::get(&conn, round_id)?.ok_or_else(|| anyhow::anyhow!("没有第 {round_id} 轮"))?;
+    let svc = Services::build(cfg, secrets, &conn).await?;
+    let f: Timestamp = from.parse().context("起点")?;
+    let t: Timestamp = to.parse().context("止点")?;
+    let window = CswWindow {
+        client: svc.csw.clone(),
+        lookback_days: csw_collector_harvest::csw::WINDOW_LOOKBACK_DAYS,
+    };
+    let collectors: Vec<&dyn CollectorDyn> = vec![&window];
+    let (_, sweeps, blocked) = pipeline::collect_all(&collectors, f, t, true).await;
+    if let Some(why) = blocked {
+        anyhow::bail!("补采失败：{why}");
+    }
+    let slice = csw_collector_core::rounds::Round {
+        window_start: from.to_string(),
+        window_end: to.to_string(),
+        ..r.clone()
+    };
+    crate::serve::round::record_patch(&conn, r.id, &slice, &sweeps);
+    let s = &sweeps[0];
+    let new: Vec<_> = s
+        .trace
+        .iter()
+        .filter(|x| x.outcome == TraceOutcome::InWindow)
+        .collect();
+    println!(
+        "第 {} 轮补采 {from} ~ {to}：{}；接口返回 {} 条，去重 {} 条，窗口内 {} 条",
+        r.id,
+        s.query,
+        s.found,
+        s.fetched_unique,
+        new.len()
+    );
+    for x in new {
+        println!(
+            "  窗口内：{} 首次入库 {}",
+            x.candidate_key,
+            x.ingested_at.as_deref().unwrap_or("缺")
+        );
+    }
+    println!("已记补采记录；不写引擎、不提交");
+    Ok(())
+}
