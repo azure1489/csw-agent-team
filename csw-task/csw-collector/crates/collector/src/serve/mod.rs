@@ -995,6 +995,8 @@ async fn start_round(
             }
 
             // 本包与引擎逐键对账（登记已发出）。结果进自检与 trace/engine_reconcile.json
+            // 自查里只因「披露早于窗口」没过的：口径冲突，写进自检并在首页说明，不当越界
+            let conflict = finish::window_rule_conflict(check.as_ref());
             let (mut reconciled, mut lines, mut consistent) =
                 finish::reconcile(conn, &r, engine, t.task.run_id, &judgements, &fin.topics).await;
             // 本包已撤、引擎仍挂着的：补发撤下，再对一次账
@@ -1032,6 +1034,20 @@ async fn start_round(
             }
 
             // 七、交付物；十、提交
+            lines.extend(conflict);
+            // 首批卡优先放退回意见点名的（09-30 r58：「主编优先核 ZANE ARTS YOMA 召回、HILLS FIELD BIG TOP」）
+            let review_text = detail
+                .latest_review
+                .as_ref()
+                .map(|v| {
+                    ["comment", "return_direction", "return_location"]
+                        .iter()
+                        .filter_map(|k| v.get(*k).and_then(|x| x.as_str()))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            let pinned = round::named_in_review(&review_text, &judgements, &fin.by_key);
             let built = finish::build_deliverable(
                 conn,
                 &r,
@@ -1043,6 +1059,7 @@ async fn start_round(
                 &fin.by_key,
                 &gaps,
                 Some((&reconciled, &lines)),
+                &pinned,
             )?;
             // 这一版的内容指纹：判断与选题（不含版本号）。返工算完与已交的一样就不重交——
             // 主编明说「修复前不重复整包重交相同缺陷」（09-28 r56 v4 退回后 30 秒交了一样的 v5）
@@ -1156,7 +1173,7 @@ const SUBMITTED: &str = "已交状态:";
 const UNCHANGED: &str = "内容与上一版相同，未重交";
 /// 交付物 / 登记导出格式的修订号。**改了导出（字段、登记口径、包内文件）就改它**，
 /// 否则返工后内容指纹一样，修好的导出不会重交
-const EXPORT_REV: &str = "2026-09-29b";
+const EXPORT_REV: &str = "2026-09-30a";
 
 /// 引擎窗口的时刻写法是 `2026-09-25T07:00+08:00`（没有秒），先按 RFC 3339 读，读不了补上秒再读。
 fn parse_engine_ts(s: &str) -> Option<jiff::Timestamp> {

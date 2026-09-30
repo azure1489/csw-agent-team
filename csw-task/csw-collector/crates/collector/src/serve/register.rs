@@ -482,6 +482,18 @@ fn all_bodies(conn: &Connection, round_id: i64, kind: &str) -> Vec<serde_json::V
         .unwrap_or_default()
 }
 
+/// 这一轮最后一次登记给引擎的采集轮，一行一条，字段与引擎接口同名同值。没登记过返回 None。
+pub fn registered_sweeps_jsonl(conn: &Connection, round_id: i64) -> Option<String> {
+    let body = last_body(conn, round_id, "sweeps")?;
+    let lines: Vec<String> = body
+        .get("sweeps")?
+        .as_array()?
+        .iter()
+        .filter_map(|v| serde_json::to_string(v).ok())
+        .collect();
+    (!lines.is_empty()).then(|| lines.join("\n") + "\n")
+}
+
 /// 这一轮上次上报的采集轮。返工不重新采集，采集轮沿用，只把窗口内条数按收口后的重算。
 pub fn previous_sweeps(conn: &Connection, round_id: i64) -> Vec<SweepCount> {
     let Some(body) = last_body(conn, round_id, "sweeps") else {

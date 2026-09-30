@@ -355,7 +355,7 @@ pub fn owner_name(o: GapOwner) -> &'static str {
     }
 }
 
-fn hit_state_name(h: HitState) -> &'static str {
+pub fn hit_state_name(h: HitState) -> &'static str {
     match h {
         HitState::Published => "正式发布",
         HitState::Draft => "已推草稿箱",
@@ -435,7 +435,7 @@ pub fn comparison_label(v: csw_collector_core::types::ComparisonVerdict) -> &'st
     comparison_name(v)
 }
 
-fn comparison_name(v: csw_collector_core::types::ComparisonVerdict) -> &'static str {
+pub fn comparison_name(v: csw_collector_core::types::ComparisonVerdict) -> &'static str {
     use csw_collector_core::types::ComparisonVerdict::*;
     match v {
         SameFactNoGain => "同一事实、无增量",

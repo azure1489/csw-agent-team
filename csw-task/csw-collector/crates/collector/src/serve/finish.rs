@@ -465,6 +465,8 @@ pub fn check_gaps(r: Option<&IntakeCheckResult>) -> Vec<String> {
             .checks
             .iter()
             .filter(|c| !c.ok && !c.skipped)
+            // 只因「披露早于窗口」没过的窗口合规是口径冲突，不是越界，另起一行说明（见 window_rule_conflict）
+            .filter(|c| !is_disclosure_conflict(c))
             .map(|c| {
                 format!(
                     "自查未过：{}{}",
@@ -480,6 +482,38 @@ pub fn check_gaps(r: Option<&IntakeCheckResult>) -> Vec<String> {
     }
 }
 
+/// 引擎自查「窗口合规」只因「原始披露时间早于窗口」没过：工作台按**首次入库时间**收口，
+/// 断料后补入库的贴文披露早、入库在窗口内，两种口径在这里冲突。
+fn is_disclosure_conflict(c: &csw_collector_engineapi::types::IntakeCheck) -> bool {
+    c.name.contains("窗口合规")
+        && c.detail.contains("（早于窗口）")
+        && !["（晚于窗口）", "抓取早于披露", "缺披露", "（缺"]
+            .iter()
+            .any(|x| c.detail.contains(x))
+}
+
+/// 规则口径冲突的说明（有才给）：写明两边各按什么、冲突的有几条、证据在哪。**不改日期、不撤条目**。
+/// 09-30 r58 主编退回：「对机器 153 越界标为规则口径冲突，逐项保留真实披露时间，不改日期、
+/// 不机械 drop；给出首次入库证据与所用 task 规则」。
+pub fn window_rule_conflict(r: Option<&IntakeCheckResult>) -> Option<String> {
+    let c = r?
+        .checks
+        .iter()
+        .find(|c| !c.ok && !c.skipped && is_disclosure_conflict(c))?;
+    let n = c
+        .detail
+        .split(|ch: char| !ch.is_ascii_digit())
+        .find(|x| !x.is_empty())
+        .unwrap_or("若干");
+    Some(format!(
+        "规则口径冲突（不是越界）：引擎自查「{}」按原始披露时间判 {n} 条早于窗口；工作台按作业口径\
+         「窗口按首次入库时间，左闭右开」收口，这 {n} 条的首次入库都在本期窗口内（上游断料期间发布、恢复后补入库）。\
+         逐条保留真实披露时间，不改日期、不撤条目；每条的 posted_at（披露）与 first_seen_at（首次入库）\
+         见 trace/window_ids.jsonl，口径冲突的逐条标了 disclosure_before_window。请主编定这一期按哪个口径",
+        c.name
+    ))
+}
+
 /// 第 7 步：做交付物。**zip 只构建一次**，字节先落盘再进 outbox。
 #[allow(clippy::too_many_arguments)]
 pub fn build_deliverable(
@@ -493,6 +527,7 @@ pub fn build_deliverable(
     by_key: &HashMap<String, Candidate>,
     extra_gaps: &[String],
     reconciled: Option<(&serde_json::Value, &[String])>,
+    pinned: &[String],
 ) -> Result<pack::Built> {
     let step = rounds::begin_step(conn, round.id, StepCode::Build, &round.instructions_hash)?;
     let lookup = |k: &str| by_key.get(k).cloned();
@@ -515,6 +550,24 @@ pub fn build_deliverable(
             Some(i) => format!("{}\n{reg}{}", &body[..i], &body[i..]),
             None => format!("{body}\n{reg}"),
         };
+    }
+    // 档位是工作台初判：写明不是成熟数、也不是 Van 采用（09-30 r58 退回：首页「76 推荐 99 备选」措辞）
+    if let Some(i) = body.find("共 ")
+        && let Some(end) = body[i..].find('\n')
+    {
+        body.insert_str(
+            i + end,
+            "\n\n> 以上档位是工作台初判，未经主编首批校准，也不是 Van 采用；推荐 / 备选的总清单只作附件核对用。",
+        );
+    }
+    // 首页先放 4–8 张独立首批卡（点名的优先），其余清单在后（09-30 r58 退回）
+    let (cards, card_keys) = first_cards(conn, cfg, judgements, topics, by_key, pinned);
+    body = format!("{cards}{body}");
+    // 口径冲突单独说明，不混进红灯
+    if let Some((_, lines)) = reconciled
+        && let Some(c) = lines.iter().find(|l| l.starts_with("规则口径冲突"))
+    {
+        body = format!("> **{c}**\n\n{body}");
     }
     if !extra_gaps.is_empty() {
         // 红灯写在最前面：藏在末尾等于没写
@@ -550,7 +603,9 @@ pub fn build_deliverable(
     let mut image_index: Vec<(String, Vec<String>)> = Vec::new();
     for j in judgements {
         let deep = j.gaps.iter().any(|g| g.tried.contains("深核"));
-        let all = j.tier == Tier::Recommend || (j.tier == Tier::PendingCheck && deep);
+        let all = j.tier == Tier::Recommend
+            || (j.tier == Tier::PendingCheck && deep)
+            || card_keys.contains(&j.candidate_key);
         if all {
             let ps = all_previews(conn, cfg, &j.candidate_key);
             if !ps.is_empty() {
@@ -608,7 +663,12 @@ pub fn build_deliverable(
         },
         body,
         &previews,
-        trace::to_jsonl(&sweep_lines)?,
+        // 与引擎接口同名同值：登记给引擎的那一份采集轮原样导出；还没登记过的退回旧格式
+        //（09-30 r58 退回：「trace/sweeps 须与接口同名含 platform/tool/reviewed/unreviewed/registered」）
+        match crate::serve::register::registered_sweeps_jsonl(conn, round.id) {
+            Some(s) => s,
+            None => trace::to_jsonl(&sweep_lines)?,
+        },
         trace::items_jsonl(judgements, lookup)?,
     );
     // 逐条判断全文：六维依据、三句话、查重命中、分级缺口都在这里，主编要能直接复核
@@ -620,7 +680,15 @@ pub fn build_deliverable(
     entries.push(pack::Entry::text("trace/judgements.jsonl", jl));
     // 宽取的每一条落到哪儿、窗口内的每条判成什么登记成什么：主编要能从宽取的全部 ID
     // 按 first_seen_at 逐条复算到窗口内的那些（09-28 r56 退回：1431 → 128 只有两个数）
-    let (ids, summary) = window_ids(conn, round.id, judgements, topics, sweeps, by_key)?;
+    let (ids, summary) = window_ids(
+        conn,
+        round.id,
+        judgements,
+        topics,
+        sweeps,
+        by_key,
+        &round.window_start,
+    )?;
     entries.push(pack::Entry::text("trace/window_ids.jsonl", ids));
     entries.push(pack::Entry::text(
         "trace/window_summary.json",
@@ -675,7 +743,7 @@ fn self_checks(judgements: &[Judgement], extra_gaps: &[String]) -> Vec<String> {
     let mut v = vec![
         format!("窗口内 {} 条全部判过，无抽样、无 top K", judgements.len()),
         format!(
-            "四档：推荐 {}、备选 {}、待核 {}、不推荐 {}",
+            "四档（工作台初判，未经校准）：推荐 {}、备选 {}、待核 {}、不推荐 {}",
             n(Tier::Recommend),
             n(Tier::Alternate),
             n(Tier::PendingCheck),
@@ -1011,6 +1079,160 @@ fn registration_section(
     out
 }
 
+/// 首页的独立首批卡：点名的优先，再按推荐选题的代表帖补到 8 张；不足 4 张如实交实际数，不凑。
+/// 每张卡内联：完整原文、原始披露时间、首次入库、同帖图（至多 6 张）、真实查重依据、
+/// 能改变采用决定的缺口（09-30 r58 退回点名的卡片要素）。返回（正文, 上卡的条目键）。
+fn first_cards(
+    conn: &Connection,
+    cfg: &Config,
+    judgements: &[Judgement],
+    topics: &[csw_collector_core::types::Topic],
+    by_key: &HashMap<String, Candidate>,
+    pinned: &[String],
+) -> (String, Vec<String>) {
+    const MAX: usize = 8;
+    let by_j: HashMap<&str, &Judgement> = judgements
+        .iter()
+        .map(|j| (j.candidate_key.as_str(), j))
+        .collect();
+    let mut keys: Vec<String> = pinned
+        .iter()
+        .filter(|k| by_j.contains_key(k.as_str()))
+        .take(MAX)
+        .cloned()
+        .collect();
+    for t in topics.iter().filter(|t| t.tier == Some(Tier::Recommend)) {
+        if keys.len() >= MAX {
+            break;
+        }
+        let Some(j) = by_j.get(t.primary_key.as_str()) else {
+            continue;
+        };
+        if j.tier == Tier::Recommend && !j.has_decision_gap() && !keys.contains(&t.primary_key) {
+            keys.push(t.primary_key.clone());
+        }
+    }
+    if keys.is_empty() {
+        return (String::new(), keys);
+    }
+    let mut s = format!(
+        "# 首批卡（{} 张{}）\n\n主编点名的优先，其余按推荐选题的代表帖；档位是工作台初判，待主编首批校准。\n\n",
+        keys.len(),
+        if keys.len() < 4 {
+            "，不足 4 张，如实交实际数"
+        } else {
+            ""
+        }
+    );
+    for (n, k) in keys.iter().enumerate() {
+        let j = by_j[k.as_str()];
+        let c = by_key.get(k);
+        s.push_str(&format!(
+            "## 卡 {} ｜{}\n\n",
+            n + 1,
+            if j.headline.is_empty() {
+                k.as_str()
+            } else {
+                j.headline.as_str()
+            }
+        ));
+        s.push_str(&format!(
+            "- 条目 `{k}` ｜档位：{}{}\n",
+            intake::tier_name(j.tier),
+            if pinned.contains(k) {
+                "（主编点名）"
+            } else {
+                ""
+            }
+        ));
+        if let Some(c) = c {
+            s.push_str(&format!("- 原帖：@{} {}\n", c.account, c.url));
+            s.push_str(&format!(
+                "- 原始披露时间：{}\n- 首次入库（first_seen）：{}\n",
+                c.posted_at
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|| "缺".into()),
+                c.ingested_at
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|| "缺：未核，不以发布时间顶替".into())
+            ));
+        }
+        let imgs = all_previews(conn, cfg, k);
+        if imgs.is_empty() {
+            s.push_str("- 同帖图：本地没有落库的图\n");
+        } else {
+            s.push_str(&format!(
+                "- 同帖图（共 {} 张，列前 6 张）：\n\n",
+                imgs.len()
+            ));
+            for p in imgs.iter().take(6) {
+                s.push_str(&format!("  ![{0}](images/{0}.jpg)\n", p.candidate_key));
+            }
+            s.push('\n');
+        }
+        let t = &j.three_sentences;
+        s.push_str(&format!(
+            "- 是什么：{}\n- 为什么值得看：{}\n- 依据：{}\n",
+            t.what, t.why_worth, t.grounds
+        ));
+        let cmp = &j.comparison;
+        s.push_str(&format!("- 查重：{}", intake::comparison_name(cmp.verdict)));
+        if cmp.hits.is_empty() {
+            s.push_str("（没有命中）");
+        } else {
+            let hits: Vec<String> = cmp
+                .hits
+                .iter()
+                .map(|h| format!("《{}》{}", h.title, intake::hit_state_name(h.state)))
+                .collect();
+            s.push_str(&format!("：{}", hits.join("、")));
+        }
+        if !cmp.note.trim().is_empty() {
+            s.push_str(&format!("；{}", cmp.note.trim()));
+        }
+        s.push('\n');
+        let decision: Vec<String> = j
+            .gaps
+            .iter()
+            .filter(|g| g.level == csw_collector_core::types::GapLevel::Decision)
+            .map(|g| {
+                format!(
+                    "{}（{}；下一步：{}）",
+                    g.what,
+                    intake::owner_name(g.owner),
+                    if g.next.is_empty() {
+                        "—"
+                    } else {
+                        g.next.as_str()
+                    }
+                )
+            })
+            .collect();
+        s.push_str(&format!(
+            "- 能改变采用决定的缺口：{}\n",
+            if decision.is_empty() {
+                "无".to_string()
+            } else {
+                decision.join("；")
+            }
+        ));
+        if let Some(c) = c {
+            s.push_str(&format!(
+                "\n原文：\n\n> {}\n",
+                c.text.trim().replace('\n', "\n> ")
+            ));
+            if !c.translated.trim().is_empty() {
+                s.push_str(&format!(
+                    "\n译文：\n\n> {}\n",
+                    c.translated.trim().replace('\n', "\n> ")
+                ));
+            }
+        }
+        s.push_str("\n---\n\n");
+    }
+    (s, keys)
+}
+
 /// `trace/window_ids.jsonl` 与 `trace/window_summary.json`。
 ///
 /// 有宽取留痕的：宽取的每一条一行（接口返回顺序），带去向与原因；窗口内的再带档位与登记。
@@ -1023,6 +1245,7 @@ fn window_ids(
     topics: &[csw_collector_core::types::Topic],
     sweeps: &[SweepCount],
     by_key: &HashMap<String, Candidate>,
+    round_start: &str,
 ) -> Result<(String, serde_json::Value)> {
     use csw_collector_harvest::pipeline::TraceOutcome;
     let item_of = crate::serve::register::item_of_with_history(conn, round_id, topics);
@@ -1060,7 +1283,11 @@ fn window_ids(
             "account": r.account,
             "url": r.url,
             "first_seen_at": r.ingested_at,
+            "first_seen_source": if r.ingested_at.is_some() { "ingestedAt（csw 首次入库）" } else { "缺：未核，不以发布时间顶替" },
             "posted_at": r.posted_at,
+            // 窗口内、但披露早于窗口起点：按首次入库收口属于本期，按披露口径算越界——口径冲突，保留真实披露时间
+            "disclosure_before_window": r.outcome == "in_window"
+                && r.posted_at.as_deref().zip(Some(round_start)).is_some_and(|(p, s)| p < s),
             "media": r.media,
             "has_video": r.media.contains("视频"),
             // 去重按（平台, 来源 id）：同一条贴文不论从哪个采集器来都只算一次

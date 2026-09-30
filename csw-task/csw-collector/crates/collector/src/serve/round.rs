@@ -112,9 +112,12 @@ pub async fn harvest(
     // 宽取逐条留痕：失败也记，交付包里全部列出，主编能从宽取的全部 ID 复算到窗口内的
     save_window_trace(conn, round.id, &sweeps, "live");
     // 上游断料按必扫失败处理：交 0 条的空台账会让人以为「这期没有料」（09-29 r57）
+    // 窗口太短（返工补采缺的那一小段）时 0 条很正常，不据此判断料
+    let long_enough = (to - from).get_seconds() >= 6 * 3600;
     let blocked = blocked.or_else(|| {
         sweeps
             .iter()
+            .filter(|_| long_enough)
             .find_map(|s| pipeline::source_stalled(s, from, to))
     });
 
@@ -1095,11 +1098,12 @@ pub async fn rework_in_place(
                 .collect::<Vec<_>>()
                 .join("\n")
         })
-        .unwrap_or_default()
-        .to_lowercase();
+        .unwrap_or_default();
+    let review_raw = review.clone();
+    let review = review.to_lowercase();
 
     // 一、读回
-    let (mut judgements, mut topics, by_key) = load_round_state(conn, prev.id)?;
+    let (mut judgements, mut topics, mut by_key) = load_round_state(conn, prev.id)?;
     tracing::info!(
         轮次 = prev.id,
         判断 = judgements.len(),
@@ -1127,41 +1131,84 @@ pub async fn rework_in_place(
     }
     topics.retain(|t| !t.members.is_empty());
 
-    // 三、挑要改的：退回意见点名的账号优先，再补推荐 / 备选选题的代表帖
+    // 二·补：本期止点晚于这一轮当初的止点——开工时引擎止点还没到，按开工时刻收了口，
+    // 中间那一段入库的没扫到。**只补采、补判缺的那一段**，原来判过的一条不动
+    //（09-30 r58：06:00:12 开工、止点 07:00，主编退回「先解释 07:00 截止与 06:00:12 快照差异」）
+    let mut win_end = prev.window_end.clone();
+    if let Some(e) = end
+        && let Ok(w) = prev.window_end.parse::<Timestamp>()
+        && w < e
+    {
+        let slice = Round {
+            window_start: prev.window_end.clone(),
+            window_end: e.to_string(),
+            ..prev.clone()
+        };
+        tracing::info!(从 = %slice.window_start, 到 = %slice.window_end, "返工：补采窗口缺的那一段");
+        let kept_trace =
+            csw_collector_core::window_trace::of_round(conn, prev.id).unwrap_or_default();
+        let j = harvest_and_judge(
+            conn,
+            &slice,
+            cfg,
+            svc,
+            &standard,
+            Caches::default(),
+            None,
+            false,
+            true,
+        )
+        .await?;
+        // 留痕：原来的全留着（补采那一趟的宽取会整份覆盖），只把这一段新入窗的接在后面
+        let known: HashSet<String> = kept_trace.iter().map(|t| t.source_id.clone()).collect();
+        let slice_trace =
+            csw_collector_core::window_trace::of_round(conn, prev.id).unwrap_or_default();
+        let mut by_sweep: std::collections::BTreeMap<
+            String,
+            Vec<csw_collector_core::window_trace::TraceRow>,
+        > = Default::default();
+        for t in kept_trace {
+            by_sweep.entry(t.sweep_key.clone()).or_default().push(t);
+        }
+        for t in slice_trace
+            .into_iter()
+            .filter(|t| t.outcome == "in_window" && !known.contains(&t.source_id))
+        {
+            by_sweep.entry(t.sweep_key.clone()).or_default().push(t);
+        }
+        for (sweep, rows) in &by_sweep {
+            if let Err(e) = csw_collector_core::window_trace::put(conn, prev.id, sweep, rows) {
+                tracing::warn!("补采后留痕没合上：{e:#}");
+            }
+        }
+        let have: HashSet<String> = judgements.iter().map(|j| j.candidate_key.clone()).collect();
+        let added: Vec<Judgement> = j
+            .judgements
+            .into_iter()
+            .filter(|x| !have.contains(&x.candidate_key))
+            .collect();
+        tracing::info!(补判 = added.len(), "返工：补采那一段判完");
+        judgements.extend(added);
+        let have_topics: HashSet<String> = topics.iter().map(|t| t.topic_key.clone()).collect();
+        topics.extend(
+            j.topics
+                .into_iter()
+                .filter(|t| !have_topics.contains(&t.topic_key)),
+        );
+        by_key.extend(j.by_key);
+        conn.execute(
+            "UPDATE rounds SET window_end = ?2 WHERE id = ?1",
+            rusqlite::params![prev.id, e.to_string()],
+        )?;
+        win_end = e.to_string();
+    }
+
+    // 三、挑要改的：退回意见点名的条目优先，再补推荐 / 备选选题的代表帖
+    let mut focus: Vec<String> = named_in_review(&review_raw, &judgements, &by_key);
     let norm = |s: &str| -> String {
         s.chars()
             .filter(|c| c.is_alphanumeric())
             .flat_map(char::to_lowercase)
-            .collect()
-    };
-    // 退回意见里点名用的是品牌词（SATISFY、NANGA），账号是 satisfyrunning、nanga_official：
-    // 抽出意见里 4 个字母以上的英文词，**账号里含这个词**就算被点名
-    let words: Vec<String> = review
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|w| w.len() >= 4 && w.chars().any(|c| c.is_ascii_alphabetic()))
-        .map(str::to_lowercase)
-        .collect();
-    // 意见里写了条目键的，**只认条目键**：品牌词会误中一片（09-29 r56 v8 意见里有 gooutcamp，
-    // 按「账号含这个词」把 picacamp、camphills、unocampfes 等 9 条不相干的也拉进来重判）。
-    // 只写了品牌、没写条目键的，才退回按品牌词找
-    let by_keyname: Vec<String> = judgements
-        .iter()
-        .filter(|j| review.contains(&j.candidate_key.to_lowercase()))
-        .map(|j| j.candidate_key.clone())
-        .collect();
-    let mut focus: Vec<String> = if !by_keyname.is_empty() {
-        by_keyname
-    } else {
-        judgements
-            .iter()
-            .filter(|j| {
-                let acc = by_key
-                    .get(&j.candidate_key)
-                    .map(|c| norm(&c.account))
-                    .unwrap_or_default();
-                words.iter().any(|w| acc.contains(w.as_str()))
-            })
-            .map(|j| j.candidate_key.clone())
             .collect()
     };
     let named = focus.len();
@@ -1306,7 +1353,7 @@ pub async fn rework_in_place(
             // 查询文字写本期窗口：旧的写的是开工时刻的止点（主编 #615：query 仍是旧止点）
             sw.query = format!(
                 "按首次入库时间收口：{} ~ {}（本期窗口，左闭右开）；接口按发布时间取宽，取回 {} 条、去重 {} 条",
-                prev.window_start, prev.window_end, sw.found, sw.fetched_unique
+                prev.window_start, win_end, sw.found, sw.fetched_unique
             );
         }
     }
@@ -1337,6 +1384,100 @@ pub async fn rework_in_place(
             deep_gaps: HashMap::new(),
         },
     ))
+}
+
+/// 退回意见点名了哪些条目。
+///
+/// 1. 意见里写了条目键的，**只认条目键**。
+/// 2. 没写条目键的，认意见里**大写的品牌词串**（「ZANE ARTS YOMA」「HILLS FIELD BIG TOP」）：
+///    词串的前几个词拼起来是账号前缀（zanearts、hillsfield），剩下的词是产品（YOMA、BIG TOP），
+///    再用产品词在这个账号的帖子里筛；筛不出就取这个账号全部帖子。
+///
+/// 以前是「意见里 4 个字母以上的英文词，账号里含这个词就算」：09-30 r58 意见里的 field、arts、
+/// trace、window 把 22 条不相干的帖子拉进来重判。
+pub fn named_in_review(
+    review: &str,
+    judgements: &[Judgement],
+    by_key: &HashMap<String, Candidate>,
+) -> Vec<String> {
+    let norm = |s: &str| -> String {
+        s.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    };
+    let lower = review.to_lowercase();
+    let by_keyname: Vec<String> = judgements
+        .iter()
+        .filter(|j| lower.contains(&j.candidate_key.to_lowercase()))
+        .map(|j| j.candidate_key.clone())
+        .collect();
+    if !by_keyname.is_empty() {
+        return by_keyname;
+    }
+    static RUN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"[A-Z][A-Z0-9]+(?:[ \-_.&][A-Z][A-Z0-9]+)*").expect("正则")
+    });
+    let account = |k: &str| by_key.get(k).map(|c| norm(&c.account)).unwrap_or_default();
+    let mut out: Vec<String> = Vec::new();
+    for m in RUN.find_iter(review) {
+        let words: Vec<String> = m
+            .as_str()
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(norm)
+            .collect();
+        // 最长的、能当账号前缀的词头
+        let Some((k, prefix)) = (1..=words.len())
+            .rev()
+            .map(|k| (k, words[..k].concat()))
+            .filter(|(_, p)| p.len() >= 4)
+            .find(|(_, p)| {
+                judgements
+                    .iter()
+                    .any(|j| account(&j.candidate_key).starts_with(p.as_str()))
+            })
+        else {
+            continue;
+        };
+        let of_brand: Vec<&Judgement> = judgements
+            .iter()
+            .filter(|j| account(&j.candidate_key).starts_with(prefix.as_str()))
+            .collect();
+        let products: Vec<&String> = words[k..].iter().filter(|w| w.len() >= 2).collect();
+        let product_text = |j: &Judgement| {
+            let c = by_key.get(&j.candidate_key);
+            norm(&format!(
+                "{} {} {}",
+                j.headline,
+                c.map(|c| c.text.as_str()).unwrap_or(""),
+                c.map(|c| c.translated.as_str()).unwrap_or("")
+            ))
+        };
+        let hit: Vec<&&Judgement> = if products.is_empty() {
+            Vec::new()
+        } else {
+            let joined = products.iter().map(|w| w.as_str()).collect::<String>();
+            of_brand
+                .iter()
+                .filter(|j| {
+                    let t = product_text(j);
+                    t.contains(&joined) || products.iter().all(|w| t.contains(w.as_str()))
+                })
+                .collect()
+        };
+        let chosen: Vec<&Judgement> = if hit.is_empty() {
+            of_brand
+        } else {
+            hit.into_iter().copied().collect()
+        };
+        for j in chosen {
+            if !out.contains(&j.candidate_key) {
+                out.push(j.candidate_key.clone());
+            }
+        }
+    }
+    out
 }
 
 /// 读回的一轮：判断、选题、候选（按条目键）
@@ -2086,6 +2227,55 @@ pub fn save_window_trace(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 点名认品牌词串与产品词不误中技术词() {
+        use csw_collector_core::types::{Platform, Tier};
+        let c = |key: &str, account: &str, text: &str| Candidate {
+            candidate_key: key.into(),
+            platform: Platform::Instagram,
+            source_id: key.into(),
+            collector: "csw_window".into(),
+            account: account.into(),
+            url: String::new(),
+            text: text.into(),
+            translated: String::new(),
+            posted_at: None,
+            ingested_at: None,
+            likes: None,
+            comments: None,
+            followers: None,
+            heat_ratio: None,
+            content_type: "Image".into(),
+            media: vec![],
+            tags: vec![],
+            hashtags: vec![],
+        };
+        let cands = [
+            c("zanearts-1", "zanearts", "YOMA 自主召回"),
+            c("zanearts-2", "zanearts", "新款地布"),
+            c("hillsfield-1", "hills_field", "BIG TOP 配置"),
+            c("fieldsahara-1", "fieldsahara", "沙漠营地"),
+            c("tracegear-1", "tracegear", "window 帐篷"),
+        ];
+        let by_key: HashMap<String, Candidate> = cands
+            .iter()
+            .map(|x| (x.candidate_key.clone(), x.clone()))
+            .collect();
+        let js: Vec<Judgement> = cands
+            .iter()
+            .map(|x| Judgement::fixture(&x.candidate_key, Tier::Recommend))
+            .collect();
+        // 09-30 r58 退回意见里的原话片段
+        let review = "主编优先核ZANE ARTS YOMA召回、HILLS FIELD BIG TOP配置关系；trace/window_ids.jsonl、window_summary.json、sweeps.jsonl 须与接口同名含platform/tool/reviewed";
+        let got = named_in_review(review, &js, &by_key);
+        assert_eq!(got, ["zanearts-1", "hillsfield-1"]);
+        // 写了条目键就只认条目键
+        assert_eq!(
+            named_in_review("核 zanearts-2 与 ZANE ARTS YOMA", &js, &by_key),
+            ["zanearts-2"]
+        );
+    }
 
     #[test]
     fn 采集指纹不含时间() {

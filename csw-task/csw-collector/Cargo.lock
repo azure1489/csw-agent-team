@@ -1029,6 +1029,7 @@ dependencies = [
  "jiff",
  "lancedb",
  "rand 0.9.5",
+ "regex",
  "reqwest 0.13.5",
  "rusqlite",
  "serde",
