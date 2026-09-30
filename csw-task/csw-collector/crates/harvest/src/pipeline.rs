@@ -99,8 +99,8 @@ impl TraceOutcome {
             Self::DupInSweep => "重复：同一采集器里已取到",
             Self::DupAcross => "重复：前面的采集器已取到",
             Self::NotImageOnly => "排除：含视频或非图文贴",
-            Self::BeforeWindow => "排除：首次入库早于窗口",
-            Self::AfterWindow => "排除：首次入库晚于窗口",
+            Self::BeforeWindow => "排除：原始披露早于窗口",
+            Self::AfterWindow => "排除：原始披露晚于窗口",
             Self::NoTime => "排除：没有入库时间也没有发布时间",
         }
     }
@@ -145,7 +145,7 @@ pub fn source_stalled(sweep: &SweepCount, from: Timestamp, to: Timestamp) -> Opt
     Some(match (before, after) {
         (Some(b), Some(a)) => format!(
             "上游 csw 贴文库在本期窗口 {from} ~ {to} 内没有任何入库：最后一次入库 {b}，恢复入库 {a}。\
-             不是本期没有料，是上游采集中断；断料期间发布的贴文随恢复补入库，按首次入库时间归入之后的一期"
+             不是本期没有料，是上游采集中断；上游恢复并补入库后，可重开本期按原始披露时间补采"
         ),
         (Some(b), None) => format!(
             "上游 csw 贴文库自 {b} 起没有新入库：宽取 {} 条，最新一条的入库时间早于本期窗口起点 {from}，\
@@ -179,8 +179,13 @@ fn media_summary(c: &Candidate) -> String {
     format!("{}：{}", c.content_type, parts.join("、"))
 }
 
+/// 窗口按**原始披露时间**判（生产约定：「以原始披露时间判窗口，转载时间不算；晚抓到的旧内容
+/// 不得改成当天新闻」）。首次入库时间只作抓取证据记录。没有披露时间的退回按首次入库。
+///
+/// 09-30 以前按首次入库时间收口：断料后补进来的旧帖（r58 披露早于窗口的 153 个条目）被当成当期，
+/// 引擎自查按生产约定判越界，主编连退、整期作废。
 fn window_outcome(c: &Candidate, from: Timestamp, to: Timestamp) -> TraceOutcome {
-    match c.ingested_at.or(c.posted_at) {
+    match c.posted_at.or(c.ingested_at) {
         None => TraceOutcome::NoTime,
         Some(t) if t < from => TraceOutcome::BeforeWindow,
         Some(t) if t >= to => TraceOutcome::AfterWindow,
@@ -699,8 +704,8 @@ fn fused_text(c: &Candidate, descriptions: &[MediaDescription]) -> String {
 }
 
 fn in_window(c: &Candidate, from: Timestamp, to: Timestamp) -> bool {
-    // 窗口按首次入库时间；取不到就退回发布时间，宁可多判一条也不漏
-    let t = c.ingested_at.or(c.posted_at);
+    // 窗口按原始披露时间（生产约定）；没有披露时间的退回按首次入库
+    let t = c.posted_at.or(c.ingested_at);
     t.map(|t| t >= from && t < to).unwrap_or(false)
 }
 
@@ -771,7 +776,12 @@ mod tests {
             url: String::new(),
             text: "正文".into(),
             translated: String::new(),
-            posted_at: Some(ts("2026-09-01T00:00:00Z")),
+            // 窗口按原始披露时间判：给的时间同时当披露与首次入库，没给就是很早以前披露的
+            posted_at: Some(
+                ingested
+                    .map(ts)
+                    .unwrap_or_else(|| ts("2026-09-01T00:00:00Z")),
+            ),
             ingested_at: ingested.map(ts),
             likes: None,
             comments: None,

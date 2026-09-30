@@ -1062,6 +1062,43 @@ async fn start_round(
                     Err(e) => tracing::warn!("对账后补撤没排进去：{e:#}"),
                 }
             }
+            // 交付前引擎自查必须全绿（登记、补撤都发完之后再查一遍，状态才是最终的）。
+            // 有红就不交：报失败，写明哪条判据、影响哪些条目——主编原话「intake-check 无红；
+            // 若无法修复交真实错误与受影响条目清单，不盲升版」（09-30 r58 v18/v19 退回）
+            if let Some(res) = finish::self_check(conn, &r, engine, t.task.run_id).await
+                && !res.ok
+            {
+                let red: Vec<String> = res
+                    .checks
+                    .iter()
+                    .filter(|c| !c.ok && !c.skipped)
+                    .map(|c| {
+                        format!(
+                            "{}——{}",
+                            c.name,
+                            c.detail.chars().take(400).collect::<String>()
+                        )
+                    })
+                    .collect();
+                if !red.is_empty() {
+                    let why = format!(
+                        "引擎自查（intake-check）未全绿，本版不提交：{}。登记已按本地判断写入引擎，交付包未提交",
+                        red.join("；")
+                    );
+                    tracing::warn!(任务 = t.task.id, 轮次 = r.id, "{why}");
+                    rounds::finish_round(conn, r.id, "failed", &why)?;
+                    let idem = format!(
+                        "fail-{}-r{}-check-{}",
+                        t.task.id,
+                        r.id,
+                        t.task.dispatched_at.replace([':', '-', '.'], "")
+                    );
+                    if let Err(e) = engine.fail(t.task.id, &why, &idem).await {
+                        tracing::error!(任务 = t.task.id, 原因 = %format!("{e:#}"), "自查未过，连失败都没报出去");
+                    }
+                    return Ok(());
+                }
+            }
             if !consistent {
                 // 不一致才是红灯；一致的那两行只进自检
                 gaps.extend(
@@ -1253,7 +1290,7 @@ const SUBMITTED: &str = "已交状态:";
 const UNCHANGED: &str = "内容与上一版相同，未重交";
 /// 交付物 / 登记导出格式的修订号。**改了导出（字段、登记口径、包内文件）就改它**，
 /// 否则返工后内容指纹一样，修好的导出不会重交
-const EXPORT_REV: &str = "2026-09-30c";
+const EXPORT_REV: &str = "2026-10-01a";
 
 /// 引擎窗口的时刻写法是 `2026-09-25T07:00+08:00`（没有秒），先按 RFC 3339 读，读不了补上秒再读。
 fn parse_engine_ts(s: &str) -> Option<jiff::Timestamp> {

@@ -58,6 +58,8 @@ tower-http = { version = "0.7", features = ["trace", "fs", "compression-gzip"] }
 tower = { version = "0.5", features = ["util"] }
 blake3 = "1"
 regex = "1"
+# 交付包里的八键联系图（缩图拼图，只要 JPEG 编解码）
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 # 交付物打包。只开 deflate（纯 Rust），别把 zstd/bzip2 的 C 依赖拖进交叉编译
 zip = { version = "2", default-features = false, features = ["deflate"] }
 sha2 = "0.11"

@@ -1127,7 +1127,7 @@ pub async fn rework_in_place(
     let end = engine_end.filter(|e| *e < now);
     let outside: HashSet<String> = by_key
         .values()
-        .filter(|c| matches!((end, c.ingested_at), (Some(e), Some(t)) if t >= e))
+        .filter(|c| matches!((end, c.posted_at.or(c.ingested_at)), (Some(e), Some(t)) if t >= e))
         .map(|c| c.candidate_key.clone())
         .collect();
     if !outside.is_empty() {
@@ -1311,7 +1311,9 @@ pub async fn rework_in_place(
             .get(&j.candidate_key)
             .map(|c| norm(&c.account))
             .unwrap_or_default();
+        // 主编校准过的锁死：品牌词会误中（09-30 r58 v19：「停止项保持停止」把定为继续的 Coleman 冷藏箱移出、又在引擎里撤掉）
         if matches!(j.tier, Tier::Recommend | Tier::Alternate)
+            && !calibrated.contains(&j.candidate_key)
             && stops.iter().any(|w| acc.contains(w.as_str()))
         {
             j.tier = Tier::NotRecommend;
@@ -1333,6 +1335,8 @@ pub async fn rework_in_place(
     for j in judgements
         .iter_mut()
         .filter(|j| j.tier == Tier::Alternate && j.has_decision_gap())
+        // 主编校准过的锁死，定为备选就是备选
+        .filter(|j| !calibrated.contains(&j.candidate_key))
     {
         j.tier = Tier::PendingCheck;
         for g in j
@@ -1374,7 +1378,7 @@ pub async fn rework_in_place(
         if col == register::collector_of("csw-window") {
             // 查询文字写本期窗口：旧的写的是开工时刻的止点（主编 #615：query 仍是旧止点）
             sw.query = format!(
-                "按首次入库时间收口：{} ~ {}（本期窗口，左闭右开）；接口按发布时间取宽，取回 {} 条、去重 {} 条",
+                "按原始披露时间收口：{} ~ {}（本期窗口，左闭右开）；接口按发布时间取宽，取回 {} 条、去重 {} 条",
                 prev.window_start, win_end, sw.found, sw.fetched_unique
             );
         }

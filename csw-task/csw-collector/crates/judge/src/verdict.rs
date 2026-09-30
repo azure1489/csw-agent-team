@@ -287,7 +287,7 @@ fn candidate_block(n: usize, item: &JudgeInput<'_>) -> String {
     // 头一条缺口多半是这句。窗口其实已经由代码按它筛过了，这里说清楚。
     match c.ingested_at {
         Some(t) => s.push_str(&format!(
-            "首次入库时间（first_seen_at）：{t}（采集窗口已由代码按它核过，本条在本期窗口内）\n"
+            "首次入库时间（first_seen_at）：{t}（抓取证据；窗口已由代码按原始披露时间核过，本条在本期窗口内）\n"
         )),
         None => s.push_str(
             "首次入库时间（first_seen_at）：平台没给（多为 Van 点名补的链接，不按窗口筛）\n",

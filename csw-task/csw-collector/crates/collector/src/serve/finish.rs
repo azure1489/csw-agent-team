@@ -565,7 +565,7 @@ pub fn build_deliverable(
     // 窗口行后写补采记录：补过的一段扫了多少、窗口内多少，0 条照写（不是只改止点）
     let patches = csw_collector_core::window_trace::patches_of(conn, round.id).unwrap_or_default();
     if !patches.is_empty()
-        && let Some(i) = body.find("窗口（按首次入库时间")
+        && let Some(i) = body.find("窗口（按")
         && let Some(end) = body[i..].find('\n')
     {
         let lines: Vec<String> = patches
@@ -653,6 +653,46 @@ pub fn build_deliverable(
             body.push_str(&format!("- `{k}`：{}\n", files.join("、")));
         }
     }
+    // 首批卡的联系图与对照表
+    let mut sheet_rows: Vec<Vec<Vec<u8>>> = Vec::new();
+    let mut legend = String::new();
+    for (i, k) in card_keys.iter().enumerate() {
+        let ps = all_previews(conn, cfg, k);
+        let cells: Vec<String> = ps
+            .iter()
+            .take(3)
+            .map(|p| {
+                let n = p.candidate_key.rsplit('_').next().unwrap_or("?");
+                format!("images/{}.jpg（原帖第 {n} 张）", p.candidate_key)
+            })
+            .collect();
+        let grounds = judgements
+            .iter()
+            .find(|j| &j.candidate_key == k)
+            .map(|j| j.three_sentences.grounds.replace('|', "／"))
+            .unwrap_or_default();
+        legend.push_str(&format!(
+            "| {} | `{k}` | {} | {} |\n",
+            i + 1,
+            if cells.is_empty() {
+                "本地没有落库的图".to_string()
+            } else {
+                cells.join("<br>")
+            },
+            grounds
+        ));
+        sheet_rows.push(ps.into_iter().take(3).map(|p| p.bytes).collect());
+    }
+    let sheet = contact_sheet(&sheet_rows);
+    if sheet.is_some() && !legend.is_empty() {
+        let section = format!(
+            "## 首批卡联系图\n\n打开 `preview/首批卡联系图.jpg`：一行一张卡，每行至多 3 张同帖图（按原帖图序，左起）。\n\n| 行 | 条目 | 格内图片（左→右） | 正文支持点 |\n|---|---|---|---|\n{legend}\n"
+        );
+        body = match body.find("# 情报逐条 · 判断台账") {
+            Some(i) => format!("{}{section}{}", &body[..i], &body[i..]),
+            None => format!("{body}\n{section}"),
+        };
+    }
     let version = round.target_version.max(1);
     let mut entries = intake::assemble(
         Meta {
@@ -698,6 +738,9 @@ pub fn build_deliverable(
         jl.push('\n');
     }
     entries.push(pack::Entry::text("trace/judgements.jsonl", jl));
+    if let Some(bytes) = sheet {
+        entries.push(pack::Entry::binary("preview/首批卡联系图.jpg", bytes));
+    }
     // 宽取的每一条落到哪儿、窗口内的每条判成什么登记成什么：主编要能从宽取的全部 ID
     // 按 first_seen_at 逐条复算到窗口内的那些（09-28 r56 退回：1431 → 128 只有两个数）
     let (ids, summary) = window_ids(
@@ -1212,6 +1255,27 @@ fn first_cards(
             s.push_str(&format!("；{}", cmp.note.trim()));
         }
         s.push('\n');
+        // 深核找到的证据原样列出：完整 URL、标题、日期、关键原文都在这里，不只留编号
+        //（09-30 r58 v18 退回：跑道卡「补齐 E2/E3 完整 URL、标题/日期、关键原文摘录」）
+        if let Some((from, card)) = recent_card(conn, k, 72) {
+            s.push_str(&format!("- 深核（第 {from} 轮）："));
+            if !card.disclosed_at.trim().is_empty() {
+                s.push_str(&format!("核到的原始披露 {}；", card.disclosed_at.trim()));
+            }
+            if !card.original_source.trim().is_empty() {
+                s.push_str(&format!("原始来源 {}", card.original_source.trim()));
+            }
+            s.push('\n');
+            for (name, xs) in [
+                ("证据", &card.evidence),
+                ("核到的事实", &card.facts),
+                ("仍缺", &card.gaps),
+            ] {
+                for (n, x) in xs.iter().enumerate() {
+                    s.push_str(&format!("  - {name} E{}：{}\n", n + 1, x.trim()));
+                }
+            }
+        }
         let decision: Vec<String> = j
             .gaps
             .iter()
@@ -1252,6 +1316,47 @@ fn first_cards(
         s.push_str("\n---\n\n");
     }
     (s, keys)
+}
+
+/// 首批卡的联系图：一行一张卡，每行至多 3 张同帖图（按原帖图序），拼成一张 JPEG。
+/// 主编的看图通道打不开包里的零散图时，打开这一张就能逐卡核图（09-30 r58 v18/v19 退回）。
+/// 格子里不写字（不带字体），行列与条目、图序的对照写在首页。
+fn contact_sheet(rows: &[Vec<Vec<u8>>]) -> Option<Vec<u8>> {
+    use image::{GenericImage, ImageEncoder, Rgb, RgbImage, imageops::FilterType};
+    const W: u32 = 320;
+    const H: u32 = 320;
+    const GAP: u32 = 8;
+    const COLS: u32 = 3;
+    if rows.is_empty() {
+        return None;
+    }
+    let n = rows.len() as u32;
+    let mut canvas = RgbImage::from_pixel(
+        COLS * W + (COLS + 1) * GAP,
+        n * H + (n + 1) * GAP,
+        Rgb([255, 255, 255]),
+    );
+    for (r, imgs) in rows.iter().enumerate() {
+        for (c, bytes) in imgs.iter().take(COLS as usize).enumerate() {
+            let Ok(img) = image::load_from_memory(bytes) else {
+                continue;
+            };
+            let thumb = img.resize_to_fill(W, H, FilterType::Triangle).to_rgb8();
+            let x = GAP + c as u32 * (W + GAP);
+            let y = GAP + r as u32 * (H + GAP);
+            let _ = canvas.copy_from(&thumb, x, y);
+        }
+    }
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80)
+        .write_image(
+            canvas.as_raw(),
+            canvas.width(),
+            canvas.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .ok()?;
+    Some(out)
 }
 
 /// `trace/window_ids.jsonl` 与 `trace/window_summary.json`。
@@ -1398,7 +1503,7 @@ fn window_ids(
             "before_window": TraceOutcome::BeforeWindow.cn(),
             "after_window": TraceOutcome::AfterWindow.cn(),
             "no_time": TraceOutcome::NoTime.cn(),
-            "判定次序": "先去重，再筛图文，再按首次入库时间 [起, 止) 左闭右开；没有入库时间的退回按发布时间",
+            "判定次序": "先去重，再筛图文，再按原始披露时间 [起, 止) 左闭右开（生产约定）；没有披露时间的退回按首次入库时间",
         },
     });
     Ok((out, summary))
@@ -1406,6 +1511,27 @@ fn window_ids(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn 联系图一行一卡每行至多三张() {
+        let jpeg = |c: u8| {
+            let img = image::RgbImage::from_pixel(40, 30, image::Rgb([c, c, c]));
+            let mut b = Vec::new();
+            image::DynamicImage::ImageRgb8(img)
+                .write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Jpeg)
+                .unwrap();
+            b
+        };
+        let rows = vec![vec![jpeg(10), jpeg(20), jpeg(30), jpeg(40)], vec![jpeg(50)]];
+        let out = contact_sheet(&rows).expect("该拼出来");
+        let img = image::load_from_memory(&out).unwrap();
+        assert_eq!(
+            (img.width(), img.height()),
+            (3 * 320 + 4 * 8, 2 * 320 + 3 * 8)
+        );
+        assert!(contact_sheet(&[]).is_none());
+    }
+
     use super::*;
 
     fn j(key: &str, tier: Tier) -> Judgement {

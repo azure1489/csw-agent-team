@@ -23,6 +23,7 @@ csw-collector-deliver.workspace = true
 csw-collector-mcpsrv.workspace = true
 anyhow.workspace = true
 regex.workspace = true
+image.workspace = true
 clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true

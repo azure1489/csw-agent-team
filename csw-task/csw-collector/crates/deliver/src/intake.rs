@@ -24,7 +24,7 @@ pub fn ledger_body(
     let _ = writeln!(s, "# 情报逐条 · 判断台账\n");
     let _ = writeln!(
         s,
-        "窗口（按首次入库时间，左闭右开）{} ~ {}\n",
+        "窗口（按原始披露时间，左闭右开；首次入库时间只作抓取证据）{} ~ {}\n",
         window.0, window.1
     );
     let _ = writeln!(s, "{}\n", counts_line(judgements));
