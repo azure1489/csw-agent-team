@@ -472,3 +472,21 @@ export interface RoundExclusions {
     捞回理由: string
   }[]
 }
+
+/** 拉进这一轮、还没判完的一条。`prelim` 是已判完那批的初判，整轮判完后以台账为准 */
+export interface PulledRow {
+  candidate_key: string
+  account: string
+  url: string
+  posted_at: string | null
+  excerpt: string
+  cover: string | null
+  carried: boolean
+  prelim: { tier: Tier; headline: string } | null
+}
+
+export interface PulledList {
+  pulled: number
+  prelim: number
+  rows: PulledRow[]
+}

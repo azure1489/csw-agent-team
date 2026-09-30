@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api } from './api'
 import type {
+  PulledList,
   Backfill,
   AuditRow,
   Coverage,
@@ -112,6 +113,15 @@ export const useVanMarks = (id?: number) =>
 
 export const usePendingCheck = () =>
   useQuery({ queryKey: ['pending-check'], queryFn: () => get<PendingRow[]>('/pending-check') })
+
+/** 已拉进这一轮、还没落进台账的条目（判断整轮判完才落库，跑的时候先看这里） */
+export const usePulled = (id?: number, running?: boolean) =>
+  useQuery({
+    queryKey: ['pulled', id],
+    queryFn: () => get<PulledList>(`/rounds/${id}/pulled`),
+    enabled: !!id && !!running,
+    refetchInterval: running ? 15_000 : false,
+  })
 
 /** 这一轮的选题：同产品、同事件的多帖合成一个 */
 export const useTopics = (id?: number) =>

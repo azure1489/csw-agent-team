@@ -26,13 +26,14 @@ import { normGaps, three, titleOf } from '@/lib/judgement'
 import {
   useJudgements,
   useOverride,
+  usePulled,
   useRestoreExcluded,
   useRoundExclusions,
   useRounds,
   useSetFirstBatch,
   useTopics,
 } from '@/lib/queries'
-import type { JudgementRow, Tier, Topic } from '@/lib/types'
+import type { JudgementRow, PulledRow, Tier, Topic } from '@/lib/types'
 
 const TIERS: { key: Tier | 'all'; label: string }[] = [
   { key: 'all', label: '全部' },
@@ -66,6 +67,8 @@ export function Ledger() {
     has_gap: onlyGap || undefined,
   })
   const topics = useTopics(roundId)
+  const running = rounds.data?.find((r) => r.id === roundId)?.status === 'running'
+  const pulled = usePulled(roundId, running)
   const { me } = useAuth()
   const canEdit = me?.role === 'operator' || me?.role === 'superadmin'
   const override = useOverride(roundId)
@@ -163,13 +166,7 @@ export function Ledger() {
       {js.isLoading && <Loading what="台账" />}
       {js.error && <ErrorBox error={js.error} />}
       {override.error && <ErrorBox error={override.error} />}
-      {js.data?.length === 0 && (
-        <Empty>
-          {rounds.data?.find((r) => r.id === roundId)?.status === 'running'
-            ? '这一轮还在跑，判完才有条目。'
-            : '这一档下没有条目。'}
-        </Empty>
-      )}
+      {js.data?.length === 0 && !running && <Empty>这一档下没有条目。</Empty>}
 
       {lines.length > 0 && (
         <div className="overflow-x-auto">
@@ -211,7 +208,75 @@ export function Ledger() {
           </Table>
         </div>
       )}
+
+      {running && <Pulled data={pulled.data} error={pulled.error} />}
     </section>
+  )
+}
+
+/**
+ * 这一轮还在跑：窗口内拉到的条目先列出来。
+ *
+ * 判断结果要整轮判完才一起落台账，一轮要几十分钟；这期间不能让页面空着。
+ * 已判完那几批带「初判」档，明说整轮判完后以台账为准（校验、重判、选题合并都在后面）。
+ */
+function Pulled({ data, error }: { data?: { pulled: number; prelim: number; rows: PulledRow[] }; error: unknown }) {
+  if (error) return <ErrorBox error={error} />
+  if (!data) return <Loading what="拉到的条目" />
+  return (
+    <div className="mt-4">
+      <div className="mb-2 flex flex-wrap items-baseline gap-2">
+        <h3 className="text-[14px] font-semibold text-ink">判断中</h3>
+        <span className="text-[12.5px] text-muted">
+          窗口内拉到 {data.pulled} 帖还没落台账，其中 {data.prelim} 帖已有初判。初判只是已判完那一批的结果，整轮判完后以上面的台账为准。
+        </span>
+      </div>
+      {data.rows.length === 0 ? (
+        <Empty>拉到的条目都已落台账。</Empty>
+      ) : (
+        <div className="overflow-x-auto">
+          <Table
+            head={
+              <tr>
+                <Th>图</Th>
+                <Th>正文开头</Th>
+                <Th>初判</Th>
+                <Th>发布</Th>
+              </tr>
+            }
+          >
+            {data.rows.map((p) => (
+              <tr key={p.candidate_key} className="border-t border-rule align-top">
+                <Td>
+                  <Thumb hash={p.cover} size={56} alt={p.account} />
+                </Td>
+                <Td>
+                  {p.prelim?.headline && (
+                    <div className="text-[13.5px] font-medium text-ink">{p.prelim.headline}</div>
+                  )}
+                  <div className="line-clamp-2 max-w-[60ch] text-[12.5px] text-ink">{p.excerpt || '（无正文）'}</div>
+                  <div className="mt-0.5 text-[11.5px] text-muted">
+                    <a href={p.url} target="_blank" rel="noreferrer" className="text-muted underline">
+                      {p.account}
+                    </a>{' '}
+                    · {p.candidate_key}
+                    {p.carried && ' · 结转'}
+                  </div>
+                </Td>
+                <Td>
+                  {p.prelim ? (
+                    <TierBadge tier={p.prelim.tier} sm />
+                  ) : (
+                    <span className="text-[12px] text-dim">判断中</span>
+                  )}
+                </Td>
+                <Td className="whitespace-nowrap text-[12px] text-muted">{bj(p.posted_at)}</Td>
+              </tr>
+            ))}
+          </Table>
+        </div>
+      )}
+    </div>
   )
 }
 

@@ -73,6 +73,7 @@ pub fn api_router(state: Arc<AppState>, auth: Arc<AuthState>) -> Router {
         .route("/api/rounds/{id}/coverage", get(coverage))
         .route("/api/rounds/{id}/media", get(round_media))
         .route("/api/rounds/{id}/topics", get(round_topics))
+        .route("/api/rounds/{id}/pulled", get(round_pulled))
         // 本地存的实图。Van 要直接看图判断外观与设计，图片描述代替不了（09-22 反馈第六项）
         .route("/api/media/{hash}", get(media_bytes))
         .route("/api/van/today", get(van_today))
@@ -786,6 +787,75 @@ async fn pending_check(State(st): State<Arc<AppState>>) -> Result<Json<Vec<Pendi
         });
     }
     Ok(Json(out))
+}
+
+/// 已拉进这一轮、还没落进台账的条目。
+///
+/// 判断结果要等整轮判完才一起写进 `judgements`，跑一轮要几十分钟，这期间台账是空的。
+/// 这里把窗口内拉到的条目先列出来；已判完的批次（判断断点）带上初判档与标题，
+/// 页面上标明「初判，整轮判完后以台账为准」。
+async fn round_pulled(
+    State(st): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let conn = st.conn.lock().await;
+    // 断点表不带轮次：只认这一轮判断步开始之后存下的
+    let judge_from: Option<String> = conn
+        .query_row(
+            "SELECT MIN(started_at) FROM round_steps WHERE round_id = ?1 AND step = 'judge'",
+            [id],
+            |r| r.get(0),
+        )
+        .map_err(ApiError::db)?;
+    let sql = format!(
+        "SELECT rc.candidate_key, COALESCE(c.account,''), COALESCE(c.url,''), c.posted_at,
+                CASE WHEN COALESCE(c.translated,'') <> '' THEN c.translated ELSE COALESCE(c.text,'') END,
+                {}, rc.carried,
+                (SELECT k.judgement_json FROM judge_checkpoints k
+                  WHERE k.candidate_key = rc.candidate_key AND k.created_at >= ?2
+                  ORDER BY k.created_at DESC LIMIT 1)
+         FROM round_candidates rc
+         LEFT JOIN candidates c ON c.candidate_key = rc.candidate_key
+         WHERE rc.round_id = ?1 AND rc.in_window = 1
+           AND NOT EXISTS (SELECT 1 FROM judgements j
+                           WHERE j.round_id = rc.round_id AND j.candidate_key = rc.candidate_key)
+         ORDER BY c.posted_at DESC, rc.candidate_key",
+        COVER_SQL.replace("j.candidate_key", "rc.candidate_key")
+    );
+    let mut stmt = conn.prepare(&sql).map_err(ApiError::db)?;
+    // 没有判断步（还在采集）时用一个比任何时间都晚的下限，断点一条都不认
+    let from = judge_from.unwrap_or_else(|| "9999".into());
+    let rows: Vec<serde_json::Value> = stmt
+        .query_map(rusqlite::params![id, from], |r| {
+            let text: String = r.get(4)?;
+            let ck: Option<String> = r.get(7)?;
+            let prelim = ck
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .map(|v| {
+                    serde_json::json!({
+                        "tier": v["tier"],
+                        "headline": v["headline"],
+                    })
+                });
+            Ok(serde_json::json!({
+                "candidate_key": r.get::<_, String>(0)?,
+                "account": r.get::<_, String>(1)?,
+                "url": r.get::<_, String>(2)?,
+                "posted_at": r.get::<_, Option<String>>(3)?,
+                "excerpt": text.chars().take(140).collect::<String>(),
+                "cover": r.get::<_, Option<String>>(5)?,
+                "carried": r.get::<_, i64>(6)? == 1,
+                "prelim": prelim,
+            }))
+        })
+        .map_err(ApiError::db)?
+        .filter_map(Result::ok)
+        .collect();
+    Ok(Json(serde_json::json!({
+        "pulled": rows.len(),
+        "prelim": rows.iter().filter(|r| !r["prelim"].is_null()).count(),
+        "rows": rows,
+    })))
 }
 
 /// 这一轮的选题。
@@ -2352,6 +2422,48 @@ mod tests {
             StatusCode::NOT_FOUND
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 判断要整轮判完才落台账：跑的这几十分钟里，拉到的条目要先看得见。
+    #[tokio::test]
+    async fn 还没判完的条目先列出来并带初判() {
+        let (app, st) = app();
+        {
+            let conn = st.conn.lock().await;
+            for k in ["k3", "k4"] {
+                ledger::upsert_candidate(&conn, &cand(k)).unwrap();
+                ledger::attach_candidate(&conn, 1, k, "csw-window", false).unwrap();
+            }
+            conn.execute(
+                "INSERT INTO round_steps(round_id, step, attempt, status, started_at)
+                 VALUES (1, 'judge', 1, 'running', '2026-09-30T17:00:00Z')",
+                [],
+            )
+            .unwrap();
+            // 判断步开始前的旧断点不认，之后的认
+            for (k, at, tier) in [
+                ("k4", "2026-09-29T00:00:00Z", "recommend"),
+                ("k3", "2026-09-30T17:10:00Z", "alternate"),
+            ] {
+                conn.execute(
+                    "INSERT INTO judge_checkpoints(candidate_key, inputs_hash, judgement_json, created_at)
+                     VALUES (?1, 'ih', ?2, ?3)",
+                    rusqlite::params![k, format!(r#"{{"tier":"{tier}","headline":"{k}｜初判"}}"#), at],
+                )
+                .unwrap();
+            }
+        }
+        let (code, v) = get(&app, "/api/rounds/1/pulled").await;
+        assert_eq!(code, StatusCode::OK);
+        // 已落台账的 k1、k2 不重复列
+        assert_eq!(v["pulled"], 2);
+        assert_eq!(v["prelim"], 1);
+        let rows = v["rows"].as_array().unwrap();
+        let k3 = rows.iter().find(|r| r["candidate_key"] == "k3").unwrap();
+        assert_eq!(k3["prelim"]["tier"], "alternate");
+        assert_eq!(k3["excerpt"], "新色登場");
+        let k4 = rows.iter().find(|r| r["candidate_key"] == "k4").unwrap();
+        assert!(k4["prelim"].is_null());
     }
 
     #[tokio::test]
