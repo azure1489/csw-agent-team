@@ -444,6 +444,9 @@ async fn harvest_and_judge(
     // 判之前先把 Van 否过的同一件事挡掉。挡下来的不进模型，单独出一行台账。
     let (mut items, excluded) = apply_exclusions(conn, round, svc, items).await;
     let cache = JudgeCache { conn };
+    let checkpoint = JudgeCheckpoint {
+        path: cfg.db_path(),
+    };
     // 已确认的准则卡照送；没确认的按开关标「草稿」送（09-27 用户拍板，默认开）
     let confirmed_rules =
         csw_collector_judge::memory::rules_for_judge(conn, cfg.features.send_draft_rules_to_model)
@@ -462,6 +465,10 @@ async fn harvest_and_judge(
             .judgements
             .then_some(&cache as &dyn csw_collector_judge::pipeline::Cached),
         confirmed_rules: &confirmed_rules,
+        // 回测要可复现，不接断点；正式轮、预取轮都接
+        checkpoint: caches
+            .judgements
+            .then_some(&checkpoint as &dyn csw_collector_judge::pipeline::Checkpoint),
     };
     let mut outcome = csw_collector_judge::pipeline::run(&items, &deps).await;
 
@@ -1456,6 +1463,7 @@ pub async fn evidence_pass(
         on_batch: None,
         cached: None,
         confirmed_rules: &rules,
+        checkpoint: None,
     };
     let idx: Vec<usize> = (0..items.len()).collect();
     let redone = csw_collector_judge::pipeline::judge_again(&items, &idx, &deps, &[]).await;
@@ -1681,6 +1689,64 @@ impl csw_collector_judge::pipeline::Cached for JudgeCache<'_> {
                 tracing::warn!(候选 = %candidate_key, 原因 = %format!("{e:#}"), "读判断缓存失败，重判一遍");
                 None
             })
+    }
+}
+
+/// 判断断点落在本地库。各批并发写，**每次开一个短连接**：主连接不能跨线程共用，
+/// 用 WAL 与 busy_timeout 排队。写不进去只记一笔——断点只是加速，丢了不影响正确性。
+struct JudgeCheckpoint {
+    path: std::path::PathBuf,
+}
+
+impl JudgeCheckpoint {
+    fn open(&self) -> Option<Connection> {
+        let c = Connection::open(&self.path).ok()?;
+        c.busy_timeout(std::time::Duration::from_secs(10)).ok()?;
+        Some(c)
+    }
+}
+
+impl csw_collector_judge::pipeline::Checkpoint for JudgeCheckpoint {
+    fn get(&self, candidate_key: &str, inputs_hash: &str) -> Option<Judgement> {
+        let c = self.open()?;
+        let json: String = c
+            .query_row(
+                "SELECT judgement_json FROM judge_checkpoints WHERE candidate_key = ?1 AND inputs_hash = ?2",
+                rusqlite::params![candidate_key, inputs_hash],
+                |r| r.get(0),
+            )
+            .ok()?;
+        serde_json::from_str(&json).ok()
+    }
+
+    fn put(&self, judgements: &[Judgement]) {
+        let Some(c) = self.open() else {
+            tracing::warn!("判断断点没存下：打不开本地库");
+            return;
+        };
+        let now = Timestamp::now().to_string();
+        for j in judgements {
+            let Ok(json) = serde_json::to_string(j) else {
+                continue;
+            };
+            if let Err(e) = c.execute(
+                "INSERT OR REPLACE INTO judge_checkpoints (candidate_key, inputs_hash, judgement_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![j.candidate_key, j.inputs_hash, json, now],
+            ) {
+                tracing::warn!(候选 = %j.candidate_key, "判断断点没存下：{e:#}");
+            }
+        }
+        // 断点只为接上同一轮：三天前的清掉
+        let _ = c.execute(
+            "DELETE FROM judge_checkpoints WHERE created_at < ?1",
+            rusqlite::params![
+                Timestamp::now()
+                    .checked_sub(jiff::SignedDuration::from_hours(72))
+                    .map(|t| t.to_string())
+                    .unwrap_or_default()
+            ],
+        );
     }
 }
 

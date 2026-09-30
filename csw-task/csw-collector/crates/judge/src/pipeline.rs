@@ -76,6 +76,19 @@ pub struct Deps<'a> {
     pub cached: Option<&'a dyn Cached>,
     /// Van **已确认**的选题准则卡。没确认的一张都不送。
     pub confirmed_rules: &'a [String],
+    /// 判断断点：每判完一批立刻存下，进程中途被杀、重跑同一轮时指纹一致的直接接上。
+    /// 传 None 就不存。
+    pub checkpoint: Option<&'a dyn Checkpoint>,
+}
+
+/// 判断断点。**与 [`Cached`] 不同**：断点里是模型刚判出来、还没过口径兜底的结论，
+/// 接上之后照新判的走（该退回重判的照样退回），只是不用再问一遍模型。
+///
+/// 09-30 r58：505 条判到 2 小时 45 分钟被 OOM 杀掉，结论全在内存里，重启后从头判。
+/// 各批并发写，实现方要自己处理并发（例如每次开短连接）。
+pub trait Checkpoint: Sync {
+    fn get(&self, candidate_key: &str, inputs_hash: &str) -> Option<Judgement>;
+    fn put(&self, judgements: &[Judgement]);
 }
 
 /// 已经判过、且输入一点没变的结论从哪儿来。预取轮判过的，正式轮直接拿。
@@ -214,6 +227,28 @@ pub async fn run(items: &[Item<'_>], deps: &Deps<'_>) -> Outcome {
         out.judgements.extend(reused);
     }
 
+    // 断点：上次这一轮判到一半被打断，已判的批直接接上（当新判的算，口径兜底照常退回重判）
+    if let Some(cp) = deps.checkpoint {
+        let mut resumed: Vec<Judgement> = Vec::new();
+        fresh.retain(|i| {
+            let it = &items[*i];
+            match cp.get(&it.candidate.candidate_key, &inputs_hash(it, &hash_ctx)) {
+                Some(j) if j.violations().is_empty() => {
+                    resumed.push(j);
+                    false
+                }
+                _ => true,
+            }
+        });
+        if !resumed.is_empty() {
+            tracing::info!(条数 = resumed.len(), "判断：从断点接上");
+            if let Some(cb) = deps.on_batch {
+                cb(&resumed);
+            }
+            out.judgements.extend(resumed);
+        }
+    }
+
     let batches: Vec<Vec<usize>> = fresh
         .chunks(verdict::BATCH)
         .map(<[usize]>::to_vec)
@@ -247,7 +282,15 @@ pub async fn run(items: &[Item<'_>], deps: &Deps<'_>) -> Outcome {
                     deps.work_standard,
                     deps.confirmed_rules,
                 )
-                .await;
+                .await
+                // 判完这一批就补齐指纹并存断点：等全部批跑完再存，中途被杀就全丢了
+                .map(|js| {
+                    let filled = attach(js, &b, items, hash_ctx);
+                    if let Some(cp) = deps.checkpoint {
+                        cp.put(&filled);
+                    }
+                    filled
+                });
                 let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 tracing::info!(
                     进度 = format!("{n}/{total_batches} 批"),
@@ -265,8 +308,7 @@ pub async fn run(items: &[Item<'_>], deps: &Deps<'_>) -> Outcome {
     let mut failed: Vec<Vec<usize>> = Vec::new();
     for (idx, r) in results {
         match r {
-            Ok(js) => {
-                let filled = attach(js, &idx, items, hash_ctx);
+            Ok(filled) => {
                 if let Some(cb) = deps.on_batch {
                     cb(&filled);
                 }
@@ -298,6 +340,9 @@ pub async fn run(items: &[Item<'_>], deps: &Deps<'_>) -> Outcome {
         {
             Ok(js) => {
                 let filled = attach(js, &idx, items, hash_ctx);
+                if let Some(cp) = deps.checkpoint {
+                    cp.put(&filled);
+                }
                 if let Some(cb) = deps.on_batch {
                     cb(&filled);
                 }
@@ -970,6 +1015,7 @@ mod tests {
                 on_batch: None,
                 cached: None,
                 confirmed_rules: &[],
+                checkpoint: None,
             },
         )
         .await;
@@ -1031,6 +1077,7 @@ mod tests {
                 on_batch: None,
                 cached: None,
                 confirmed_rules: &[],
+                checkpoint: None,
             },
         )
         .await;
@@ -1071,6 +1118,7 @@ mod tests {
                 on_batch: Some(&cb),
                 cached: None,
                 confirmed_rules: &[],
+                checkpoint: None,
             },
         )
         .await;
@@ -1118,6 +1166,7 @@ mod tests {
                 on_batch: None,
                 cached: None,
                 confirmed_rules: &[],
+                checkpoint: None,
             },
         )
         .await;
@@ -1199,6 +1248,7 @@ mod tests {
                 on_batch: Some(&cb),
                 cached: Some(&store),
                 confirmed_rules: &[],
+                checkpoint: None,
             },
         )
         .await;
@@ -1207,6 +1257,75 @@ mod tests {
         assert_eq!(out.reused, ["k1"]);
         // 复用的也要回调：调用方凑首批时不该区别对待
         assert_eq!(*seen.lock().unwrap(), ["k1"]);
+    }
+
+    /// 内存里的断点，给测试用
+    struct MemCheckpoint(std::sync::Mutex<Vec<Judgement>>);
+    impl Checkpoint for MemCheckpoint {
+        fn get(&self, k: &str, h: &str) -> Option<Judgement> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|j| j.candidate_key == k && j.inputs_hash == h)
+                .cloned()
+        }
+        fn put(&self, js: &[Judgement]) {
+            self.0.lock().unwrap().extend(js.iter().cloned());
+        }
+    }
+
+    #[tokio::test]
+    async fn 判完一批就存断点重跑时接上不再问模型() {
+        // 第一遍：模型判出一条，立刻进断点
+        let payload = json!({"judgements": [one_recommend("k1")]});
+        let (_s, m) = model_returning(json!({
+            "output": [{"content": [{"type": "output_text", "text": payload.to_string()}]}],
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        }))
+        .await;
+        let c = cand("k1", "甲");
+        let ds = [desc()];
+        let cp = MemCheckpoint(Default::default());
+        let deps = |m| Deps {
+            model: m,
+            jev: None,
+            work_standard: "标准",
+            batch_concurrency: 1,
+            on_batch: None,
+            cached: None,
+            confirmed_rules: &[],
+            checkpoint: Some(&cp),
+        };
+        let out = run(&[item(&c, &ds, vec![])], &deps(&m)).await;
+        assert_eq!(out.judgements.len(), 1);
+        assert_eq!(cp.0.lock().unwrap().len(), 1, "判完这一批就该存下");
+        assert!(!cp.0.lock().unwrap()[0].inputs_hash.is_empty());
+
+        // 第二遍（进程被杀后重跑）：模型一次都不该被调
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let m2 = ModelClient::new(ModelConfig {
+            base_url: server.uri(),
+            api_key: "k".into(),
+            model: "m".into(),
+            fallback_model: String::new(),
+            concurrency: 1,
+            timeout: std::time::Duration::from_secs(5),
+            max_attempts: 1,
+        })
+        .unwrap();
+        let out = run(&[item(&c, &ds, vec![])], &deps(&m2)).await;
+        assert_eq!(out.judgements.len(), 1);
+        assert_eq!(out.judgements[0].candidate_key, "k1");
+        assert!(
+            out.reused.is_empty(),
+            "断点接上的当新判的算，不是复用的旧结论"
+        );
     }
 
     #[tokio::test]
@@ -1233,6 +1352,7 @@ mod tests {
                 on_batch: None,
                 cached: Some(&store),
                 confirmed_rules: &[],
+                checkpoint: None,
             },
         )
         .await;
@@ -1267,6 +1387,7 @@ mod tests {
                 on_batch: None,
                 cached: Some(&store),
                 confirmed_rules: &[],
+                checkpoint: None,
             },
         )
         .await;
@@ -1291,6 +1412,7 @@ mod tests {
                 on_batch: None,
                 cached: None,
                 confirmed_rules: &[],
+                checkpoint: None,
             },
         )
         .await;
@@ -1343,6 +1465,7 @@ mod tests {
                 on_batch: None,
                 cached: None,
                 confirmed_rules: &[],
+                checkpoint: None,
             },
         )
         .await;

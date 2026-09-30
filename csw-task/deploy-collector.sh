@@ -250,9 +250,10 @@ EnvironmentFile=/opt/csw-collector/collector.env
 ExecStart=/opt/csw-collector/bin/csw-collector serve
 Restart=always
 RestartSec=5
-# 一轮要下一千多张图、跑 codex 子进程与 MCP。4G 给主进程与子进程一起用；
-# 实测单进程 RSS 峰值约 90 MB，余量留给深核那几个 codex 线程
-MemoryMax=4G
+# 一轮要下一千多张图、跑 codex 子进程与 MCP。主进程与子进程共用这个上限。
+# 09-30 r58：断料积压一期 505 条、首次识别 542 张图，内存涨过 4G（超出部分落在 swap），
+# 整点 swapoff 一收回就被 OOM 杀掉（06:00、10:00 各一次）。提到 8G；机器 31G、平时可用约 9G
+MemoryMax=8G
 # 这台机器上还有向量服务和 Hermes 的几个网关，别把 CPU 抢光
 CPUWeight=30
 TimeoutStopSec=30
