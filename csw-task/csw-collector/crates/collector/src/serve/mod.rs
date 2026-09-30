@@ -896,7 +896,19 @@ async fn start_round(
             },
         )?;
         if !is_new {
-            if r.status != "running" {
+            // 报过失败、主编又重开再派工的：同一版本号、同一触发，轮次撞在同一行上。
+            // 不重新拉起的话，任务在引擎里一直「进行中」、本地一直跳过（09-29 r57 #603 23:50 重派后挂了一夜）
+            if r.status == "failed" && redispatched {
+                conn.execute(
+                    "UPDATE rounds SET status = 'running', ended_at = NULL, note = '报过失败后重新派工：再跑一次' WHERE id = ?1",
+                    [r.id],
+                )?;
+                tracing::info!(
+                    任务 = t.task.id,
+                    轮次 = r.id,
+                    "报过失败后又派了一次：再跑一次"
+                );
+            } else if r.status != "running" {
                 // 本地已收尾（交了、等闸、报过失败），等引擎状态跟上
                 tracing::debug!(任务 = t.task.id, 轮次 = r.id, 状态 = %r.status, "这一轮已经开过了");
                 return Ok(());
@@ -948,7 +960,13 @@ async fn start_round(
             Err(e) => {
                 let why = format!("{e:#}");
                 rounds::finish_round(conn, r.id, "failed", &why)?;
-                let idem = format!("fail-{}-r{}", t.task.id, r.id);
+                // 带上这次派工的时间：报过失败、主编重开再派后同一轮再报失败，键不同才会真的生效
+                let idem = format!(
+                    "fail-{}-r{}-{}",
+                    t.task.id,
+                    r.id,
+                    t.task.dispatched_at.replace([':', '-', '.'], "")
+                );
                 if let Err(e2) = engine.fail(t.task.id, &why, &idem).await {
                     tracing::error!(任务 = t.task.id, 原因 = %format!("{e2:#}"), "连失败都没报出去");
                 }
@@ -1127,7 +1145,13 @@ async fn start_round(
             .await;
             // 报失败不是可选的：不报的话主编在群里看到的一直是「还在做」
             // 幂等键从任务与轮次派生，重试不会重复报
-            let idem = format!("fail-{}-r{}", t.task.id, r.id);
+            // 带上这次派工的时间：报过失败、主编重开再派后同一轮再报失败，键不同才会真的生效
+            let idem = format!(
+                "fail-{}-r{}-{}",
+                t.task.id,
+                r.id,
+                t.task.dispatched_at.replace([':', '-', '.'], "")
+            );
             if let Err(e2) = engine.fail(t.task.id, &why, &idem).await {
                 tracing::error!(任务 = t.task.id, 原因 = %format!("{e2:#}"), "连失败都没报出去");
             }
