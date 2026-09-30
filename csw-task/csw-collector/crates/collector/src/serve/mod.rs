@@ -1066,6 +1066,8 @@ async fn start_round(
                 })
                 .unwrap_or_default();
             let pinned = round::named_in_review(&review_text, &judgements, &fin.by_key);
+            // 返工补采可能改了窗口止点：页头时间、台账窗口按库里的最新值（09-30 r58 v2 还写着 06:00:12）
+            let r = rounds::get(conn, r.id)?.unwrap_or(r);
             let built = finish::build_deliverable(
                 conn,
                 &r,
@@ -1197,7 +1199,7 @@ const SUBMITTED: &str = "已交状态:";
 const UNCHANGED: &str = "内容与上一版相同，未重交";
 /// 交付物 / 登记导出格式的修订号。**改了导出（字段、登记口径、包内文件）就改它**，
 /// 否则返工后内容指纹一样，修好的导出不会重交
-const EXPORT_REV: &str = "2026-09-30a";
+const EXPORT_REV: &str = "2026-09-30b";
 
 /// 引擎窗口的时刻写法是 `2026-09-25T07:00+08:00`（没有秒），先按 RFC 3339 读，读不了补上秒再读。
 fn parse_engine_ts(s: &str) -> Option<jiff::Timestamp> {

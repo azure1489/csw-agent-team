@@ -506,8 +506,9 @@ pub fn window_rule_conflict(r: Option<&IntakeCheckResult>) -> Option<String> {
         .find(|x| !x.is_empty())
         .unwrap_or("若干");
     Some(format!(
-        "规则口径冲突（不是越界）：引擎自查「{}」按原始披露时间判 {n} 条早于窗口；工作台按作业口径\
-         「窗口按首次入库时间，左闭右开」收口，这 {n} 条的首次入库都在本期窗口内（上游断料期间发布、恢复后补入库）。\
+        "规则口径冲突（不是越界）：引擎自查「{}」按登记条目的原始披露时间判 {n} 个条目早于窗口；工作台按作业口径\
+         「窗口按首次入库时间，左闭右开」收口，这些条目的首次入库都在本期窗口内（上游断料期间发布、恢复后补入库）。\
+         逐帖统计（含未登记的不推荐帖）见 trace/window_summary.json 的「披露早于窗口（逐帖）」，与条目数口径不同。\
          逐条保留真实披露时间，不改日期、不撤条目；每条的 posted_at（披露）与 first_seen_at（首次入库）\
          见 trace/window_ids.jsonl，口径冲突的逐条标了 disclosure_before_window。请主编定这一期按哪个口径",
         c.name
@@ -1346,6 +1347,11 @@ fn window_ids(
         "留痕条数": rows.len(),
         "按去向": counts,
         "窗口内": in_window_keys.len(),
+        // 引擎自查按登记条目数；这里是逐帖数，两者口径不同
+        "披露早于窗口（逐帖）": rows
+            .iter()
+            .filter(|r| r.outcome == "in_window" && r.posted_at.as_deref().is_some_and(|p| p < round_start))
+            .count(),
         "判过": judgements.len(),
         "判过但不在留痕窗口内": extra,
         "采集轮自报": sweeps.iter().map(|s| serde_json::json!({

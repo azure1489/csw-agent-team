@@ -259,8 +259,18 @@ pub fn register_and_enqueue(
                 }
             })
     };
+    // 每一路登记了几个条目：按条目主帖的采集来源数（以前从没填过，一直是 0——09-30 r58 v2）
+    let mut sweeps = sweeps.to_vec();
+    for sw in &mut sweeps {
+        let col = register::collector_of(&sw.sweep_key);
+        sw.registered = items
+            .iter()
+            .filter(|i| i.status != "dropped")
+            .filter(|i| by_key.get(&i.item_key).is_some_and(|c| c.collector == col))
+            .count() as i64;
+    }
     let sweep_inputs =
-        register::sweep_inputs(sweeps, (&round.window_start, &round.window_end), per);
+        register::sweep_inputs(&sweeps, (&round.window_start, &round.window_end), per);
     let jis =
         register::judgement_inputs_with_items(judgements, lookup, carried, RUBRIC_VERSION, |k| {
             item_of.get(k).cloned()
@@ -1358,11 +1368,12 @@ pub async fn rework_in_place(
         }
     }
 
-    // 八、登记（上次登记过、这次不列的撤下）
+    // 八、登记（上次登记过、这次不列的撤下）。窗口止点可能刚被补采改过，按库里的最新值
+    let prev_now = rounds::get(conn, prev.id)?.unwrap_or_else(|| prev.clone());
     if let Some(run_id) = prev.run_id {
         register_and_enqueue(
             conn,
-            prev,
+            &prev_now,
             run_id,
             &judgements,
             &topics,
