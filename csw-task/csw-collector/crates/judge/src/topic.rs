@@ -183,6 +183,7 @@ pub async fn synthesize(
                 .filter(|m| keys.contains(m.candidate_key.as_str()))
                 .collect(),
             unsupported: vec![],
+            basis: String::new(),
         },
         split: w
             .split

@@ -986,11 +986,123 @@ async fn build_topics(
                     }
                 }
                 topic::apply(&mut topics, &key, s, js);
+                if let Some(t) = topics.iter_mut().find(|t| t.topic_key == key) {
+                    t.synthesis.basis = synthesis_basis(&t.members, by_key);
+                }
             }
             Err(e) => tracing::warn!(选题 = %key, "选题综合失败，保留逐帖信息：{e:#}"),
         }
     }
     topics
+}
+
+/// 合题综合依据的成员正文指纹：条目键、原文、译文。变了说明综合要重算。
+pub fn synthesis_basis(members: &[String], by_key: &HashMap<String, Candidate>) -> String {
+    let mut h = blake3::Hasher::new();
+    for k in members {
+        h.update(k.as_bytes());
+        if let Some(c) = by_key.get(k) {
+            h.update(b"\x01");
+            h.update(c.text.as_bytes());
+            h.update(b"\x01");
+            h.update(c.translated.as_bytes());
+        }
+        h.update(b"\x02");
+    }
+    h.finalize().to_hex()[..16].to_string()
+}
+
+/// 返工时要不要重算这个选题的综合：
+/// - 有指纹的：成员正文或译文变了才重算；
+/// - 旧轮次没有指纹的：退回意见点到了成员的条目键、或标题对象里带数字的型号（如 C65）才重算。
+///   不整池重算：其余选题的综合主编已经看过。
+fn needs_resynthesis(t: &csw_collector_core::types::Topic, now: &str, review: &str) -> bool {
+    if !csw_collector_judge::topic::needs_synthesis(t) {
+        return false;
+    }
+    if !t.synthesis.basis.is_empty() {
+        return t.synthesis.basis != now;
+    }
+    let review_l = review.to_lowercase();
+    if t.members
+        .iter()
+        .any(|m| review_l.contains(&m.to_lowercase()))
+    {
+        return true;
+    }
+    let object = t.headline.split('｜').next().unwrap_or_default();
+    object
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+        .filter(|w| {
+            w.len() >= 2
+                && w.chars().any(|c| c.is_ascii_digit())
+                && w.chars().any(|c| c.is_ascii_alphabetic())
+        })
+        .any(|w| review_l.contains(&w.to_lowercase()))
+}
+
+/// 返工时重算需要重算的选题综合。**成员关系不动**（主编「禁止破坏合题关系」）：
+/// 只换标题、共同事实、各帖新增；模型提议的拆分不采纳。
+async fn refresh_synthesis(
+    svc: &super::services::Services,
+    topics: &mut [csw_collector_core::types::Topic],
+    js: &[Judgement],
+    by_key: &HashMap<String, Candidate>,
+    review: &str,
+) {
+    use csw_collector_judge::topic;
+    for t in topics.iter_mut() {
+        // 只剩一帖的选题没有「共同事实」可言：拆组（主编校准单列）后留下的旧综合要清掉，
+        // 不然交付包里还写着「两帖均……」（10-01 r59 C65：拆出 8b6b68 后共同事实里的「棉」一直在）
+        if t.members.len() < 2
+            && (!t.synthesis.shared_facts.is_empty() || !t.synthesis.per_member.is_empty())
+        {
+            t.synthesis.shared_facts.clear();
+            t.synthesis.per_member.clear();
+            t.synthesis.unsupported.clear();
+            tracing::info!(选题 = %t.topic_key, "返工：只剩一帖，清掉拆组前留下的共同事实");
+            continue;
+        }
+        let now = synthesis_basis(&t.members, by_key);
+        if !needs_resynthesis(t, &now, review) {
+            continue;
+        }
+        let members: Vec<(&Candidate, &Judgement)> = t
+            .members
+            .iter()
+            .filter_map(|k| Some((by_key.get(k)?, js.iter().find(|j| &j.candidate_key == k)?)))
+            .collect();
+        if members.len() < 2 {
+            continue;
+        }
+        match topic::synthesize(&svc.model, t, &members).await {
+            Ok(mut s) => {
+                if let Some(jev) = svc.jev.as_ref()
+                    && let Ok(bad) = topic::verify_new_info(jev, &s.synthesis.per_member, |k| {
+                        by_key
+                            .get(k)
+                            .map(|c| format!("{}\n{}", c.text, c.translated))
+                    })
+                    .await
+                {
+                    s.synthesis.unsupported = bad;
+                }
+                if !s.headline.trim().is_empty() {
+                    t.headline = s.headline;
+                }
+                let members = t.members.clone();
+                s.synthesis
+                    .per_member
+                    .retain(|n| members.contains(&n.candidate_key));
+                t.synthesis = s.synthesis;
+                t.synthesis.basis = now;
+                tracing::info!(选题 = %t.topic_key, "返工：成员正文或译文变了，重算选题综合");
+            }
+            Err(e) => {
+                tracing::warn!(选题 = %t.topic_key, "返工重算选题综合失败，保留原综合：{e:#}")
+            }
+        }
+    }
 }
 
 /// 第 2–5 步的产物。
@@ -1215,6 +1327,29 @@ pub async fn rework_in_place(
         win_end = e.to_string();
     }
 
+    // 二·再：类型是图或轮播、来源接口却没给媒体的，当初被当成「非图文」排除了。
+    // 那是**读取缺失，不是不合格**（10-01 r59 andwander：主编退回「无图应待核、不计实图已阅」）。
+    // 从留痕把窗口内的这几条收回本期，代码直接定待核，不交模型
+    for (c, j) in readmit_no_media(conn, prev.id, &prev.window_start, &win_end, cfg) {
+        if judgements
+            .iter()
+            .any(|x| x.candidate_key == j.candidate_key)
+        {
+            continue;
+        }
+        by_key.insert(c.candidate_key.clone(), c);
+        topics.push(csw_collector_core::types::Topic {
+            topic_key: j.candidate_key.clone(),
+            primary_key: j.candidate_key.clone(),
+            members: vec![j.candidate_key.clone()],
+            merge_note: "来源没给媒体，单列待核".into(),
+            tier: Some(j.tier),
+            headline: j.headline.clone(),
+            synthesis: Default::default(),
+        });
+        judgements.push(j);
+    }
+
     // 三、挑要改的：退回意见点名的条目优先，再补推荐 / 备选选题的代表帖
     // 二·校准：主编定过去向的条目直接采用，不交给模型重判（09-30 r58：连退十几版的根因）
     let calibrated: HashSet<String> = apply_calibrations(
@@ -1354,6 +1489,10 @@ pub async fn rework_in_place(
         }
     }
 
+    // 五·补：合题综合（共同事实、各帖新增）跟着成员的原文与译文走。成员的正文或译文改过的
+    // 重算一次综合，成员关系不动（10-01 r59：主编改了 C65 的译文，共同事实里的「棉」还在）
+    refresh_synthesis(svc, &mut topics, &judgements, &by_key, &review_raw).await;
+
     // 六、选题档位按成员重算
     retier_topics(&mut topics, &judgements);
     if let Err(e) = csw_collector_core::topics::put_topics(conn, prev.id, &topics) {
@@ -1479,6 +1618,114 @@ fn apply_calibrations(
         tracing::info!(条数 = done.len(), "返工：套用主编校准");
     }
     done
+}
+
+/// 留痕里「图或轮播、接口没给媒体」被排除、但原始披露在窗口内的，收回这一轮并定待核。
+///
+/// 留痕只有账号、链接与时间，没有正文：候选按这些落库，正文留空，缺口写明正文与图都要人工打开原帖核。
+/// 已经收回过的（留痕已改成 in_window）不会再出现，重复返工是幂等的。
+pub fn readmit_no_media(
+    conn: &Connection,
+    round_id: i64,
+    from: &str,
+    to: &str,
+    cfg: &Config,
+) -> Vec<(Candidate, Judgement)> {
+    use csw_collector_core::types::Platform;
+    let (Ok(from), Ok(to)) = (from.parse::<Timestamp>(), to.parse::<Timestamp>()) else {
+        return Vec::new();
+    };
+    let rows: Vec<csw_collector_core::window_trace::TraceRow> =
+        csw_collector_core::window_trace::of_round(conn, round_id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|t| t.outcome == "not_image_only" && is_no_media_image(&t.media))
+            .collect();
+    let mut out = Vec::new();
+    for t in rows {
+        let ts = |s: &Option<String>| s.as_deref().and_then(|x| x.parse::<Timestamp>().ok());
+        let (posted, ingested) = (ts(&t.posted_at), ts(&t.ingested_at));
+        if !posted.or(ingested).is_some_and(|x| x >= from && x < to) {
+            continue;
+        }
+        let c = Candidate {
+            candidate_key: t.candidate_key.clone(),
+            platform: if t.url.contains("xiaohongshu") {
+                Platform::Xiaohongshu
+            } else {
+                Platform::Instagram
+            },
+            source_id: t.source_id.clone(),
+            collector: t.sweep_key.clone(),
+            account: t.account.clone(),
+            url: t.url.clone(),
+            text: String::new(),
+            translated: String::new(),
+            posted_at: posted,
+            ingested_at: ingested,
+            likes: None,
+            comments: None,
+            followers: None,
+            heat_ratio: None,
+            content_type: t.media.split('：').next().unwrap_or_default().to_string(),
+            media: Vec::new(),
+            tags: vec![],
+            hashtags: vec![],
+        };
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM candidates WHERE candidate_key = ?1",
+                [&c.candidate_key],
+                |_| Ok(()),
+            )
+            .is_ok();
+        let mut j = csw_collector_judge::verdict::pending_for_missing_image(
+            &c,
+            &format!(
+                "来源接口这条只给了类型 {}、没给媒体与正文（读取缺失，不是非图文），需人工打开原帖核图与正文",
+                c.content_type
+            ),
+        );
+        j.inputs_hash = format!("readmit-no-media-{}", c.candidate_key);
+        for g in &mut j.gaps {
+            g.owner = csw_collector_core::types::GapOwner::Editor;
+            g.tried = "来源接口取数（只给了类型，没给媒体与正文）".into();
+            g.next = "人工打开原帖核图与正文后定档".into();
+        }
+        let r = (|| -> Result<()> {
+            if !exists {
+                ledger::upsert_candidate(conn, &c)?;
+            }
+            ledger::attach_candidate(conn, round_id, &c.candidate_key, &t.sweep_key, false)?;
+            conn.execute(
+                "UPDATE window_trace SET outcome = 'in_window'
+                  WHERE round_id = ?1 AND sweep_key = ?2 AND source_id = ?3",
+                rusqlite::params![round_id, t.sweep_key, t.source_id],
+            )?;
+            ledger::put_judgement(
+                conn,
+                round_id,
+                &j,
+                &["【口径】来源没给媒体：收回本期、定待核，不计实图已阅".to_string()],
+                &cfg.model.model,
+                RUBRIC_VERSION,
+            )?;
+            Ok(())
+        })();
+        match r {
+            Ok(()) => out.push((c, j)),
+            Err(e) => tracing::warn!(候选 = %t.candidate_key, "没给媒体的条目没收回：{e:#}"),
+        }
+    }
+    if !out.is_empty() {
+        tracing::info!(条数 = out.len(), "返工：没给媒体的图文帖收回本期、定待核");
+    }
+    out
+}
+
+/// 留痕里的媒体摘要是「类型：无媒体」，且类型是图或轮播。
+fn is_no_media_image(media: &str) -> bool {
+    matches!(media, "Image：无媒体" | "Carousel：无媒体")
 }
 
 /// 记一次补采（主力窗口采集器那一路）。0 条也记：这就是「这一段扫过、没有新入库」的证据。
@@ -2284,7 +2531,14 @@ async fn judge_items<'a>(
             materials,
             fused: p.fused.as_deref(),
             image_seen: p.image_seen(),
-            image_gap: p.failed_media.join("；"),
+            image_gap: if p.candidate.media.is_empty() {
+                format!(
+                    "来源接口这条只给了类型 {}、没给媒体（读取缺失，不是非图文），需人工打开原帖核图",
+                    p.candidate.content_type
+                )
+            } else {
+                p.failed_media.join("；")
+            },
             heat_note: csw_collector_judge::order::heat_note(&p.candidate, None),
             brand_keys,
             refetched: Vec::new(),
@@ -2345,6 +2599,141 @@ pub fn save_window_trace(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn open_test_round(conn: &Connection, from: &str, to: &str) -> i64 {
+        rounds::open_round(
+            conn,
+            &rounds::NewRound {
+                kind: csw_collector_core::types::RoundKind::Task,
+                trigger: csw_collector_core::types::RoundTrigger::Dispatch,
+                run_id: Some(59),
+                task_id: Some(625),
+                stage_code: Some("intake".into()),
+                target_version: 1,
+                parent_round_id: None,
+                window_start: from.into(),
+                window_end: to.into(),
+                plan_version: 1,
+                rubric_version: "v".into(),
+                kb_snapshot: "k".into(),
+                instructions_hash: String::new(),
+            },
+        )
+        .unwrap()
+        .0
+        .id
+    }
+
+    /// 10-01 r59 andwander：类型是图、接口没给媒体，被当「非图文」排除。是读取缺失，收回来定待核
+    #[test]
+    fn 没给媒体的图文帖收回本期定待核() {
+        use csw_collector_core::types::Tier;
+        use csw_collector_core::window_trace::{TraceRow, of_round, put};
+        let conn = csw_collector_core::store::open_in_memory().unwrap();
+        let id = open_test_round(&conn, "2026-09-29T23:00:00Z", "2026-09-30T23:00:00Z");
+        let row = |sid: &str, key: &str, posted: &str, media: &str| TraceRow {
+            sweep_key: "csw-window".into(),
+            source_id: sid.into(),
+            candidate_key: key.into(),
+            account: "andwander_official".into(),
+            url: format!("https://www.instagram.com/p/{sid}/"),
+            posted_at: Some(posted.into()),
+            ingested_at: Some("2026-09-30T17:02:31Z".into()),
+            media: media.into(),
+            outcome: "not_image_only".into(),
+            dup_of: None,
+            source: "live".into(),
+        };
+        put(
+            &conn,
+            id,
+            "csw-window",
+            &[
+                row(
+                    "1",
+                    "andwander-aaaaaa",
+                    "2026-09-30T02:00:05Z",
+                    "Image：无媒体",
+                ),
+                // Reel 没媒体还是非图文
+                row(
+                    "2",
+                    "andwander-bbbbbb",
+                    "2026-09-30T02:00:05Z",
+                    "Reel：无媒体",
+                ),
+                // 披露早于窗口的不收
+                row(
+                    "3",
+                    "andwander-cccccc",
+                    "2026-09-20T02:00:05Z",
+                    "Carousel：无媒体",
+                ),
+                // 有视频的照旧排除
+                row(
+                    "4",
+                    "andwander-dddddd",
+                    "2026-09-30T02:00:05Z",
+                    "Carousel：图 2、视频 1",
+                ),
+            ],
+        )
+        .unwrap();
+        let cfg = Config::default();
+        let got = readmit_no_media(
+            &conn,
+            id,
+            "2026-09-29T23:00:00Z",
+            "2026-09-30T23:00:00Z",
+            &cfg,
+        );
+        assert_eq!(got.len(), 1);
+        let (c, j) = &got[0];
+        assert_eq!(c.candidate_key, "andwander-aaaaaa");
+        assert_eq!(j.tier, Tier::PendingCheck);
+        assert!(!j.image_seen, "不计实图已阅");
+        let trace = of_round(&conn, id).unwrap();
+        assert_eq!(
+            trace.iter().find(|t| t.source_id == "1").unwrap().outcome,
+            "in_window"
+        );
+        // 再返工一次不会重复收
+        assert!(
+            readmit_no_media(
+                &conn,
+                id,
+                "2026-09-29T23:00:00Z",
+                "2026-09-30T23:00:00Z",
+                &cfg
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn 成员正文变了或意见点到型号才重算选题综合() {
+        use csw_collector_core::types::{Tier, Topic};
+        let mut t = Topic {
+            topic_key: "coleman-8b6b68".into(),
+            primary_key: "coleman-8b6b68".into(),
+            members: vec!["coleman-8b6b68".into(), "coleman-111111".into()],
+            merge_note: String::new(),
+            tier: Some(Tier::Recommend),
+            headline: "Coleman C65 斜纹裤｜…".into(),
+            synthesis: Default::default(),
+        };
+        // 旧数据没有指纹：意见点到型号才算
+        assert!(needs_resynthesis(&t, "x", "C65 译文仍写棉成分"));
+        assert!(!needs_resynthesis(&t, "x", "Coleman 其余照旧"));
+        assert!(needs_resynthesis(&t, "x", "coleman-111111 的新增不对"));
+        // 有指纹：只看指纹
+        t.synthesis.basis = "x".into();
+        assert!(!needs_resynthesis(&t, "x", "C65 译文仍写棉成分"));
+        assert!(needs_resynthesis(&t, "y", ""));
+        // 单帖或不推荐的选题本来就不综合
+        t.members.truncate(1);
+        assert!(!needs_resynthesis(&t, "y", ""));
+    }
 
     #[test]
     fn 主编校准直接改档并单独成题() {

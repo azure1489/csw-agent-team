@@ -465,6 +465,20 @@ func TestDailyNewsV10Draft(t *testing.T) {
 			t.Fatalf("v10 的 01 少了「%s」", want)
 		}
 	}
+	// 0043：窗口按原始披露时间判（生产约定），首次入库只作抓取证据。
+	// 草稿被人在后台改过时 REPLACE 会静默对不上，这里兜住
+	if !strings.Contains(intake, "**窗口以原始披露时间为准**") || strings.Contains(intake, "首次进入来源库的时间为准") {
+		t.Fatal("v10 的 01 窗口口径应是原始披露时间，不是首次进入来源库")
+	}
+	// 已激活的 v9 不动
+	var v9 string
+	if err := db.QueryRow(`SELECT s.instructions FROM workflow_stages s JOIN workflows w ON w.id=s.workflow_id
+		WHERE w.wf_key='daily_news' AND w.version=9 AND s.code='intake'`).Scan(&v9); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(v9, "首次进入来源库的时间为准") {
+		t.Fatal("0043 只改 v10 草稿，v9 不该被改")
+	}
 	// 从 v9 复制：阶段数与依赖数一样
 	var n9, n10, d9, d10 int
 	q := func(v int, sql string) int {

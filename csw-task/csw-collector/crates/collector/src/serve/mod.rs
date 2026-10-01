@@ -1176,9 +1176,12 @@ async fn start_round(
                 .map(|x| format!("{}|{}|{}|{}", x.sweep_key, x.source_id, x.outcome, x.source))
                 .collect::<Vec<_>>()
                 .join("\n");
+            // 交付包里还有原文与译文、补采记录、窗口起止：这些变了导出就变，也要算进来。
+            // 10-01 r59：主编改了 C65 的译文，指纹只看判断与选题，返工五次都说「内容相同」没重交
+            let sources = export_sources(conn, &r, &judgements);
             let state = blake3::hash(
                 format!(
-                    "{EXPORT_REV}\u{1}{}\u{1}{}\u{1}{}\u{1}{trace}",
+                    "{EXPORT_REV}\u{1}{}\u{1}{}\u{1}{}\u{1}{trace}\u{1}{sources}",
                     serde_json::to_string(&judgements).unwrap_or_default(),
                     serde_json::to_string(&fin.topics).unwrap_or_default(),
                     serde_json::to_string(&items).unwrap_or_default()
@@ -1197,10 +1200,14 @@ async fn start_round(
                 // **不能悄悄等**：主编以为工作台还在改，工作台在等主编的新意见，两边一起停住
                 //（09-29 r56 v8 退回后停了 11 个小时）。报失败并写明原因，引擎会 @ 主编；
                 // 主编重开再派工，工作台就接着在原轮次上返工
+                // 逐条说清哪几句意见没落地：只说「内容相同」，主编只能一遍遍重开（10-01 r59 连失败 5 次）
+                let left = unhandled_review_lines(&review_text, &judgements);
                 let why = format!(
-                    "按 v{v} 的退回意见在原轮次返工后，判断、选题与登记与已交的 v{v} 完全相同，\
-                     没有重交。意见要求的改动工作台没能自动完成，需主编定点编辑、换个说法点名条目键，\
-                     或重开后另给指示。本地轮次保留，重开派工后接着返工，不重新采集",
+                    "按 v{v} 的退回意见在原轮次返工后，交付内容与已交的 v{v} 完全相同，没有重交。\
+                     工作台返工能自动做的只有：按「条目键=待核/备选/停止/继续」改档、点名条目定点重判、\
+                     补采窗口缺的一段、收回来源没给媒体的图文帖、成员正文或译文改过的选题重算综合、\
+                     按库里最新原文与译文重新导出。{left}\
+                     请改成「条目键=去向」写法，或交维护方处理；本地轮次保留，重开派工后接着返工，不重新采集",
                     v = t.task.cur_version
                 );
                 let idem = format!(
@@ -1348,6 +1355,57 @@ fn outbox_conflicts(conn: &rusqlite::Connection) -> Result<Vec<i64>> {
         .collect())
 }
 
+/// 退回意见里没有点到任何条目键、也不是「条目键=去向」写法的句子：工作台返工落不了地的那几句。
+/// 至多列 4 句、每句 60 字，写进失败原因。
+fn unhandled_review_lines(review: &str, js: &[csw_collector_core::types::Judgement]) -> String {
+    let keys: Vec<String> = js.iter().map(|j| j.candidate_key.to_lowercase()).collect();
+    let lines: Vec<String> = review
+        .split(['\n', '；', '。'])
+        .map(str::trim)
+        .filter(|l| l.chars().count() >= 8)
+        .filter(|l| {
+            let low = l.to_lowercase();
+            !keys.iter().any(|k| low.contains(k.as_str()))
+        })
+        .map(|l| l.chars().take(60).collect::<String>())
+        .take(4)
+        .collect();
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "以下意见不在这些范围内，没能自动落地：「{}」。",
+            lines.join("」「")
+        )
+    }
+}
+
+/// 交付包里判断与选题之外、但会进导出的输入：各条的原文与译文、补采记录、窗口起止。
+fn export_sources(
+    conn: &rusqlite::Connection,
+    r: &csw_collector_core::rounds::Round,
+    judgements: &[csw_collector_core::types::Judgement],
+) -> String {
+    let mut out = format!("{}|{}", r.window_start, r.window_end);
+    let mut st = match conn
+        .prepare_cached("SELECT text, translated FROM candidates WHERE candidate_key = ?1")
+    {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    for j in judgements {
+        if let Ok((t, tr)) = st.query_row([&j.candidate_key], |x| {
+            Ok((x.get::<_, String>(0)?, x.get::<_, String>(1)?))
+        }) {
+            out.push_str(&format!("\u{1}{}|{t}|{tr}", j.candidate_key));
+        }
+    }
+    for p in csw_collector_core::window_trace::patches_of(conn, r.id).unwrap_or_default() {
+        out.push_str(&format!("\u{1}{p:?}"));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1362,6 +1420,21 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn 返工落不了地的意见逐句列出() {
+        use csw_collector_core::types::{Judgement, Tier};
+        let js = vec![Judgement::fixture("drlv-cf21b4", Tier::Recommend)];
+        let s = unhandled_review_lines(
+            "drlv-cf21b4=待核；窗口摘要仍与 v3 字节相同。andwander 无图应待核\n短句",
+            &js,
+        );
+        assert!(s.contains("窗口摘要仍与 v3 字节相同"));
+        assert!(s.contains("andwander 无图应待核"));
+        assert!(!s.contains("drlv"), "点到条目键的已经按校准处理");
+        assert!(!s.contains("短句"));
+        assert_eq!(unhandled_review_lines("", &js), "");
+    }
 
     #[test]
     fn 监听所有网卡时探的是回环() {

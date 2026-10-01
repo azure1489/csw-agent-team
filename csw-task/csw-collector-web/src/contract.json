@@ -730,7 +730,7 @@
           "usable_images": {
             "type": "integer",
             "format": "int32",
-            "description": "可作配图的实图张数",
+            "description": "可作配图的实图张数。模型偶尔给出负数或离谱的大数，按 0–255 收住，\n不让一个字段把一整批六条的结论都解析失败",
             "minimum": 0
           }
         }
@@ -742,7 +742,8 @@
           "task",
           "manual",
           "prefetch",
-          "replay"
+          "replay",
+          "backtest"
         ]
       },
       "RoundTrigger": {
@@ -871,6 +872,10 @@
           "unsupported"
         ],
         "properties": {
+          "basis": {
+            "type": "string",
+            "description": "综合时成员的正文指纹（条目键 + 原文 + 译文）。返工时对不上就重算；旧数据没有，是空的"
+          },
           "per_member": {
             "type": "array",
             "items": {

@@ -185,9 +185,11 @@ pub struct Candidate {
 
 impl Candidate {
     /// 只取图文，判据是严格的：类型是图或轮播，**且**媒体里一个视频都没有。
+    ///
+    /// 类型是图或轮播、接口却没给媒体的**算图文**：那是读取缺失，不是不合格。
+    /// 它照样进窗口、进台账，因为没读到实图，由判断口径定待核（10-01 r59 andwander）。
     pub fn is_image_only(&self) -> bool {
         matches!(self.content_type.as_str(), "Image" | "Carousel")
-            && !self.media.is_empty()
             && self.media.iter().all(|m| m.kind == MediaKind::Photo)
     }
 }
@@ -754,6 +756,9 @@ pub struct TopicSynthesis {
     pub per_member: Vec<MemberNote>,
     /// 新增信息在该帖材料里核不到的（Jev 支持度低于阈值），给人看
     pub unsupported: Vec<String>,
+    /// 综合时成员的正文指纹（条目键 + 原文 + 译文）。返工时对不上就重算；旧数据没有，是空的
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub basis: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
@@ -909,7 +914,9 @@ mod tests {
         assert!(mk("Carousel", &[Photo, Photo]).is_image_only());
         assert!(!mk("Carousel", &[Photo, Video]).is_image_only());
         assert!(!mk("Reel", &[Photo]).is_image_only());
-        assert!(!mk("Carousel", &[]).is_image_only());
+        // 没给媒体是读取缺失，照样算图文（由判断定待核）
+        assert!(mk("Carousel", &[]).is_image_only());
+        assert!(!mk("Reel", &[]).is_image_only());
     }
 
     #[test]
