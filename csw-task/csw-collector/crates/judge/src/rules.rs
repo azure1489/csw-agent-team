@@ -57,8 +57,10 @@ static NOT_A_GAP: LazyLock<Regex> = LazyLock::new(|| {
 /// 句子切分：连同句末标点一起切。
 /// 「五类材料齐备 / 均已提供」：查过五类不等于五类都拿到了正文（10-01 r59 主编退回）
 static ALL_PROVIDED: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"五类(?:材料|对照)(?:均|都)?(?:已)?(?:提供|齐备|齐全|齐)(?:记录或查询结果)?")
-        .expect("正则")
+    Regex::new(
+        r"五类(?:对照)?(?:材料|对照)(?:均|都)?(?:已)?(?:提供|齐备|齐全|齐)(?:记录或查询结果)?",
+    )
+    .expect("正则")
 });
 
 static SENTENCE: LazyLock<Regex> =
