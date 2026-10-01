@@ -1661,16 +1661,22 @@ pub async fn rework_in_place(
         .iter()
         .filter(|j| j.inputs_hash.starts_with("readmit-no-media-"))
         .count() as i64;
+    // 采集轮的 in_window / reviewed 保留当初宽取的原始事实：返工收回的没给媒体条目不算实阅
+    //（10-01 r59 v10 退回：「reviewed=172 与 image_seen=false 的新增 andwander 冲突」）
     for sw in sweeps.iter_mut() {
         if readmitted > 0
             && register::collector_of(&sw.sweep_key) == register::collector_of("csw-window")
-            && !sw.query.contains("返工收回")
         {
-            sw.query.push_str(&format!(
-                "；窗口内 {} = 当初宽取 {} + 返工收回 {readmitted} 条（来源没给媒体，待核，未读实图，不计实阅）",
-                sw.in_window,
-                sw.in_window - readmitted
-            ));
+            sw.in_window -= readmitted;
+            sw.reviewed -= readmitted;
+            if !sw.query.contains("返工收回") {
+                sw.query.push_str(&format!(
+                    "；窗口内 {} 为当初宽取的原始数；台账 {} = {} + 返工收回 {readmitted} 条（来源没给媒体，待核，未读实图，不计实阅）",
+                    sw.in_window,
+                    sw.in_window + readmitted,
+                    sw.in_window
+                ));
+            }
         }
     }
     // 八、登记（上次登记过、这次不列的撤下）。窗口止点可能刚被补采改过，按库里的最新值

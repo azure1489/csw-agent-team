@@ -187,7 +187,7 @@ fn write_one(s: &mut String, j: &Judgement, c: Option<&Candidate>) {
         // 原始披露时间与转载时间分开写——把转载时间当成发布时间是一类真错
         let _ = writeln!(
             s,
-            "- 原始披露时间：{}",
+            "- 贴文发布时间（来源库 posted_at，首次披露未另核）：{}",
             c.posted_at
                 .map(|t| t.to_string())
                 .unwrap_or_else(|| "不详".into())
@@ -657,7 +657,7 @@ mod tests {
             Some(cand(k))
         });
         assert!(
-            body.contains("原始披露时间：2026-09-17T08:00:00Z"),
+            body.contains("贴文发布时间（来源库 posted_at，首次披露未另核）：2026-09-17T08:00:00Z"),
             "{body}"
         );
         assert!(

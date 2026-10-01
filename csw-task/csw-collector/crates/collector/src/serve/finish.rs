@@ -1212,7 +1212,8 @@ fn first_cards(
         if let Some(c) = c {
             s.push_str(&format!("- 原帖：@{} {}\n", c.account, c.url));
             s.push_str(&format!(
-                "- 原始披露时间：{}\n- 首次入库（first_seen）：{}\n",
+                // 来源库的 posted_at 是平台贴文时间，不等于核过的首次披露（10-01 r59 v10 退回）
+                "- 贴文发布时间（来源库 posted_at，首次披露未另核）：{}\n- 首次入库（first_seen）：{}\n",
                 c.posted_at
                     .map(|t| t.to_string())
                     .unwrap_or_else(|| "缺".into()),
