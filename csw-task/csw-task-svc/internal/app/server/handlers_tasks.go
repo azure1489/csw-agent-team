@@ -291,7 +291,7 @@ func (s *Server) handleSubmitMultipart(c *gin.Context, taskID int64) {
 	defer f.Close()
 
 	filename, objectKey := deriveDeliverableNames(
-		wf.Name, run.Subject, run.ID, task.StageName, owner, ver, filepath.Ext(fh.Filename))
+		wf.Name, run.Subject, run.ID, task.StageName, task.ItemKey, owner, ver, filepath.Ext(fh.Filename))
 
 	sha, storagePath, size, err := s.blobs.Put(f, objectKey)
 	if err != nil {
