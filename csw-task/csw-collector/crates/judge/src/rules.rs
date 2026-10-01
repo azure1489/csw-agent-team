@@ -101,6 +101,20 @@ pub fn apply(j: &mut Judgement, ctx: &Ctx<'_>) -> Applied {
 
     // R8 图都看过了还说没看图。判断只随附前 3 张缩略、其余给看图结果，模型会把它当成
     // 「没读到第 4 张以后的实图」落待核——09-24 r53 的 61 条待核里 52 条是这个
+    // 反过来：没读全图的条目，模型的输出转换时 image_seen 被写死为 true（verdict.rs），这里改回事实。
+    // 平时没读到实图的不送模型，但深核带卡重判会送（10-01 r60 andwander：0 张图却 image_seen=true）
+    if !ctx.images_all_read && j.image_seen {
+        j.image_seen = false;
+        if j.tier != Tier::PendingCheck {
+            out.notes.push(format!(
+                "{NOTE}这条没读全实图，档位由 {:?} 落待核（没读到实图只能待核）",
+                j.tier
+            ));
+            j.tier = Tier::PendingCheck;
+        }
+        out.notes
+            .push(format!("{NOTE}这条没读全实图，读到实图改为否"));
+    }
     if ctx.images_all_read {
         j.image_seen = true;
         let before = j.gaps.len();
@@ -599,7 +613,8 @@ mod tests {
             materials: ms,
             brand_keys: brands,
             allow_rejudge: again,
-            images_all_read: false,
+            // 真实情况下送进模型的都是图全读到的；没读全的另有测试
+            images_all_read: true,
             deepchecked: false,
             source_text: "",
         }
@@ -890,7 +905,9 @@ mod tests {
         let mut j = Judgement::fixture("k", Tier::Recommend);
         j.image_seen = false;
         j.dims[3].1.basis = " ".into();
-        apply(&mut j, &ctx(&[], &[], true));
+        let mut c = ctx(&[], &[], true);
+        c.images_all_read = false;
+        apply(&mut j, &c);
         assert_eq!(j.tier, Tier::PendingCheck);
         assert!(j.violations().is_empty(), "{:?}", j.violations());
     }
@@ -937,9 +954,24 @@ mod tests {
         let mut j = Judgement::fixture("k", Tier::PendingCheck);
         j.image_seen = false;
         j.gaps = vec![Gap::decision("未读到实图")];
-        apply(&mut j, &ctx(&[], &[], true));
+        let mut c = ctx(&[], &[], true);
+        c.images_all_read = false;
+        apply(&mut j, &c);
         assert_eq!(j.gaps.len(), 1);
         assert!(!j.image_seen);
+    }
+
+    /// 10-01 r60 andwander：0 张图，深核带卡重判后模型输出被写成 image_seen=true、不推荐
+    #[test]
+    fn 没读全图的模型输出改回没读到并落待核() {
+        let mut j = Judgement::fixture("andwander-3bbddb", Tier::NotRecommend);
+        assert!(j.image_seen, "模型输出转换时恒为 true");
+        let mut c = ctx(&[], &[], false);
+        c.images_all_read = false;
+        let a = apply(&mut j, &c);
+        assert!(!j.image_seen);
+        assert_eq!(j.tier, Tier::PendingCheck);
+        assert!(a.notes.iter().any(|n| n.contains("读到实图改为否")));
     }
 
     #[test]
