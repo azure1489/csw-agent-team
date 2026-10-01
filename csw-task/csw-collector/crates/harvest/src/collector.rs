@@ -59,7 +59,7 @@ pub trait Collector {
 /// csw 贴文窗口——主力采集器。
 pub struct CswWindow {
     pub client: std::sync::Arc<crate::csw::CswClient>,
-    /// 取候选时往前多看几天：接口只按发布时间过滤，宽取再本地按入库时间收口
+    /// 取候选时往前多看几天：接口只按发布时间过滤，宽取再本地按原始披露时间收口
     pub lookback_days: i64,
 }
 
@@ -90,7 +90,9 @@ impl Collector for CswWindow {
                     candidates,
                     found,
                     paged_to_end: true, // window() 内部翻到 has_more=false 才返回
-                    query: format!("发布时间 {start}~{end}（本地按入库时间 {from}~{to} 收口）"),
+                    query: format!(
+                        "接口按发布时间宽取 {start}~{end}；本地按原始披露时间 {from}~{to}（左闭右开）收口"
+                    ),
                 })
             }
             Err(e) => Outcome::Failed(format!("{e:#}")),

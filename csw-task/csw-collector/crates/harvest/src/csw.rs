@@ -20,7 +20,7 @@ use anyhow::{Context, Result, bail};
 use csw_collector_core::types::{Candidate, MediaKind, MediaRef, Platform, Timestamp};
 use serde::Deserialize;
 
-/// 取更宽的发布时间窗口再本地按入库时间收口。
+/// 取更宽的发布时间窗口再本地按原始披露时间收口（没有披露时间的按首次入库）。
 ///
 /// 为什么是 7 天：一条 9/17 发布的贴文若 9/20 才被抓到，按入库时间它属于 9/20 那一期；
 /// 用发布时间开窗就会漏掉它。实测 9/17–9/18 那批两者按日完全重合（216 / 222），
