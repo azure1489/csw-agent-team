@@ -750,7 +750,7 @@ pub fn build_deliverable(
         topics,
         sweeps,
         by_key,
-        &round.window_start,
+        (&round.window_start, &round.window_end),
     )?;
     entries.push(pack::Entry::text("trace/window_ids.jsonl", ids));
     entries.push(pack::Entry::text(
@@ -1372,7 +1372,7 @@ fn window_ids(
     topics: &[csw_collector_core::types::Topic],
     sweeps: &[SweepCount],
     by_key: &HashMap<String, Candidate>,
-    round_start: &str,
+    (round_start, round_end): (&str, &str),
 ) -> Result<(String, serde_json::Value)> {
     use csw_collector_harvest::pipeline::TraceOutcome;
     let item_of = crate::serve::register::item_of_with_history(conn, round_id, topics);
@@ -1493,6 +1493,8 @@ fn window_ids(
             .count(),
         "判过": judgements.len(),
         "判过但不在留痕窗口内": extra,
+        // 主编要能核实际按哪个字段过滤、与首次入库口径差在哪些帖（10-01 r60 v1–v11 退回）
+        "实际筛选依据": window_basis(&rows, round_start, round_end),
         "采集轮自报": sweeps.iter().map(|s| serde_json::json!({
             "sweep_key": s.sweep_key, "found": s.found, "fetched_unique": s.fetched_unique, "in_window": s.in_window,
         })).collect::<Vec<_>>(),
@@ -1508,6 +1510,54 @@ fn window_ids(
         },
     });
     Ok((out, summary))
+}
+
+/// 窗口实际按哪个字段筛、代码在哪、与「按首次入库」相比差在哪些帖（逐键）。
+fn window_basis(
+    rows: &[csw_collector_core::window_trace::TraceRow],
+    from: &str,
+    to: &str,
+) -> serde_json::Value {
+    let ts = |s: &Option<String>| s.as_deref().and_then(|x| x.parse::<jiff::Timestamp>().ok());
+    let (Ok(f), Ok(t)) = (
+        from.parse::<jiff::Timestamp>(),
+        to.parse::<jiff::Timestamp>(),
+    ) else {
+        return serde_json::json!({"说明": "窗口起止读不出来，未逐键比对"});
+    };
+    let inside = |x: Option<jiff::Timestamp>| x.is_some_and(|x| x >= f && x < t);
+    let mut only_posted = Vec::new(); // 按披露在窗内、按首次入库不在
+    let mut only_seen = Vec::new(); // 按首次入库在窗内、按披露不在（晚抓到的旧帖）
+    let mut fallback = Vec::new(); // 没有披露时间、按首次入库判的
+    for r in rows {
+        if matches!(
+            r.outcome.as_str(),
+            "dup_in_sweep" | "dup_across" | "not_image_only"
+        ) {
+            continue;
+        }
+        let (p, i) = (ts(&r.posted_at), ts(&r.ingested_at));
+        if p.is_none() {
+            if inside(i) {
+                fallback.push(r.candidate_key.clone());
+            }
+            continue;
+        }
+        match (inside(p), inside(i)) {
+            (true, false) => only_posted.push(r.candidate_key.clone()),
+            (false, true) => only_seen.push(r.candidate_key.clone()),
+            _ => {}
+        }
+    }
+    serde_json::json!({
+        "窗口": format!("{from} ~ {to}（UTC，左闭右开）"),
+        "实际过滤字段": "posted_at（csw 接口 postedAt，平台贴文时间）；posted_at 缺失时用 ingested_at（csw 首次入库）",
+        "代码位置": "csw-collector crates/harvest/src/pipeline.rs window_outcome / in_window：c.posted_at.or(c.ingested_at) 落在 [起, 止) 内",
+        "说明": "posted_at 是来源库记录的平台贴文时间，不等于另行核实过的首次披露；首次入库只作抓取证据",
+        "按披露在窗内_按首次入库不在": {"条数": only_posted.len(), "条目": only_posted},
+        "按首次入库在窗内_按披露不在（晚抓到的旧帖，已排除）": {"条数": only_seen.len(), "条目": only_seen},
+        "无披露时间_按首次入库判": {"条数": fallback.len(), "条目": fallback},
+    })
 }
 
 #[cfg(test)]

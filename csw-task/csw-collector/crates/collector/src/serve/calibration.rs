@@ -39,52 +39,66 @@ impl Calibration {
 static KEY: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[a-z0-9_.]+-[0-9a-f]{6}").expect("正则"));
 
-/// 状态词，长的在前（「不推荐」要先于「推荐」认）
-const WORDS: [(&str, Tier); 7] = [
-    ("不推荐", Tier::NotRecommend),
-    ("停止", Tier::NotRecommend),
-    ("淘汰", Tier::NotRecommend),
-    ("待核", Tier::PendingCheck),
-    ("备选", Tier::Alternate),
-    ("继续", Tier::Recommend),
-    ("推荐", Tier::Recommend),
-];
+/// 去向词（英文档位名也认），长的在前（「not_recommend」先于「recommend」、「不推荐」先于「推荐」）
+const W: &str =
+    "not_recommend|pending_check|alternate|recommend|不推荐|待核|备选|继续|停止|淘汰|推荐";
 
-/// 一段退回意见里写明去向的条目。按分句认：一个分句里的条目键，取它**后面最近的**状态词，
-/// 后面没有就取前面最近的。没写条目键的（只写品牌）不认——宁可不认，也不认错。
+fn tier_of(w: &str) -> Option<Tier> {
+    Some(match w {
+        "not_recommend" | "不推荐" | "停止" | "淘汰" => Tier::NotRecommend,
+        "pending_check" | "待核" => Tier::PendingCheck,
+        "alternate" | "备选" => Tier::Alternate,
+        "recommend" | "继续" | "推荐" => Tier::Recommend,
+        _ => return None,
+    })
+}
+
+static LIST: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:\s*[、,，]\s*[a-z0-9_.]+-[0-9a-f]{6})+").expect("正则"));
+
+/// 条目键之后、紧跟着写明去向的几种写法。**去向词在条目键前面的不认**：
+/// 「停止针对 andwanderofficial-3bbddb 再深核」说的是停止返工路线，不是把它定为停止
+///（10-01 r60 v11：被认成「停止」，andwander 改成了不推荐）。
+static FORMS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
+        // key=待核 / key：备选 / key → 继续 / key 不推荐 / ……四继续（列举后带数量）
+        r"^\s*[=＝:：→]?\s*[一二三四五六七八九十两0-9]*\s*(W)",
+        // key 的 tier=not_recommend / 档位：待核
+        r"^[^，,。；;]{0,24}?(?:tier|status|档位|档)\s*[=＝:：]\s*(W)",
+        // key 改为 / 改成 / 改回 / 恢复 / 定为 / 落 / 保持 待核
+        r"^[^，,。；;]{0,12}?(?:改为|改成|改回|恢复为?|定为|落为?|保持为?)\s*(W)",
+        // key …保留 pending_check / 保留官方正文与 recommend
+        r"^[^。；;]{0,30}?保留[^，,。；;]{0,8}?(W)",
+        // key …pending_check 不变 / 待核保留
+        r"^[^。；;]{0,30}?(W)\s*(?:不变|保留)",
+    ]
+    .iter()
+    .map(|f| Regex::new(&f.replace('W', W)).expect("正则"))
+    .collect()
+});
+
+/// 一段退回意见里写明去向的条目。按分句认，只认条目键**之后**明确写出的去向（见 [`FORMS`]）。
+/// 没写条目键的（只写品牌）不认——宁可不认，也不认错。
 pub fn parse_review(text: &str) -> Vec<(String, Tier)> {
     let mut out: Vec<(String, Tier)> = Vec::new();
     for clause in text.split(['；', ';', '。', '\n']) {
-        let keys: Vec<(usize, &str)> = KEY
-            .find_iter(clause)
-            .map(|m| (m.start(), m.as_str()))
-            .collect();
-        if keys.is_empty() {
-            continue;
-        }
-        // 状态词的位置（已被长词占住的位置不再让短词认）
-        let mut marks: Vec<(usize, Tier)> = Vec::new();
-        let mut taken: Vec<(usize, usize)> = Vec::new();
-        for (w, t) in WORDS {
-            for (i, _) in clause.match_indices(w) {
-                let end = i + w.len();
-                if taken.iter().any(|(a, b)| i < *b && end > *a) {
-                    continue;
+        for m in KEY.find_iter(clause) {
+            // 列举的几个键共用后面的去向：「drlv-cf21b4、colemanjapan-3ca8da=待核」
+            let tail = LIST
+                .find(&clause[m.end()..])
+                .map_or(&clause[m.end()..], |l| &clause[m.end() + l.end()..]);
+            // 跨到别的条目键的不算：去向是那个键的
+            let hit = FORMS.iter().find_map(|re| {
+                let c = re.captures(tail)?;
+                let w = c.get(1)?;
+                if KEY.is_match(&tail[..w.start()]) {
+                    return None;
                 }
-                taken.push((i, end));
-                marks.push((i, t));
-            }
-        }
-        if marks.is_empty() {
-            continue;
-        }
-        marks.sort_by_key(|m| m.0);
-        for (pos, key) in keys {
-            let after = marks.iter().find(|(p, _)| *p > pos);
-            let before = marks.iter().rev().find(|(p, _)| *p < pos);
-            if let Some((_, t)) = after.or(before) {
-                out.retain(|(k, _)| k != key);
-                out.push((key.to_string(), *t));
+                tier_of(w.as_str())
+            });
+            if let Some(t) = hit {
+                out.retain(|(k, _)| k != m.as_str());
+                out.push((m.as_str().to_string(), t));
             }
         }
     }
@@ -242,8 +256,12 @@ mod tests {
             "cmfoutdoorgarmentofficial-e1cd9d".to_string(),
             "drlv-cf21b4".to_string(),
         ];
-        let t = expand_short_keys("v9唯一变更为e1cd9d.tier由待核改推荐；恢复该条待核", &known);
+        let t = expand_short_keys(
+            "v9唯一变更为e1cd9d.tier由待核改推荐；恢复e1cd9d tier=pending_check",
+            &known,
+        );
         assert!(t.contains("cmfoutdoorgarmentofficial-e1cd9d.tier"));
+        // 「由待核改推荐」是描述上一版的变化，不是去向；明确写出的 tier=pending_check 才认
         let got = parse_review(&t);
         assert_eq!(
             got,
@@ -255,5 +273,33 @@ mod tests {
         // 已是完整键的不重复展开；对不上的不动
         let t = expand_short_keys("drlv-cf21b4=待核；abcdef 不认", &known);
         assert_eq!(t, "drlv-cf21b4=待核；abcdef 不认");
+    }
+
+    /// 10-01 r60 主编的真实写法：去向在键后才认；「停止针对 xx 再深核」不是校准
+    #[test]
+    fn 去向词在条目键前面的不认() {
+        let t = "停止针对andwanderofficial-3bbddb再深核/重写/改档后整包升版的自动路径；\
+                 固定预期1：andwanderofficial-3bbddb image_seen=false，tier及条目pending_check保留；\
+                 预期3：eightoutdoor-2d8074 tier=not_recommend，条目status=dropped；\
+                 cmfoutdoorgarmentofficial-8b6b68保留官方正文与recommend；\
+                 cmfoutdoorgarmentofficial-e1cd9d仍recommend，decision缺口未解";
+        let got = parse_review(t);
+        let tier = |k: &str| got.iter().find(|(x, _)| x == k).map(|(_, t)| *t);
+        assert_eq!(tier("andwanderofficial-3bbddb"), Some(Tier::PendingCheck));
+        assert_eq!(tier("eightoutdoor-2d8074"), Some(Tier::NotRecommend));
+        assert_eq!(
+            tier("cmfoutdoorgarmentofficial-8b6b68"),
+            Some(Tier::Recommend)
+        );
+        assert_eq!(
+            tier("cmfoutdoorgarmentofficial-e1cd9d"),
+            None,
+            "「仍 recommend」是描述现状"
+        );
+        assert_eq!(
+            parse_review("停止针对andwanderofficial-3bbddb再深核"),
+            vec![],
+            "停止的是返工路线"
+        );
     }
 }

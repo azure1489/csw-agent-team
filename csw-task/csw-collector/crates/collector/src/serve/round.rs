@@ -1012,11 +1012,91 @@ async fn build_topics(
     topics
 }
 
+/// 「读到实图」以本地媒体表为准：至少一张下载成功、识别过的图才算。一张都没有的改为没读到，
+/// 档位落待核（引擎要求没读到实图的只能是待核）。改了的写回本地库并留痕，返回改了几条。
+///
+/// 10-01 r60：andwander 本地 0 张图，判断却是 image_seen=true，首页写「未读到实图 0 条」，主编连退 11 版。
+pub fn enforce_image_seen(conn: &Connection, round_id: i64, judgements: &mut [Judgement]) -> usize {
+    use csw_collector_core::types::Tier;
+    let mut n = 0;
+    for j in judgements.iter_mut().filter(|j| j.image_seen) {
+        let read: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM media m
+                   JOIN media_descriptions d ON d.blake3 = m.blake3 AND d.candidate_key = m.candidate_key
+                  WHERE m.candidate_key = ?1 AND m.failed = 0",
+                [&j.candidate_key],
+                |r| r.get(0),
+            )
+            .unwrap_or(1); // 查不出来不改，宁可不动也不误改
+        if read > 0 {
+            continue;
+        }
+        j.image_seen = false;
+        let before = j.tier;
+        if j.tier != Tier::PendingCheck {
+            j.tier = Tier::PendingCheck;
+        }
+        if !j.has_decision_gap() {
+            j.gaps.push(csw_collector_core::types::Gap {
+                level: csw_collector_core::types::GapLevel::Decision,
+                what: "本地没有一张下载成功并识别过的图，未读到实图".into(),
+                owner: csw_collector_core::types::GapOwner::Editor,
+                tried: "来源接口取数与下载".into(),
+                next: "人工打开原帖核图后定档".into(),
+            });
+        }
+        n += 1;
+        let note = format!(
+            "{}本地 0 张识别过的图：读到实图改为否{}",
+            csw_collector_judge::rules::NOTE,
+            if before != Tier::PendingCheck {
+                format!("，档位由 {before:?} 落待核")
+            } else {
+                String::new()
+            }
+        );
+        let r = (|| -> Result<()> {
+            let mut flags: Vec<String> = conn
+                .query_row(
+                    "SELECT check_flags_json FROM judgements WHERE round_id = ?1 AND candidate_key = ?2",
+                    rusqlite::params![round_id, j.candidate_key],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+            if !flags.contains(&note) {
+                flags.push(note.clone());
+            }
+            conn.execute(
+                "UPDATE judgements SET image_seen = 0, tier = ?3, gaps_json = ?4, check_flags_json = ?5
+                  WHERE round_id = ?1 AND candidate_key = ?2",
+                rusqlite::params![
+                    round_id,
+                    j.candidate_key,
+                    serde_json::to_value(j.tier)?.as_str().unwrap_or_default(),
+                    serde_json::to_string(&j.gaps)?,
+                    serde_json::to_string(&flags)?
+                ],
+            )?;
+            Ok(())
+        })();
+        match r {
+            Ok(()) => {
+                tracing::warn!(候选 = %j.candidate_key, "本地 0 张识别过的图，读到实图改为否")
+            }
+            Err(e) => tracing::warn!(候选 = %j.candidate_key, "读到实图没改过来：{e:#}"),
+        }
+    }
+    n
+}
+
 /// 退回意见里写明了不要再重判（「不重判」「不再自动重判」「禁止重判」等）。
 fn forbids_rejudge(review: &str) -> bool {
     static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(
-            r"不(?:再)?(?:自动)?重判|禁止(?:再)?(?:自动)?重判|不(?:再)?(?:自动)?重评|不再执行改档",
+            r"不(?:再)?(?:整池|自动|继续)?(?:重判|重评)|禁止(?:再)?(?:自动)?重判|不再执行改档|不(?:再)?(?:追加|新增|自动)?深核|停止[^。；;]{0,40}?(?:深核|重写|重判|升版|返工|改档)",
         )
         .expect("正则")
     });
@@ -1035,7 +1115,7 @@ fn settle_before_export(
     calibrated: &HashSet<String>,
 ) {
     use csw_collector_core::types::Tier;
-    let mut n = 0;
+    let mut n = enforce_image_seen(conn, round_id, judgements);
     for j in judgements.iter_mut() {
         // 已发 / 草稿箱的命中按知识库原文核：判断时给的是正文前 400 字，去掉标签后没有字就是没给正文
         let mut notes = csw_collector_judge::rules::normalize_bodies(j, |h| {
@@ -1267,6 +1347,9 @@ pub async fn run_intake(
             "预取轮省下来的"
         );
     }
+
+    // 「读到实图」以本地媒体表为准再核一遍，再登记
+    enforce_image_seen(conn, round.id, &mut j.judgements);
 
     // 八、登记
     let carried: HashSet<String> = HashSet::new();
@@ -2907,6 +2990,16 @@ mod tests {
             "本次转实际维护，不再自动重判/深核/改档升版"
         ));
         assert!(!forbids_rejudge("drlv-cf21b4=待核，请重判 SST"));
+        // 10-01 r60 主编的写法
+        assert!(forbids_rejudge(
+            "同一任务接续定点修复，不重采、不整池重判、不新增限时"
+        ));
+        assert!(forbids_rejudge(
+            "停止针对and wander再深核/重写/改档后整包升版的自动路径"
+        ));
+        assert!(forbids_rejudge(
+            "此轮不再追加深核任务，转准确保存/导出入口诊断"
+        ));
     }
 
     #[test]
