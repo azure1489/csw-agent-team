@@ -989,7 +989,22 @@ async fn start_round(
 
     // 主编校准：历次退回意见写明的去向 + 引擎里主编亲手改的条目状态（后者优先）。
     // 返工套用它；首页首批卡按它排
-    let mut calib = calibration::from_reviews(&detail);
+    // 意见里只写了末 6 位的条目键，按本轮已判的条目展开
+    let known: Vec<String> = in_place
+        .then_some(r.id)
+        .and_then(|id| {
+            let mut st = conn
+                .prepare("SELECT candidate_key FROM judgements WHERE round_id = ?1")
+                .ok()?;
+            let v = st
+                .query_map([id], |row| row.get::<_, String>(0))
+                .ok()?
+                .filter_map(Result::ok)
+                .collect();
+            Some(v)
+        })
+        .unwrap_or_default();
+    let mut calib = calibration::from_reviews_with_keys(&detail, &known);
     if in_place {
         match engine.intake_trace(t.task.run_id).await {
             Ok(tr) => calibration::from_traces(&tr, "editor", &mut calib),

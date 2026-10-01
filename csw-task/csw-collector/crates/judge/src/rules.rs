@@ -57,7 +57,7 @@ static NOT_A_GAP: LazyLock<Regex> = LazyLock::new(|| {
 /// 句子切分：连同句末标点一起切。
 /// 「五类材料齐备 / 均已提供」：查过五类不等于五类都拿到了正文（10-01 r59 主编退回）
 static ALL_PROVIDED: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"五类(?:材料|对照)(?:均已提供(?:记录或查询结果)?|都已提供|齐备|已齐|齐全)")
+    Regex::new(r"五类(?:材料|对照)(?:均|都)?(?:已)?(?:提供|齐备|齐全|齐)(?:记录或查询结果)?")
         .expect("正则")
 });
 
@@ -467,8 +467,13 @@ pub fn normalize_bodies(
             .replace_all(&j.comparison.note, "五类材料都查过（查过不等于正文已得）")
             .into_owned();
         if !j.comparison.note.contains("正文未得：") {
+            let sep = if j.comparison.note.ends_with(['。', '；', '.']) {
+                ""
+            } else {
+                "；"
+            };
             j.comparison.note.push_str(&format!(
-                "；正文未得：{}（只有标题或决定摘要），这几条的事实级查重只能是未确认",
+                "{sep}正文未得：{}（只有标题或决定摘要），这几条的事实级查重只能是未确认。",
                 missing.join("、")
             ));
         }
@@ -1044,7 +1049,16 @@ mod tests {
                 .note
                 .contains("五类材料都查过（查过不等于正文已得）")
         );
-        assert!(j.comparison.note.contains("正文未得：M3、M6"));
+        assert!(j.comparison.note.contains("但无正文；正文未得：M3、M6"));
+        for v in [
+            "五类对照已提供",
+            "五类材料已提供",
+            "五类材料齐备",
+            "五类对照均已提供记录或查询结果",
+        ] {
+            assert!(ALL_PROVIDED.is_match(v), "{v}");
+        }
+        assert!(!ALL_PROVIDED.is_match("五类材料都查过（查过不等于正文已得）"));
         assert_eq!(notes.len(), 2);
         // 幂等：再跑一次不再改
         assert!(normalize_bodies(&mut j, |_| None).is_empty());

@@ -91,8 +91,25 @@ pub fn parse_review(text: &str) -> Vec<(String, Tier)> {
     out
 }
 
-/// 从任务详情里各版的审核意见收集校准（按版本先后，后说的覆盖先说的）。
-pub fn from_reviews(detail: &TaskDetail) -> Vec<Calibration> {
+/// 主编常只写条目键末尾的 6 位（「e1cd9d.tier 由待核改推荐」）。在本轮条目里**唯一**对得上的，
+/// 展开成完整条目键再认；对不上或对上多个的不动（10-01 r59 v9：只写短键，没认出来，沿用了 v8 的「继续」）。
+pub fn expand_short_keys(text: &str, known: &[String]) -> String {
+    static SHORT: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(^|[^a-z0-9_.\-])([0-9a-f]{6})([^0-9a-z]|$)").expect("正则"));
+    SHORT
+        .replace_all(text, |c: &regex::Captures| {
+            let hex = &c[2];
+            let mut hits = known.iter().filter(|k| k.ends_with(&format!("-{hex}")));
+            match (hits.next(), hits.next()) {
+                (Some(full), None) => format!("{}{full}{}", &c[1], &c[3]),
+                _ => c[0].to_string(),
+            }
+        })
+        .into_owned()
+}
+
+/// 从任务详情里各版的审核意见收集校准（按版本先后，后说的覆盖先说的）；意见里只写了末 6 位的条目键按本轮条目展开。
+pub fn from_reviews_with_keys(detail: &TaskDetail, known: &[String]) -> Vec<Calibration> {
     let mut ds: Vec<&serde_json::Value> = detail.deliverables.iter().collect();
     ds.sort_by_key(|d| d.get("version").and_then(|v| v.as_i64()).unwrap_or(0));
     let mut out: Vec<Calibration> = Vec::new();
@@ -109,6 +126,7 @@ pub fn from_reviews(detail: &TaskDetail) -> Vec<Calibration> {
             .filter_map(|k| r.get(*k).and_then(|x| x.as_str()))
             .collect::<Vec<_>>()
             .join("\n");
+        let text = expand_short_keys(&text, known);
         for (key, tier) in parse_review(&text) {
             upsert(&mut out, key, tier, format!("v{v} 退回意见"));
         }
@@ -216,5 +234,26 @@ mod tests {
         assert_eq!(v.len(), 1, "执行方自己的流转不算校准");
         assert_eq!(v[0].tier, Tier::PendingCheck);
         assert!(v[0].source.contains("引擎条目"));
+    }
+
+    #[test]
+    fn 只写末六位的条目键按本轮条目展开() {
+        let known = vec![
+            "cmfoutdoorgarmentofficial-e1cd9d".to_string(),
+            "drlv-cf21b4".to_string(),
+        ];
+        let t = expand_short_keys("v9唯一变更为e1cd9d.tier由待核改推荐；恢复该条待核", &known);
+        assert!(t.contains("cmfoutdoorgarmentofficial-e1cd9d.tier"));
+        let got = parse_review(&t);
+        assert_eq!(
+            got,
+            vec![(
+                "cmfoutdoorgarmentofficial-e1cd9d".to_string(),
+                Tier::PendingCheck
+            )]
+        );
+        // 已是完整键的不重复展开；对不上的不动
+        let t = expand_short_keys("drlv-cf21b4=待核；abcdef 不认", &known);
+        assert_eq!(t, "drlv-cf21b4=待核；abcdef 不认");
     }
 }

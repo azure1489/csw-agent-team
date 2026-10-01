@@ -263,11 +263,27 @@ pub fn register_and_enqueue(
     // **就地改**：交付包里的 sweeps.jsonl 用的也是这一份（10-01 r59：包里还写着返工前的 86，引擎里是 90）
     for sw in sweeps.iter_mut() {
         let col = register::collector_of(&sw.sweep_key);
+        let mine = |i: &&csw_collector_engineapi::types::ItemInput| {
+            by_key.get(&i.item_key).is_some_and(|c| c.collector == col)
+        };
         sw.registered = items
             .iter()
             .filter(|i| i.status != "dropped")
-            .filter(|i| by_key.get(&i.item_key).is_some_and(|c| c.collector == col))
+            .filter(mine)
             .count() as i64;
+        // 引擎里的条目数含已撤的：写明两个数的关系（10-01 r59：包里 87、引擎条目 90）
+        let dropped = items
+            .iter()
+            .filter(|i| i.status == "dropped")
+            .filter(mine)
+            .count();
+        if dropped > 0 && !sw.query.contains("引擎条目共") {
+            sw.query.push_str(&format!(
+                "；登记在册 {} 个条目，引擎条目共 {}（另有 {dropped} 个本轮返工撤下，状态 dropped）",
+                sw.registered,
+                sw.registered + dropped as i64
+            ));
+        }
     }
     let sweep_inputs =
         register::sweep_inputs(sweeps, (&round.window_start, &round.window_end), per);
@@ -1638,7 +1654,25 @@ pub async fn rework_in_place(
         }
     }
 
-    let registered_before: Vec<i64> = sweeps.iter().map(|s| s.registered).collect();
+    // 采集轮的数与当初宽取时不一样了：写明差在哪，别让人以为原始采集事实被改了
+    //（10-01 r59 v7：「历史 in_window/reviewed 171、registered 86 与现 172 判断 90 登记」）。
+    // 要在登记之前写：交付包里的 sweeps 读的是发给引擎的那一份
+    let readmitted = judgements
+        .iter()
+        .filter(|j| j.inputs_hash.starts_with("readmit-no-media-"))
+        .count() as i64;
+    for sw in sweeps.iter_mut() {
+        if readmitted > 0
+            && register::collector_of(&sw.sweep_key) == register::collector_of("csw-window")
+            && !sw.query.contains("返工收回")
+        {
+            sw.query.push_str(&format!(
+                "；窗口内 {} = 当初宽取 {} + 返工收回 {readmitted} 条（来源没给媒体，待核，未读实图，不计实阅）",
+                sw.in_window,
+                sw.in_window - readmitted
+            ));
+        }
+    }
     // 八、登记（上次登记过、这次不列的撤下）。窗口止点可能刚被补采改过，按库里的最新值
     let prev_now = rounds::get(conn, prev.id)?.unwrap_or_else(|| prev.clone());
     if let Some(run_id) = prev.run_id {
@@ -1653,31 +1687,6 @@ pub async fn rework_in_place(
             &HashSet::new(),
         )?;
     }
-    // 采集轮的数与当初宽取时不一样了：写明差在哪，别让人以为原始采集事实被改了
-    //（10-01 r59 v7：「历史 in_window/reviewed 171、registered 86 与现 172 判断 90 登记」）
-    let readmitted = judgements
-        .iter()
-        .filter(|j| j.inputs_hash.starts_with("readmit-no-media-"))
-        .count() as i64;
-    for (sw, before) in sweeps.iter_mut().zip(&registered_before) {
-        if register::collector_of(&sw.sweep_key) != register::collector_of("csw-window") {
-            continue;
-        }
-        if readmitted > 0 {
-            sw.query.push_str(&format!(
-                "；窗口内 {} = 当初宽取 {} + 返工收回 {readmitted} 条（来源没给媒体，待核，未读实图，不计实阅）",
-                sw.in_window,
-                sw.in_window - readmitted
-            ));
-        }
-        if *before > 0 && *before != sw.registered {
-            sw.query.push_str(&format!(
-                "；登记 {} 为本轮历次登记后的最终状态（首次登记 {before}，差额是返工新增或撤下的条目）",
-                sw.registered
-            ));
-        }
-    }
-
     let mut counts = count_round(conn, prev.id, &prepared)?;
     counts.deepchecked = outcomes.iter().filter(|o| o.done()).count();
     Ok((

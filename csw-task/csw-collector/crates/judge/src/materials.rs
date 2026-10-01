@@ -30,7 +30,8 @@ pub const PER_KIND: usize = 3;
 pub const BODY_EXCERPT_CHARS: usize = 400;
 
 static TAG: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"(?s)<[^>]*>").expect("正则"));
+    // 末尾没闭合的半截标签也算标签：截取前 400 字常截在 <img data-src="… 中间
+    std::sync::LazyLock::new(|| regex::Regex::new(r"(?s)<[^>]*(?:>|$)").expect("正则"));
 
 /// 正文去掉 HTML 标签与常见实体、合并空白。公众号已发的正文存的是 HTML，
 /// 前 400 字往往全是图片标签——模型拿到的其实不是可读正文（10-01 r59 zerogram M1）。
@@ -615,6 +616,11 @@ mod tests {
     #[test]
     fn 只有标签没有字的正文算不可得() {
         assert_eq!(plain_text("<section><img src=\"x\"/></section>&nbsp;"), "");
+        // 截在标签中间
+        assert_eq!(
+            plain_text("<section style=\"a\"><span><img data-src=\"https://mmbiz"),
+            ""
+        );
         assert_eq!(
             plain_text("<p>Evolve&nbsp;睡袋</p>\n<p>内胆</p>"),
             "Evolve 睡袋 内胆"

@@ -566,7 +566,32 @@ async fn main() -> anyhow::Result<()> {
                 std::time::Duration::from_secs(30),
             )?;
             let detail = engine.task_detail(task).await?;
-            let mut c = serve::calibration::from_reviews(&detail);
+            // 与返工时一样：意见里只写末 6 位的条目键按这个任务最近一轮的已判条目展开（只读）
+            let known: Vec<String> = rusqlite::Connection::open_with_flags(
+                cfg.db_path(),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .ok()
+            .and_then(|conn| {
+                let id: i64 = conn
+                    .query_row(
+                        "SELECT MAX(id) FROM rounds WHERE task_id = ?1",
+                        [task],
+                        |r| r.get(0),
+                    )
+                    .ok()?;
+                let mut st = conn
+                    .prepare("SELECT candidate_key FROM judgements WHERE round_id = ?1")
+                    .ok()?;
+                let v: Vec<String> = st
+                    .query_map([id], |r| r.get(0))
+                    .ok()?
+                    .filter_map(Result::ok)
+                    .collect();
+                Some(v)
+            })
+            .unwrap_or_default();
+            let mut c = serve::calibration::from_reviews_with_keys(&detail, &known);
             println!("退回意见里认到 {} 条", c.len());
             let tr = engine.intake_trace(detail.task.run_id).await?;
             serve::calibration::from_traces(&tr, "editor", &mut c);
