@@ -29,6 +29,22 @@ pub const PER_KIND: usize = 3;
 /// 已发与范例带多少字正文。**查重要看正文**，只给标题模型就只能猜。
 pub const BODY_EXCERPT_CHARS: usize = 400;
 
+static TAG: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"(?s)<[^>]*>").expect("正则"));
+
+/// 正文去掉 HTML 标签与常见实体、合并空白。公众号已发的正文存的是 HTML，
+/// 前 400 字往往全是图片标签——模型拿到的其实不是可读正文（10-01 r59 zerogram M1）。
+pub fn plain_text(body: &str) -> String {
+    let t = TAG.replace_all(body, " ");
+    let t = t
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"");
+    t.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// 上一轮台账里的一行。它留在本地库、**不进参考库**——
 /// 否则系统自己的判断会被当成 Van 的口味证据。
 #[derive(Debug, Clone, Default)]
@@ -192,12 +208,15 @@ pub fn assemble(retrieved: &Retrieved, prior: &[PriorLedgerItem]) -> Vec<Materia
                 },
                 publish_state,
                 body_excerpt: if has_body {
-                    s.doc.body.trim().chars().take(BODY_EXCERPT_CHARS).collect()
+                    plain_text(&s.doc.body)
+                        .chars()
+                        .take(BODY_EXCERPT_CHARS)
+                        .collect()
                 } else {
                     String::new()
                 },
-                // 只有已发与范例的正文是查重要用的；取不到就如实说「正文不可得」
-                body_available: !has_body || !s.doc.body.trim().is_empty(),
+                // 只有已发与范例的正文是查重要用的；取不到（或只有标签没有字）就如实说「正文不可得」
+                body_available: !has_body || !plain_text(&s.doc.body).is_empty(),
                 brand: s.doc.brand.clone(),
             });
         }
@@ -591,5 +610,14 @@ mod tests {
         assert!(!block.contains("主选2备选1"), "{block}");
         // 去掉原话之后还叫「原话」就是错的——模型会把「结论：rejected」当成她说的
         assert!(block.contains("决定记录：结论：rejected"), "{block}");
+    }
+
+    #[test]
+    fn 只有标签没有字的正文算不可得() {
+        assert_eq!(plain_text("<section><img src=\"x\"/></section>&nbsp;"), "");
+        assert_eq!(
+            plain_text("<p>Evolve&nbsp;睡袋</p>\n<p>内胆</p>"),
+            "Evolve 睡袋 内胆"
+        );
     }
 }

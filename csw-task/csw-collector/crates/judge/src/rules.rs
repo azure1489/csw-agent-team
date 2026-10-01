@@ -11,14 +11,14 @@
 //! 留痕一律以 [`NOTE`] 开头，进 `check_flags_json`，台账上与 Jev 核对的标记并排显示。
 //! 代码改档直接写进结论的 `tier`，**不走人工改档表**——原档与原因都在留痕里。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use regex::Regex;
 
 use csw_collector_core::types::{
-    ComparisonVerdict, Dim, Gap, GapLevel, GapOwner, Judgement, Material, MaterialKind,
-    NoveltyKind, Tier, Unanswered, Verdict,
+    ComparisonHit, ComparisonVerdict, Dim, Gap, GapLevel, GapOwner, HitState, Judgement, Material,
+    MaterialKind, NoveltyKind, Tier, Unanswered, Verdict,
 };
 use csw_collector_kb::brands::brand_key;
 
@@ -55,6 +55,12 @@ static NOT_A_GAP: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// 句子切分：连同句末标点一起切。
+/// 「五类材料齐备 / 均已提供」：查过五类不等于五类都拿到了正文（10-01 r59 主编退回）
+static ALL_PROVIDED: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"五类(?:材料|对照)(?:均已提供(?:记录或查询结果)?|都已提供|齐备|已齐|齐全)")
+        .expect("正则")
+});
+
 static SENTENCE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[^。；！？\n]+[。；！？\n]?").expect("正则"));
 
@@ -397,10 +403,80 @@ pub fn apply(j: &mut Judgement, ctx: &Ctx<'_>) -> Applied {
         ));
     }
 
+    // R9 「正文可得」以代码为准：给模型看过正文的只有已发与范例、且确实带了正文摘要的那几条。
+    // 生成稿、03 决定、上一轮台账只给了标题或决定摘要，模型照抄 true 会让导出自相矛盾
+    let by_no: HashMap<&str, &Material> = numbered.iter().map(|(n, m)| (n.as_str(), *m)).collect();
+    out.notes.extend(normalize_bodies(j, |h| {
+        Some(by_no.get(h.ref_no.as_str()).is_some_and(|m| {
+            matches!(m.kind, MaterialKind::Published | MaterialKind::Example)
+                && m.body_available
+                && !m.body_excerpt.trim().is_empty()
+        }))
+    }));
+
     if !retry.is_empty() {
         out.rejudge = Some(retry.join("\n"));
     }
     out
+}
+
+/// 把查重命中的「正文可得」改成事实，并把「五类材料齐备」改成「都查过」。返回留痕。
+///
+/// `given` 回答「这条命中给模型看过正文没有」；答不上（`None`，如返工时手上没有当时的材料）
+/// 就按类型定：只有正式发布 / 已推草稿箱可能带正文，保留原值；生成稿、03 决定、来源不明的一律 false——
+/// 判断时这几类从来只给标题或决定摘要（见 `materials::as_prompt_block`）。
+pub fn normalize_bodies(
+    j: &mut Judgement,
+    given: impl Fn(&ComparisonHit) -> Option<bool>,
+) -> Vec<String> {
+    let mut notes = Vec::new();
+    let mut fixed = Vec::new();
+    for h in &mut j.comparison.hits {
+        let by_state = matches!(h.state, HitState::Published | HitState::Draft) && h.body_available;
+        let truth = given(h).unwrap_or(by_state);
+        if h.body_available != truth {
+            h.body_available = truth;
+            fixed.push(if h.ref_no.is_empty() {
+                h.title.clone()
+            } else {
+                h.ref_no.clone()
+            });
+        }
+    }
+    if !fixed.is_empty() {
+        notes.push(format!(
+            "{NOTE}查重命中 {} 判断时没有给出正文，「正文可得」改为否",
+            fixed.join("、")
+        ));
+    }
+    let missing: Vec<String> = j
+        .comparison
+        .hits
+        .iter()
+        .filter(|h| !h.body_available)
+        .map(|h| {
+            if h.ref_no.is_empty() {
+                format!("《{}》", h.title)
+            } else {
+                h.ref_no.clone()
+            }
+        })
+        .collect();
+    if !missing.is_empty() && ALL_PROVIDED.is_match(&j.comparison.note) {
+        j.comparison.note = ALL_PROVIDED
+            .replace_all(&j.comparison.note, "五类材料都查过（查过不等于正文已得）")
+            .into_owned();
+        if !j.comparison.note.contains("正文未得：") {
+            j.comparison.note.push_str(&format!(
+                "；正文未得：{}（只有标题或决定摘要），这几条的事实级查重只能是未确认",
+                missing.join("、")
+            ));
+        }
+        notes.push(format!(
+            "{NOTE}查重说明里的「五类齐备」改为「都查过」，并注明正文未得的编号"
+        ));
+    }
+    notes
 }
 
 /// 结论里所有写了前后对比的片段。**原文里本来就有的不算**（见 [`Ctx::source_text`]）。
@@ -933,5 +1009,48 @@ mod tests {
         assert!(wants_refetch(&j));
         j.gaps = vec![Gap::decision("产品身份无法确认")];
         assert!(!wants_refetch(&j));
+    }
+
+    /// 10-01 r59 C65 e1cd9d：M3–M5 仅生成稿标题、M6 只有决定摘要，模型却写正文可得
+    #[test]
+    fn 正文可得以代码为准() {
+        use csw_collector_core::types::{Comparison, ComparisonHit, HitState};
+        let mut j = Judgement::fixture("cmf-e1cd9d", Tier::PendingCheck);
+        let hit = |no: &str, state: HitState, body: bool| ComparisonHit {
+            ref_no: no.into(),
+            title: "New Release Info".into(),
+            url: String::new(),
+            state,
+            published_at: String::new(),
+            body_available: body,
+            dup_fact: String::new(),
+        };
+        j.comparison = Comparison {
+            verdict: ComparisonVerdict::Unconfirmed,
+            against: String::new(),
+            note: "五类对照均已提供记录或查询结果。M3—M5 有链接但无正文".into(),
+            hits: vec![
+                hit("M1", HitState::Published, true),
+                hit("M3", HitState::Generated, true),
+                hit("M6", HitState::Decision, true),
+            ],
+        };
+        // 返工时没有材料：按类型定
+        let notes = normalize_bodies(&mut j, |_| None);
+        let b: Vec<bool> = j.comparison.hits.iter().map(|h| h.body_available).collect();
+        assert_eq!(b, [true, false, false]);
+        assert!(
+            j.comparison
+                .note
+                .contains("五类材料都查过（查过不等于正文已得）")
+        );
+        assert!(j.comparison.note.contains("正文未得：M3、M6"));
+        assert_eq!(notes.len(), 2);
+        // 幂等：再跑一次不再改
+        assert!(normalize_bodies(&mut j, |_| None).is_empty());
+        // 有材料时以材料为准：正式发布但没给正文摘要的也是否
+        let notes = normalize_bodies(&mut j, |h| Some(h.ref_no != "M1"));
+        assert!(!j.comparison.hits[0].body_available);
+        assert!(notes[0].contains("M1"));
     }
 }

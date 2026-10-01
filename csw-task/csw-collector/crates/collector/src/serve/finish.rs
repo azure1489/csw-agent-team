@@ -572,7 +572,7 @@ pub fn build_deliverable(
             .iter()
             .map(|p| {
                 format!(
-                    "> 补采 {} ~ {}：{} 补采，接口按发布时间宽取 {} 条，按首次入库收口后窗口内 {} 条（见 trace/window_summary.json「补采记录」）",
+                    "> 补采 {} ~ {}：{} 补采，接口按发布时间宽取 {} 条，按原始披露时间收口后窗口内 {} 条（见 trace/window_summary.json「补采记录」）",
                     p.window_from, p.window_to, p.fetched_at, p.found, p.in_window
                 )
             })

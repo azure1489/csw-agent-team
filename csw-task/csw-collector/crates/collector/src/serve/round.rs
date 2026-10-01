@@ -225,7 +225,7 @@ pub fn register_and_enqueue(
     run_id: i64,
     judgements: &[Judgement],
     topics: &[csw_collector_core::types::Topic],
-    sweeps: &[SweepCount],
+    sweeps: &mut [SweepCount],
     by_key: &HashMap<String, Candidate>,
     carried: &HashSet<String>,
 ) -> Result<i64> {
@@ -259,9 +259,9 @@ pub fn register_and_enqueue(
                 }
             })
     };
-    // 每一路登记了几个条目：按条目主帖的采集来源数（以前从没填过，一直是 0——09-30 r58 v2）
-    let mut sweeps = sweeps.to_vec();
-    for sw in &mut sweeps {
+    // 每一路登记了几个条目：按条目主帖的采集来源数（以前从没填过，一直是 0——09-30 r58 v2）。
+    // **就地改**：交付包里的 sweeps.jsonl 用的也是这一份（10-01 r59：包里还写着返工前的 86，引擎里是 90）
+    for sw in sweeps.iter_mut() {
         let col = register::collector_of(&sw.sweep_key);
         sw.registered = items
             .iter()
@@ -270,7 +270,7 @@ pub fn register_and_enqueue(
             .count() as i64;
     }
     let sweep_inputs =
-        register::sweep_inputs(&sweeps, (&round.window_start, &round.window_end), per);
+        register::sweep_inputs(sweeps, (&round.window_start, &round.window_end), per);
     let jis =
         register::judgement_inputs_with_items(judgements, lookup, carried, RUBRIC_VERSION, |k| {
             item_of.get(k).cloned()
@@ -996,6 +996,105 @@ async fn build_topics(
     topics
 }
 
+/// 退回意见里写明了不要再重判（「不重判」「不再自动重判」「禁止重判」等）。
+fn forbids_rejudge(review: &str) -> bool {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"不(?:再)?(?:自动)?重判|禁止(?:再)?(?:自动)?重判|不(?:再)?(?:自动)?重评|不再执行改档",
+        )
+        .expect("正则")
+    });
+    RE.is_match(review)
+}
+
+/// 返工导出前的代码口径（10-01 r59 v6–v9 连退）：
+/// - 查重命中的「正文可得」按事实改（生成稿、03 决定、来源不明的判断时只给了标题或摘要），
+///   「五类齐备」改成「都查过」；
+/// - 重判后还挂着影响判断的缺口却定了推荐的，落回待核——缺口没解决就不是推荐
+///   （e1cd9d 每次点名重判都在待核与推荐之间跳）。主编校准过的不动。
+fn settle_before_export(
+    conn: &Connection,
+    round_id: i64,
+    judgements: &mut [Judgement],
+    calibrated: &HashSet<String>,
+) {
+    use csw_collector_core::types::Tier;
+    let mut n = 0;
+    for j in judgements.iter_mut() {
+        // 已发 / 草稿箱的命中按知识库原文核：判断时给的是正文前 400 字，去掉标签后没有字就是没给正文
+        let mut notes = csw_collector_judge::rules::normalize_bodies(j, |h| {
+            use csw_collector_core::types::HitState;
+            if !matches!(h.state, HitState::Published | HitState::Draft) || h.url.is_empty() {
+                return None;
+            }
+            let body: String = conn
+                .query_row(
+                    "SELECT body FROM kb_docs WHERE url = ?1 AND kind IN ('published_item', 'example') LIMIT 1",
+                    [&h.url],
+                    |r| r.get(0),
+                )
+                .ok()?;
+            // 按当时给模型的那一段算（原文前 400 字去标签）；偏保守：宁可判「没给」落未确认，不冒称已核
+            let head: String = body
+                .chars()
+                .take(csw_collector_judge::materials::BODY_EXCERPT_CHARS)
+                .collect();
+            Some(!csw_collector_judge::materials::plain_text(&head).is_empty())
+        });
+        if j.tier == Tier::Recommend
+            && j.has_decision_gap()
+            && !calibrated.contains(&j.candidate_key)
+        {
+            j.tier = Tier::PendingCheck;
+            notes.push(format!(
+                "{}推荐却还挂着影响判断的缺口，落回待核（缺口解决后再定档）",
+                csw_collector_judge::rules::NOTE
+            ));
+        }
+        if notes.is_empty() {
+            continue;
+        }
+        n += 1;
+        let r = (|| -> Result<()> {
+            let mut flags: Vec<String> = conn
+                .query_row(
+                    "SELECT check_flags_json FROM judgements WHERE round_id = ?1 AND candidate_key = ?2",
+                    rusqlite::params![round_id, j.candidate_key],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+            for x in notes {
+                if !flags.contains(&x) {
+                    flags.push(x);
+                }
+            }
+            conn.execute(
+                "UPDATE judgements SET tier = ?3, comparison_json = ?4, check_flags_json = ?5
+                  WHERE round_id = ?1 AND candidate_key = ?2",
+                rusqlite::params![
+                    round_id,
+                    j.candidate_key,
+                    serde_json::to_value(j.tier)?.as_str().unwrap_or_default(),
+                    serde_json::to_string(&j.comparison)?,
+                    serde_json::to_string(&flags)?
+                ],
+            )?;
+            Ok(())
+        })();
+        if let Err(e) = r {
+            tracing::warn!(候选 = %j.candidate_key, "导出前口径没写回本地库：{e:#}");
+        }
+    }
+    if n > 0 {
+        tracing::info!(
+            条数 = n,
+            "返工：导出前口径改了这些判断（正文可得、齐备措辞、带缺口的推荐）"
+        );
+    }
+}
+
 /// 合题综合依据的成员正文指纹：条目键、原文、译文。变了说明综合要重算。
 pub fn synthesis_basis(members: &[String], by_key: &HashMap<String, Candidate>) -> String {
     let mut h = blake3::Hasher::new();
@@ -1133,7 +1232,7 @@ pub async fn run_intake(
     svc: &super::services::Services,
 ) -> Result<(RoundCounts, Finished)> {
     let standard = work_standard(detail);
-    let j = harvest_and_judge(
+    let mut j = harvest_and_judge(
         conn,
         round,
         cfg,
@@ -1162,7 +1261,7 @@ pub async fn run_intake(
             run_id,
             &j.judgements,
             &j.topics,
-            &j.sweeps,
+            &mut j.sweeps,
             &j.by_key,
             &carried,
         )?;
@@ -1349,6 +1448,10 @@ pub async fn rework_in_place(
         });
         judgements.push(j);
     }
+    // 读回时的采集器名也按采集器记（10-01 第一版收回的条目记成了采集轮键）
+    for c in by_key.values_mut() {
+        c.collector = register::collector_of(&c.collector);
+    }
 
     // 三、挑要改的：退回意见点名的条目优先，再补推荐 / 备选选题的代表帖
     // 二·校准：主编定过去向的条目直接采用，不交给模型重判（09-30 r58：连退十几版的根因）
@@ -1414,6 +1517,15 @@ pub async fn rework_in_place(
         }
     }
     focus.truncate(REWORK_FOCUS_MAX.max(must));
+    // 主编写明不重判的，点名条目也不交模型：只做代码口径与导出修复（10-01 r59 v7–v9：
+    // 「不再自动重判/深核/升版」，e1cd9d 每版重判都在待核与推荐之间跳、缺口文字跟着变）
+    if forbids_rejudge(&review_raw) && !focus.is_empty() {
+        tracing::info!(
+            条数 = focus.len(),
+            "返工：退回意见写明不重判，点名条目不交模型"
+        );
+        focus.clear();
+    }
     // 之后的退回不整池重评（主编「禁止另一次模型重评」「不再整池重评」，09-28 r56 #615），
     // 但**点名的条目要定点重判**——否则同一版意见永远改不动，一轮轮退回成死循环（09-29 r56 v8）
     tracing::info!(
@@ -1489,6 +1601,9 @@ pub async fn rework_in_place(
         }
     }
 
+    // 五·再：导出前的代码口径，对整轮判断都跑一遍（幂等）。改了的写回本地库并留痕
+    settle_before_export(conn, prev.id, &mut judgements, &calibrated);
+
     // 五·补：合题综合（共同事实、各帖新增）跟着成员的原文与译文走。成员的正文或译文改过的
     // 重算一次综合，成员关系不动（10-01 r59：主编改了 C65 的译文，共同事实里的「棉」还在）
     refresh_synthesis(svc, &mut topics, &judgements, &by_key, &review_raw).await;
@@ -1523,6 +1638,7 @@ pub async fn rework_in_place(
         }
     }
 
+    let registered_before: Vec<i64> = sweeps.iter().map(|s| s.registered).collect();
     // 八、登记（上次登记过、这次不列的撤下）。窗口止点可能刚被补采改过，按库里的最新值
     let prev_now = rounds::get(conn, prev.id)?.unwrap_or_else(|| prev.clone());
     if let Some(run_id) = prev.run_id {
@@ -1532,10 +1648,34 @@ pub async fn rework_in_place(
             run_id,
             &judgements,
             &topics,
-            &sweeps,
+            &mut sweeps,
             &by_key,
             &HashSet::new(),
         )?;
+    }
+    // 采集轮的数与当初宽取时不一样了：写明差在哪，别让人以为原始采集事实被改了
+    //（10-01 r59 v7：「历史 in_window/reviewed 171、registered 86 与现 172 判断 90 登记」）
+    let readmitted = judgements
+        .iter()
+        .filter(|j| j.inputs_hash.starts_with("readmit-no-media-"))
+        .count() as i64;
+    for (sw, before) in sweeps.iter_mut().zip(&registered_before) {
+        if register::collector_of(&sw.sweep_key) != register::collector_of("csw-window") {
+            continue;
+        }
+        if readmitted > 0 {
+            sw.query.push_str(&format!(
+                "；窗口内 {} = 当初宽取 {} + 返工收回 {readmitted} 条（来源没给媒体，待核，未读实图，不计实阅）",
+                sw.in_window,
+                sw.in_window - readmitted
+            ));
+        }
+        if *before > 0 && *before != sw.registered {
+            sw.query.push_str(&format!(
+                "；登记 {} 为本轮历次登记后的最终状态（首次登记 {before}，差额是返工新增或撤下的条目）",
+                sw.registered
+            ));
+        }
     }
 
     let mut counts = count_round(conn, prev.id, &prepared)?;
@@ -1641,11 +1781,37 @@ pub fn readmit_no_media(
             .into_iter()
             .filter(|t| t.outcome == "not_image_only" && is_no_media_image(&t.media))
             .collect();
+    // 10-01 第一版把采集轮键（csw-window）当采集器名记进了 round_candidates，这里顺手改正
+    for sweep in rows
+        .iter()
+        .map(|t| t.sweep_key.clone())
+        .collect::<HashSet<_>>()
+    {
+        let _ = conn.execute(
+            "UPDATE round_candidates SET collector = ?3 WHERE round_id = ?1 AND collector = ?2",
+            rusqlite::params![round_id, sweep, register::collector_of(&sweep)],
+        );
+    }
     let mut out = Vec::new();
     for t in rows {
         let ts = |s: &Option<String>| s.as_deref().and_then(|x| x.parse::<Timestamp>().ok());
         let (posted, ingested) = (ts(&t.posted_at), ts(&t.ingested_at));
-        if !posted.or(ingested).is_some_and(|x| x >= from && x < to) {
+        let at = posted.or(ingested);
+        if !at.is_some_and(|x| x >= from && x < to) {
+            // 窗口外的不进本期，但排除理由要写对：是披露时间不在窗口，不是「非图文」
+            //（10-01 r59 v6 退回：roahiking、rootco、37camp 披露在窗前，却按非图文排除）
+            let outcome = match at {
+                Some(x) if x < from => "before_window",
+                Some(_) => "after_window",
+                None => "no_time",
+            };
+            if let Err(e) = conn.execute(
+                "UPDATE window_trace SET outcome = ?4
+                  WHERE round_id = ?1 AND sweep_key = ?2 AND source_id = ?3",
+                rusqlite::params![round_id, t.sweep_key, t.source_id, outcome],
+            ) {
+                tracing::warn!(候选 = %t.candidate_key, "排除理由没改过来：{e:#}");
+            }
             continue;
         }
         let c = Candidate {
@@ -1656,7 +1822,9 @@ pub fn readmit_no_media(
                 Platform::Instagram
             },
             source_id: t.source_id.clone(),
-            collector: t.sweep_key.clone(),
+            // 候选上记的是采集器名（csw_window），不是采集轮键（csw-window）：
+            // 记错了采集轮按采集器数窗口内条数时就漏掉它（10-01 r59：台账 172、采集轮 171）
+            collector: register::collector_of(&t.sweep_key),
             account: t.account.clone(),
             url: t.url.clone(),
             text: String::new(),
@@ -1696,7 +1864,7 @@ pub fn readmit_no_media(
             if !exists {
                 ledger::upsert_candidate(conn, &c)?;
             }
-            ledger::attach_candidate(conn, round_id, &c.candidate_key, &t.sweep_key, false)?;
+            ledger::attach_candidate(conn, round_id, &c.candidate_key, &c.collector, false)?;
             conn.execute(
                 "UPDATE window_trace SET outcome = 'in_window'
                   WHERE round_id = ?1 AND sweep_key = ?2 AND source_id = ?3",
@@ -2697,6 +2865,12 @@ mod tests {
             trace.iter().find(|t| t.source_id == "1").unwrap().outcome,
             "in_window"
         );
+        assert_eq!(
+            trace.iter().find(|t| t.source_id == "3").unwrap().outcome,
+            "before_window",
+            "窗前的排除理由是披露早于窗口，不是非图文"
+        );
+        assert_eq!(c.collector, "csw_window", "候选上记采集器名，不是采集轮键");
         // 再返工一次不会重复收
         assert!(
             readmit_no_media(
@@ -2708,6 +2882,16 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn 意见写明不重判就不交模型() {
+        assert!(forbids_rejudge("原轮43不重采不重判，无新增限时"));
+        assert!(forbids_rejudge("v9不通过，不再执行改档/深核升版"));
+        assert!(forbids_rejudge(
+            "本次转实际维护，不再自动重判/深核/改档升版"
+        ));
+        assert!(!forbids_rejudge("drlv-cf21b4=待核，请重判 SST"));
     }
 
     #[test]

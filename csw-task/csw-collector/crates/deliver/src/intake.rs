@@ -152,11 +152,11 @@ fn counts_line(js: &[Judgement]) -> String {
         .filter(|j| j.tier == Tier::Alternate && j.has_decision_gap())
         .count();
     format!(
-        "共 {} 条：推荐 {}、备选 {}（成熟 {}、待补证 {}）、待核 {}、不推荐 {}；其中未读到实图 {} 条（待核，不是淘汰）。",
+        // 档位都是工作台初判，未经主编校准：不叫「成熟」（10-01 r59 v6 退回「成熟36/待补证0」）
+        "共 {} 条（工作台初判，未经主编校准，不是成熟数）：推荐 {}、备选 {}（其中挂着影响判断缺口的 {}）、待核 {}、不推荐 {}；其中未读到实图 {} 条（待核，不是淘汰）。",
         js.len(),
         n(Tier::Recommend),
         n(Tier::Alternate),
-        n(Tier::Alternate) - awaiting,
         awaiting,
         n(Tier::PendingCheck),
         n(Tier::NotRecommend),
@@ -644,7 +644,7 @@ mod tests {
         ];
         let body = ledger_body(("A", "B"), &js, |k| Some(cand(k)));
         assert!(
-            body.contains("共 2 条：推荐 1、备选 0（成熟 0、待补证 0）、待核 1、不推荐 0"),
+            body.contains("共 2 条（工作台初判，未经主编校准，不是成熟数）：推荐 1、备选 0（其中挂着影响判断缺口的 0）、待核 1、不推荐 0"),
             "{body}"
         );
         assert!(body.contains("未读到实图 1 条（待核，不是淘汰）"), "{body}");
