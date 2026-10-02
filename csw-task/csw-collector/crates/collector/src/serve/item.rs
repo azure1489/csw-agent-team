@@ -76,6 +76,19 @@ pub async fn run_material(
             return Err(e);
         }
     };
+    let mut item = item;
+    // 重新派工（退修）时，派工单里写着这次要补什么图。工作台只会在原帖已有的图里重排图位，
+    // 不会找新图源：要求原文进包，并记一条决定级缺口，交给人判断要求是否满足
+    //（10-02 r60 Van 退修：LFE 要翻转后侧视、MINIMAL WORKS 要整顶全貌，v2 却写「缺口 0 条」直通）
+    let note = dispatch_note(detail);
+    let redo = round.target_version > 1 && !note.trim().is_empty();
+    if redo {
+        item.gaps.push(format!(
+            "本次派工的修订要求工作台没有自动核对：只在原帖已有的 {} 张图里重排图位，没有新增图源。\
+             要求里的功能图若不在下面「素材核对」的逐张说明里，就是原帖没有，需人工补采或换图源（不重绘、不拼图）",
+            item.shots.len()
+        ));
+    }
     let picked = material::pick_figures(&item.shots, material::FIGURE_SLOTS);
     rounds::end_step(
         conn,
@@ -89,7 +102,14 @@ pub async fn run_material(
         "",
     )?;
 
-    let body = material::material_body(&item, &picked);
+    let mut body = material::material_body(&item, &picked);
+    if redo {
+        body.push_str("\n## 本次派工要求（原文）\n\n");
+        for l in note.trim().lines() {
+            body.push_str(&format!("> {l}\n"));
+        }
+        body.push('\n');
+    }
     let entries = material::assemble_material(
         meta_for(
             round,
@@ -108,9 +128,11 @@ pub async fn run_material(
         detail.task.id,
         item_key,
         &format!(
-            "配图与素材核_情报收集员_r{}_{}_v1",
+            "配图与素材核_情报收集员_r{}_{}_v{}",
             round.run_id.unwrap_or(0),
-            file_part(item_key)
+            file_part(item_key),
+            // 按目标版本命名：写死 v1 时退修版会把本地的上一版覆盖掉
+            round.target_version.max(1)
         ),
         &entries,
     )
@@ -226,7 +248,10 @@ pub async fn run_xhs_pick(
         cfg,
         detail.task.id,
         "",
-        &format!("小红书选图包_情报收集员_r{run_id}_v1"),
+        &format!(
+            "小红书选图包_情报收集员_r{run_id}_v{}",
+            round.target_version.max(1)
+        ),
         &entries,
     )
 }
@@ -399,6 +424,18 @@ fn ext_of(url: &str) -> String {
         .filter(|e| e.len() <= 4 && e.chars().all(|c| c.is_ascii_alphanumeric()))
         .map(|e| e.to_lowercase())
         .unwrap_or_else(|| "jpg".into())
+}
+
+/// 最新派工单的备注（引擎放在 dispatch 里），没有就用顶层的。
+fn dispatch_note(detail: &TaskDetail) -> String {
+    detail
+        .dispatch
+        .as_ref()
+        .and_then(|d| d.get("editor_note"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| detail.editor_note.clone())
 }
 
 fn item_title(detail: &TaskDetail, item_key: &str) -> String {
