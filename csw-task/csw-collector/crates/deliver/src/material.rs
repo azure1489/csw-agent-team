@@ -14,6 +14,11 @@
 //! 01 那一步下的是 w_768，够判断、不够排版。这两个阶段**一律下原图**：
 //! 设计师拿 768 宽的图去做公众号头图，放大后糊得一眼就能看出来。
 //!
+//! 「原图」要说清是哪一层的原图：来源库（Bright Data）2026-06 起只存 Instagram 的 640px 档，
+//! 所谓「按原始尺寸下载」只是没有二次缩放，**不是 Instagram 原帖的最大档**（10-02 r60 Van：
+//! 预览里的图都比较模糊）。真正的高清图经 hires-service 从原帖取，逐张记来历与校验结论，
+//! 见 [`HiresShot`] 与「高清原图溯源」一节。
+//!
 //! # 原始披露时间与转载时间分开写
 //!
 //! 作业手册里的硬要求。同一条资讯被三个账号转过时，「谁先发的」
@@ -44,6 +49,47 @@ pub struct Shot {
     pub ext: String,
     /// 识别结果。**没有就是没识别成功**，这张图不进图位
     pub desc: Option<MediaDescription>,
+    /// 换进包里的高清原图的来历。`None` 时 `bytes` 是来源库的 640 图
+    pub hires: Option<HiresShot>,
+}
+
+/// 一张高清原图的来历，**逐项可核**：原帖序号 → Instagram 文件名 → 取得地址 →
+/// 实际像素/字节/SHA → 与来源库 640 图的对应校验。主编验收按这张表读，不看自检的一句话。
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct HiresShot {
+    /// Instagram CDN 文件名，所有分辨率同名
+    pub file_key: String,
+    /// Instagram CDN 签名地址，会过期，只作证据
+    pub source_url: String,
+    /// 转存到 OSS 的长期地址
+    pub oss_url: String,
+    pub width: u32,
+    pub height: u32,
+    pub bytes: u64,
+    pub sha256: String,
+    pub mime_type: String,
+    /// 被它替换掉的来源库图：像素与字节
+    pub source_width: u32,
+    pub source_height: u32,
+    pub source_bytes: u64,
+    /// 对应方式与画面校验结论（人话一句）
+    pub matched: String,
+}
+
+/// 这条资讯取高清图的总账。
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct HiresSummary {
+    pub service: String,
+    pub shortcode: String,
+    pub pk: String,
+    /// 服务端命中缓存（24 小时内同一帖子不再打 Instagram）
+    pub cached: bool,
+    /// 换进包里的张数
+    pub replaced: usize,
+    /// 来源库里的图片张数
+    pub total: usize,
+    /// 没换成或只换了一部分的原因；全换成是空的
+    pub note: String,
 }
 
 impl Shot {
@@ -78,6 +124,8 @@ pub struct ItemShots {
     pub shots: Vec<Shot>,
     /// 下载或识别失败的、以及别的缺口
     pub gaps: Vec<String>,
+    /// 高清原图的总账；没配 hires-service 时是 None，包里就是来源库 640 图
+    pub hires: Option<HiresSummary>,
 }
 
 /// 挑图位：**能当配图的才进**，按画面类型排。
@@ -159,7 +207,33 @@ pub fn material_body(item: &ItemShots, picked: &[&Shot]) -> String {
             let _ = writeln!(s, "- 正文提到但画面没有：{missing}");
         }
         let _ = writeln!(s, "- 类型：{}", kind_cn(d.map(|d| d.kind)));
-        let _ = writeln!(s, "- 原图：{}", shot.url);
+        match &shot.hires {
+            Some(h) => {
+                let _ = writeln!(
+                    s,
+                    "- 高清原图：{}（{}×{}，{} B，sha256 {}；Instagram 文件 {}）",
+                    h.oss_url,
+                    h.width,
+                    h.height,
+                    h.bytes,
+                    short_sha(&h.sha256),
+                    h.file_key
+                );
+                let _ = writeln!(
+                    s,
+                    "- 来源库转存图（{}×{}，{} B，已被上面的高清图替换）：{}",
+                    h.source_width, h.source_height, h.source_bytes, shot.url
+                );
+                let _ = writeln!(s, "- 对应：{}", h.matched);
+            }
+            None => {
+                let _ = writeln!(
+                    s,
+                    "- 原图（来源库转存，640px 档，不是 Instagram 最大档）：{}",
+                    shot.url
+                );
+            }
+        }
         let _ = writeln!(s);
     }
 
@@ -184,8 +258,102 @@ pub fn material_body(item: &ItemShots, picked: &[&Shot]) -> String {
         );
     }
     let _ = writeln!(s);
+    hires_section(&mut s, item);
     gaps_section(&mut s, &item.gaps);
     s
+}
+
+/// 「高清原图溯源」：逐张从原帖序号追到包内文件，每一步都是可以拿去核的数。
+/// 没配 hires-service 时不写这一节——自检里会说明图是来源库 640 档。
+fn hires_section(s: &mut String, item: &ItemShots) {
+    let Some(h) = &item.hires else {
+        return;
+    };
+    let _ = writeln!(s, "## 高清原图溯源");
+    let _ = writeln!(s);
+    let _ = writeln!(
+        s,
+        "经 hires-service（{}）从 Instagram 原帖取 `image_versions2` 最大一档：shortcode `{}`、pk `{}`，\
+         {}；换进包 {} / {} 张。按轮播序号与来源库 640 图对应，每张再做画面校验（dHash）。",
+        h.service,
+        h.shortcode,
+        or_dash(&h.pk),
+        if h.cached {
+            "服务端命中缓存"
+        } else {
+            "本次新取"
+        },
+        h.replaced,
+        h.total
+    );
+    let _ = writeln!(s);
+    if !h.note.trim().is_empty() {
+        let _ = writeln!(s, "> {}", h.note.trim());
+        let _ = writeln!(s);
+    }
+    let _ = writeln!(
+        s,
+        "| 序 | Instagram 文件 | 高清来源（OSS） | 像素 | 字节 | SHA256 | 包内文件 | 来源库 640 图 | 校验 |"
+    );
+    let _ = writeln!(s, "|---|---|---|---|---|---|---|---|---|");
+    for shot in &item.shots {
+        match &shot.hires {
+            Some(x) => {
+                let _ = writeln!(
+                    s,
+                    "| {} | `{}` | {} | {}×{} | {} | `{}` | `{}` | {} | {} |",
+                    shot.ordinal,
+                    cell(&x.file_key),
+                    cell(&x.oss_url),
+                    x.width,
+                    x.height,
+                    x.bytes,
+                    x.sha256,
+                    shot.file(&item.item_key),
+                    cell(&shot.url),
+                    cell(&x.matched)
+                );
+            }
+            None => {
+                let _ = writeln!(
+                    s,
+                    "| {} | —— | —— | —— | —— | —— | `{}` | {} | 未换：包内仍是来源库 640 图 |",
+                    shot.ordinal,
+                    shot.file(&item.item_key),
+                    cell(&shot.url)
+                );
+            }
+        }
+    }
+    let _ = writeln!(s);
+}
+
+fn short_sha(s: &str) -> String {
+    let n = s.len().min(16);
+    format!("{}…", &s[..n])
+}
+
+/// `trace/hires.json`：与「高清原图溯源」同一份数据，给程序读。
+pub fn hires_trace(item: &ItemShots) -> Option<String> {
+    let h = item.hires.as_ref()?;
+    let shots: Vec<serde_json::Value> = item
+        .shots
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "ordinal": s.ordinal,
+                "file": s.file(&item.item_key),
+                "source_640_url": s.url,
+                "hires": s.hires,
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&serde_json::json!({
+        "item_key": item.item_key,
+        "summary": h,
+        "shots": shots,
+    }))
+    .ok()
 }
 
 /// 11 的正文：按资讯分组的原图，不挑图位。
@@ -211,13 +379,18 @@ pub fn pick_body(items: &[ItemShots]) -> String {
             let d = shot.desc.as_ref();
             let _ = writeln!(
                 s,
-                "- `{}` · {} · {}",
+                "- `{}` · {} · {}{}",
                 shot.file(&item.item_key),
                 kind_cn(d.map(|d| d.kind)),
-                d.map(|d| d.content.as_str()).unwrap_or("（未识别）")
+                d.map(|d| d.content.as_str()).unwrap_or("（未识别）"),
+                match &shot.hires {
+                    Some(h) => format!(" · 高清 {}×{}", h.width, h.height),
+                    None => " · 来源库 640 档".to_string(),
+                }
             );
         }
         let _ = writeln!(s);
+        hires_section(&mut s, item);
         gaps_section(&mut s, &item.gaps);
     }
     s
@@ -283,6 +456,9 @@ pub fn assemble_material(meta: crate::index::Meta, body: String, item: &ItemShot
             shot.bytes.clone(),
         ));
     }
+    if let Some(t) = hires_trace(item) {
+        out.push(Entry::text("trace/hires.json", t));
+    }
     out
 }
 
@@ -297,6 +473,12 @@ pub fn assemble_pick(meta: crate::index::Meta, body: String, items: &[ItemShots]
             out.push(Entry::binary(
                 &shot.file(&item.item_key),
                 shot.bytes.clone(),
+            ));
+        }
+        if let Some(t) = hires_trace(item) {
+            out.push(Entry::text(
+                &format!("trace/hires_{}.json", safe_name(&item.item_key)),
+                t,
             ));
         }
     }
@@ -343,6 +525,7 @@ mod tests {
             bytes: vec![0xff, 0xd8, ordinal as u8],
             ext: "jpg".into(),
             desc: d,
+            hires: None,
         }
     }
 
@@ -356,7 +539,81 @@ mod tests {
             ingested_at: "2026-09-18T01:00:00Z".into(),
             shots,
             gaps: vec![],
+            hires: None,
         }
+    }
+
+    /// 10-02 r60：Van 要原帖高清图。换进包的每张都要能从原帖序号追到包内文件
+    #[test]
+    fn 高清图换进图位并逐张写溯源() {
+        let mut a = shot(0, Some(desc(ImageKind::Product, true)));
+        a.bytes = vec![1, 2, 3];
+        a.hires = Some(HiresShot {
+            file_key: "830695363_18019224638948673_2645447066939608343_n.jpg".into(),
+            source_url: "https://scontent.cdninstagram.com/v/a.jpg?oe=1".into(),
+            oss_url: "https://cws-file.oss-cn-guangzhou.aliyuncs.com/upload/2026/10/05/HD.jpg"
+                .into(),
+            width: 1440,
+            height: 1800,
+            bytes: 366184,
+            sha256: "7455608d6194e3d559d5193490fd0a7b74124a0b2cef19be472446e822d7bc77".into(),
+            mime_type: "image/jpeg".into(),
+            source_width: 512,
+            source_height: 640,
+            source_bytes: 58851,
+            matched: "序号对应，画面校验通过（dHash 差 2 位）".into(),
+        });
+        let b = shot(1, Some(desc(ImageKind::Detail, true)));
+        let mut it = item(vec![a, b]);
+        it.hires = Some(HiresSummary {
+            service: "https://hires.aworld.ltd:9877".into(),
+            shortcode: "ABC".into(),
+            pk: "3999057414473785641".into(),
+            cached: false,
+            replaced: 1,
+            total: 2,
+            note: "第 1 张：上传 OSS 失败（upload failed: 502）".into(),
+        });
+        let picked = pick_figures(&it.shots, FIGURE_SLOTS);
+        let body = material_body(&it, &picked);
+        assert!(body.contains("## 高清原图溯源"), "{body}");
+        assert!(
+            body.contains("830695363_18019224638948673"),
+            "文件名要在表里"
+        );
+        assert!(body.contains("7455608d6194e3d559d5193490fd0a7b74124a0b2cef19be472446e822d7bc77"));
+        assert!(body.contains("1440×1800"));
+        assert!(body.contains("换进包 1 / 2 张"));
+        assert!(body.contains("画面校验通过"));
+        assert!(
+            body.contains("未换：包内仍是来源库 640 图"),
+            "没换的那张要如实写"
+        );
+        assert!(body.contains("上传 OSS 失败"), "原因要进包");
+        // 图位里写清哪张是高清、哪张还是转存
+        assert!(body.contains("- 高清原图：https://cws-file"));
+        assert!(body.contains("- 原图（来源库转存，640px 档"));
+        // trace 文件跟着进包
+        let entries = assemble_material(crate::index::Meta::default(), body, &it);
+        let names: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(names.contains(&"trace/hires.json"), "{names:?}");
+        let t = entries
+            .iter()
+            .find(|e| e.path == "trace/hires.json")
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&t.bytes).unwrap();
+        assert_eq!(v["summary"]["replaced"], 1);
+        assert_eq!(v["shots"][0]["hires"]["width"], 1440);
+        assert!(v["shots"][1]["hires"].is_null());
+    }
+
+    #[test]
+    fn 没配高清服务时不写溯源节_图位注明是转存图() {
+        let it = item(vec![shot(0, Some(desc(ImageKind::Product, true)))]);
+        let body = material_body(&it, &pick_figures(&it.shots, 3));
+        assert!(!body.contains("高清原图溯源"));
+        assert!(body.contains("来源库转存，640px 档"));
+        assert!(hires_trace(&it).is_none());
     }
 
     #[test]

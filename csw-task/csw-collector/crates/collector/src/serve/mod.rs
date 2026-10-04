@@ -15,6 +15,7 @@
 
 pub mod calibration;
 pub mod finish;
+pub mod hires_match;
 pub mod http;
 pub mod item;
 pub mod outbox_sender;

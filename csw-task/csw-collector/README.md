@@ -53,6 +53,14 @@ csw-collector run --manual --days 1     # 当场跑完就退出，结果只写�
 
 模型网关只用 `csw-subapi.833233.xyz`。
 
+**高清原图（`[hires]`）**：来源库（Bright Data）2026-06 起只存 Instagram 图片的 640px 档。
+05 / 11 开工时按 shortcode 调 `hires-service`（默认 `https://hires.aworld.ltd:9877`，
+token 走 env `HIRES_TOKEN`），拿原帖每张图的最大一档换进包，按轮播序号与 640 图对应、
+逐张做画面校验（dHash），来历写进「高清原图溯源」与 `trace/hires.json`。
+`required = true`（默认）时取不到就整条报失败、原因原样带出（会话失效 / 超限 / 帖子已删 /
+张数不一致），不交 640 图冒充；应急才关 `required`。没有 `HIRES_TOKEN` 时自动当没配，
+自检明写「高清原图未取」。服务本身在 Mac mini 上（`~/project/hires-service`）。
+
 `CSW_COLLECTOR_ALERT_WEBHOOK` 也只从 env 走：它是一个**谁拿到都能往群里发消息**
 的地址。不填＝告警关着，只进日志。这个群是给运维看的，不是编辑部群——
 流程上的事由引擎播报，这里只发这个服务自己的毛病（磁盘、outbox 冲突、

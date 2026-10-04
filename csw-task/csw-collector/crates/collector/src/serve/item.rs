@@ -24,12 +24,16 @@ use csw_collector_core::rounds::{self, Round};
 use csw_collector_core::types::{Candidate, MediaKind, StepCode, StepStatus};
 use csw_collector_core::{Config, ledger, media};
 use csw_collector_deliver::index::Meta;
-use csw_collector_deliver::material::{self, ItemShots, Shot};
+use csw_collector_deliver::material::{self, HiresShot, HiresSummary, ItemShots, Shot};
 use csw_collector_deliver::pack;
 use csw_collector_engineapi::client::EngineClient;
 use csw_collector_engineapi::types::TaskDetail;
 use csw_collector_harvest::download::{DownloadConfig, Downloader};
+use csw_collector_harvest::hires::{HiresClient, HiresItem};
 use csw_collector_harvest::recognize;
+use sha2::{Digest, Sha256};
+
+use super::hires_match;
 
 /// 05 的阶段代号
 pub const STAGE_MATERIAL: &str = "material";
@@ -319,6 +323,7 @@ async fn shots_for(
                     bytes: Vec::new(),
                     ext: ext_of(&m.url),
                     desc: None,
+                    hires: None,
                 });
             }
             Err(e) => gaps.push(format!("{}：读盘失败 {e}", m.url)),
@@ -347,7 +352,7 @@ async fn shots_for(
         s.bytes = bytes_by_b3.get(&s.blake3).cloned().unwrap_or_default();
     }
 
-    Ok(ItemShots {
+    let mut item = ItemShots {
         item_key: item_key.to_string(),
         title: if title.trim().is_empty() {
             c.account.clone()
@@ -360,7 +365,190 @@ async fn shots_for(
         ingested_at: c.ingested_at.map(|t| t.to_string()).unwrap_or_default(),
         shots,
         gaps,
-    })
+        hires: None,
+    };
+    // 高清原图：来源库只有 640 档，Van 要的是原帖的图（10-02 r60）。按轮播序号对应、逐张画面校验
+    if let Some(h) = svc.hires.as_ref() {
+        let ordinals: Vec<u16> = photos.iter().map(|m| m.ordinal).collect();
+        attach_hires(cfg, h, &dl, &short, &ordinals, &mut item).await?;
+    }
+    Ok(item)
+}
+
+/// 把 hires-service 取到的高清图换进 `item.shots`，每张记来历与校验结论。
+///
+/// `source_ordinals` 是来源库这条贴文**全部图片**的序号（按轮播顺序），不只是下载成功的那些：
+/// 数量对不上说明帖子被编辑过，不按序号硬配。
+///
+/// 取不到时的处置看 `cfg.hires.required`：要求必有就报错（整条任务报失败，原因原样带出去，
+/// 主编按它决定换 cookie 还是转人工）；不要求就交 640 图，自检与缺口明写。
+async fn attach_hires(
+    cfg: &Config,
+    hires: &HiresClient,
+    dl: &Downloader,
+    shortcode: &str,
+    source_ordinals: &[u16],
+    item: &mut ItemShots,
+) -> Result<()> {
+    let total = source_ordinals.len();
+    let mut summary = HiresSummary {
+        service: hires.base_url().to_string(),
+        shortcode: shortcode.to_string(),
+        total,
+        ..Default::default()
+    };
+    let bail_or_note = |item: &mut ItemShots,
+                        mut summary: HiresSummary,
+                        why: String|
+     -> Result<()> {
+        summary.note = why.clone();
+        item.hires = Some(summary);
+        if cfg.hires.required {
+            anyhow::bail!(
+                "高清原图未取到：{why}。工作台不交来源库 640 图冒充原图；请处理后重开派工（hires-service {}）",
+                hires.base_url()
+            );
+        }
+        item.gaps
+            .push(format!("高清原图未取到，包内是来源库 640 档：{why}"));
+        Ok(())
+    };
+
+    let res = match hires.media(shortcode).await {
+        Ok(r) => r,
+        Err(e) => return bail_or_note(item, summary, e.to_string()),
+    };
+    summary.pk = res.pk.clone();
+    summary.cached = res.cached;
+    let ph = res.photos();
+    if let Err(why) = check_counts(source_ordinals, &ph) {
+        return bail_or_note(item, summary, why);
+    }
+
+    // OSS 地址一次下完（原图下载器：不缩放、走守卫客户端）
+    let urls: Vec<String> = ph
+        .iter()
+        .filter_map(|p| p.oss.as_ref().map(|o| o.url.clone()))
+        .collect();
+    let report = dl.fetch_all(&urls).await;
+    let by_url = report.by_url();
+
+    let mut problems = Vec::new();
+    for (i, p) in ph.iter().enumerate() {
+        let ordinal = source_ordinals[i];
+        let Some(shot) = item.shots.iter_mut().find(|s| s.ordinal == ordinal) else {
+            problems.push(format!(
+                "第 {} 张（{}）：来源库那张没下载成功，无法做画面校验，未换",
+                i + 1,
+                p.file_key
+            ));
+            continue;
+        };
+        let Some(oss) = p.oss.as_ref() else {
+            problems.push(format!(
+                "第 {} 张（{}）：hires-service 没转存成 OSS：{}",
+                i + 1,
+                p.file_key,
+                p.error.clone().unwrap_or_else(|| "未说明原因".into())
+            ));
+            continue;
+        };
+        let Some(d) = by_url.get(oss.url.as_str()) else {
+            let why = report
+                .failed
+                .iter()
+                .find(|f| f.url == oss.url)
+                .map(|f| f.error.clone())
+                .unwrap_or_else(|| "未知".into());
+            problems.push(format!(
+                "第 {} 张（{}）：下载 OSS 高清图失败：{why}",
+                i + 1,
+                p.file_key
+            ));
+            continue;
+        };
+        let bytes = match std::fs::read(&d.path) {
+            Ok(b) => b,
+            Err(e) => {
+                problems.push(format!("第 {} 张（{}）：读盘失败 {e}", i + 1, p.file_key));
+                continue;
+            }
+        };
+        let m = hires_match::verify(&bytes, &shot.bytes);
+        if !m.ok() {
+            problems.push(format!("第 {} 张（{}）：{}", i + 1, p.file_key, m.cn()));
+            continue;
+        }
+        let (w, h) = hires_match::dimensions(&bytes).unwrap_or((p.width, p.height));
+        let (sw, sh) = hires_match::dimensions(&shot.bytes).unwrap_or((0, 0));
+        let sha256: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        shot.hires = Some(HiresShot {
+            file_key: p.file_key.clone(),
+            source_url: p.source_url.clone(),
+            oss_url: oss.url.clone(),
+            width: w,
+            height: h,
+            bytes: bytes.len() as u64,
+            sha256,
+            mime_type: oss.mime_type.clone(),
+            source_width: sw,
+            source_height: sh,
+            source_bytes: shot.bytes.len() as u64,
+            matched: m.cn(),
+        });
+        if let Some(ext) = ext_of_mime(&oss.mime_type) {
+            shot.ext = ext.to_string();
+        }
+        shot.bytes = bytes;
+        summary.replaced += 1;
+    }
+    if summary.replaced < total {
+        let why = format!(
+            "只换到 {}/{} 张：{}",
+            summary.replaced,
+            total,
+            problems.join("；")
+        );
+        return bail_or_note(item, summary, why);
+    }
+    tracing::info!(
+        条目 = %item.item_key,
+        张数 = total,
+        缓存 = res.cached,
+        "高清原图已换进包"
+    );
+    item.hires = Some(summary);
+    Ok(())
+}
+
+/// 来源库与 Instagram 原帖的图片张数必须一致，否则序号对应不可信。
+fn check_counts(
+    source_ordinals: &[u16],
+    hires_photos: &[&HiresItem],
+) -> std::result::Result<(), String> {
+    if source_ordinals.is_empty() {
+        return Err("来源库这条一张图都没有，没有可对应的".into());
+    }
+    if hires_photos.len() != source_ordinals.len() {
+        return Err(format!(
+            "Instagram 原帖图片 {} 张、来源库 {} 张，数量不一致（帖子可能被编辑过），不按序号硬配",
+            hires_photos.len(),
+            source_ordinals.len()
+        ));
+    }
+    Ok(())
+}
+
+fn ext_of_mime(mime: &str) -> Option<&'static str> {
+    match mime.trim().to_ascii_lowercase().as_str() {
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/png" => Some("png"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    }
 }
 
 /// 这条条目对应的贴文短码。
@@ -480,7 +668,12 @@ fn meta_for(
 fn checks_material(item: &ItemShots, picked: usize) -> Vec<String> {
     let recognized = item.shots.iter().filter(|s| s.desc.is_some()).count();
     vec![
-        format!("原图 {} 张，全部按原始尺寸下载（未缩放）", item.shots.len()),
+        // 说清是哪一层的「原图」：来源库只有 640 档（10-02 r60 Van：预览里的图都比较模糊）
+        format!(
+            "来源库转存图 {} 张（Bright Data 640px 档，不是 Instagram 最大档）",
+            item.shots.len()
+        ),
+        hires_check(item.hires.as_ref()),
         format!("识别 {recognized}/{} 张", item.shots.len()),
         format!(
             "图位 {picked}/{}{}",
@@ -495,12 +688,36 @@ fn checks_material(item: &ItemShots, picked: usize) -> Vec<String> {
     ]
 }
 
+/// 自检里关于高清原图的那一行。
+fn hires_check(h: Option<&HiresSummary>) -> String {
+    match h {
+        Some(h) if h.total > 0 && h.replaced == h.total => format!(
+            "高清原图 {}/{} 张取自 Instagram 原帖（hires-service{}），逐张溯源见「高清原图溯源」与 trace/hires.json",
+            h.replaced,
+            h.total,
+            if h.cached { "，服务端缓存" } else { "" }
+        ),
+        Some(h) => format!(
+            "高清原图未取全（{}/{} 张），包内其余是来源库 640 档：{}",
+            h.replaced, h.total, h.note
+        ),
+        None => "高清原图未取：未配置 hires-service，包内是来源库 640 档".to_string(),
+    }
+}
+
 fn checks_pick(items: &[ItemShots], failed: &[String]) -> Vec<String> {
+    let shots: usize = items.iter().map(|i| i.shots.len()).sum();
+    let hires: usize = items
+        .iter()
+        .filter_map(|i| i.hires.as_ref())
+        .map(|h| h.replaced)
+        .sum();
     vec![
         format!(
-            "{} 条资讯、{} 张原图，全部按原始尺寸下载（未缩放）",
+            "{} 条资讯、{} 张图：高清原图 {hires} 张取自 Instagram 原帖，其余 {} 张是来源库 640 档",
             items.len(),
-            items.iter().map(|i| i.shots.len()).sum::<usize>()
+            shots,
+            shots - hires
         ),
         format!("取不到图的条目 {} 条", failed.len()),
         "未挑图位：图位由小红书图文作者定".to_string(),
@@ -639,6 +856,53 @@ mod tests {
             tags: vec![],
             hashtags: vec![],
         }
+    }
+
+    #[test]
+    fn 张数对不上就不按序号硬配() {
+        let mk = |i: usize| HiresItem {
+            index: i,
+            kind: "Photo".into(),
+            width: 1440,
+            height: 1800,
+            file_key: format!("{i}.jpg"),
+            source_url: String::new(),
+            oss: None,
+            error: None,
+        };
+        let a = mk(0);
+        let b = mk(1);
+        assert!(check_counts(&[0, 1], &[&a, &b]).is_ok());
+        let e = check_counts(&[0, 1, 2], &[&a, &b]).unwrap_err();
+        assert!(
+            e.contains("2 张") && e.contains("3 张") && e.contains("不按序号硬配"),
+            "{e}"
+        );
+        assert!(check_counts(&[], &[&a]).is_err());
+        assert_eq!(ext_of_mime("image/jpeg"), Some("jpg"));
+        assert_eq!(ext_of_mime("Image/PNG"), Some("png"));
+        assert_eq!(ext_of_mime("application/octet-stream"), None);
+    }
+
+    #[test]
+    fn 自检说清哪一层的原图() {
+        let full = HiresSummary {
+            replaced: 3,
+            total: 3,
+            cached: true,
+            ..Default::default()
+        };
+        assert!(hires_check(Some(&full)).contains("3/3 张取自 Instagram 原帖"));
+        assert!(hires_check(Some(&full)).contains("服务端缓存"));
+        let part = HiresSummary {
+            replaced: 1,
+            total: 3,
+            note: "第 2 张：x".into(),
+            ..Default::default()
+        };
+        let s = hires_check(Some(&part));
+        assert!(s.contains("1/3") && s.contains("第 2 张：x"), "{s}");
+        assert!(hires_check(None).contains("未配置 hires-service"));
     }
 
     #[test]

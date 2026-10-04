@@ -9,11 +9,12 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// 这几个 env 名是密钥，`Debug` 与日志里一律只出现长度。
-pub const SECRET_ENV_KEYS: [&str; 4] = [
+pub const SECRET_ENV_KEYS: [&str; 5] = [
     "CSW_API_KEY",
     "SUB2API_API_KEY",
     "TYPESAFE_API_KEY",
     "CSW_ENGINE_TOKEN",
+    "HIRES_TOKEN",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +24,7 @@ pub struct Config {
     pub listen: String,
     pub engine: Engine,
     pub csw: Csw,
+    pub hires: Hires,
     pub vector: Vector,
     pub model: Model,
     pub jev: Jev,
@@ -47,6 +49,21 @@ pub struct Engine {
     pub ack_secs: u64,
     /// 上传上限。引擎是 64 MiB，留出余量。
     pub max_upload_mib: u64,
+}
+
+/// 高清原图服务（`hires-service`）：输入 shortcode，用已登录的 Instagram 会话取每张图的
+/// 最大一档并转存 OSS。来源库（Bright Data）2026-06 起只给 640px，05 / 11 的图从这里补。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Hires {
+    /// 总开关。开着但没有 `HIRES_TOKEN` 时自动关并告警。
+    pub enabled: bool,
+    pub base_url: String,
+    /// 服务是串行的，排队时一条要等前面的做完（每条 ≥ 8 秒）
+    pub timeout_secs: u64,
+    /// 取不到高清图时整条 05 / 11 报失败（主编要的是「取不到就报真实原因」，不是交 640 冒充）。
+    /// 关掉只在应急时用：交 640 包，自检明写「高清未取到」。
+    pub required: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,6 +255,8 @@ pub struct Secrets {
     pub sub2api_key: String,
     pub typesafe_key: String,
     pub engine_token: String,
+    /// hires-service 的 Bearer token（Mac mini 上 `~/.config/hires/token`）
+    pub hires_token: String,
 }
 
 impl std::fmt::Debug for Secrets {
@@ -254,6 +273,7 @@ impl std::fmt::Debug for Secrets {
             .field("sub2api_key", &n(&self.sub2api_key))
             .field("typesafe_key", &n(&self.typesafe_key))
             .field("engine_token", &n(&self.engine_token))
+            .field("hires_token", &n(&self.hires_token))
             .finish()
     }
 }
@@ -266,6 +286,7 @@ impl Secrets {
             sub2api_key: g("SUB2API_API_KEY"),
             typesafe_key: g("TYPESAFE_API_KEY"),
             engine_token: g("CSW_ENGINE_TOKEN"),
+            hires_token: g("HIRES_TOKEN"),
         }
     }
 
@@ -298,7 +319,7 @@ macro_rules! default_from_config {
     };
 }
 default_from_config!(
-    Engine => engine, Csw => csw, Vector => vector, Model => model, Jev => jev,
+    Engine => engine, Csw => csw, Hires => hires, Vector => vector, Model => model, Jev => jev,
     Codex => codex, Schedule => schedule, Limits => limits, Features => features, Web => web,
 );
 
@@ -319,6 +340,12 @@ impl Default for Config {
                 window_page: 50,
                 timeout_secs: 120,
                 thumb_width: 768,
+            },
+            hires: Hires {
+                enabled: true,
+                base_url: "https://hires.aworld.ltd:9877".into(),
+                timeout_secs: 180,
+                required: true,
             },
             vector: Vector {
                 base_url: "http://127.0.0.1:8022".into(),

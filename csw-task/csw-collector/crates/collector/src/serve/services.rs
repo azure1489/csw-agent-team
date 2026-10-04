@@ -17,6 +17,7 @@ use csw_collector_core::vector::{VectorClient, VectorConfig};
 use csw_collector_core::{Config, Secrets};
 use csw_collector_harvest::csw::{CswClient, CswConfig};
 use csw_collector_harvest::download::Downloader;
+use csw_collector_harvest::hires::{HiresClient, HiresConfig};
 use csw_collector_kb::brands::BrandIndex;
 use csw_collector_kb::fts::Tokenizer;
 use csw_collector_kb::vectors::VectorStore;
@@ -34,6 +35,8 @@ pub struct Services {
     pub store: VectorStore,
     pub brands: BrandIndex,
     pub tok: Tokenizer,
+    /// 高清原图服务。没配 token、开关关着、或在录制回放里时是 None：05 / 11 交来源库 640 图并明写
+    pub hires: Option<HiresClient>,
 }
 
 impl Services {
@@ -111,6 +114,20 @@ impl Services {
             tracing::warn!("Jev 没开：初评、合并与核对都会跳过，判断照跑");
         }
 
+        // 高清原图：回放模式不出网；开着却没 token 的告警后当没配
+        let hires = if rec.is_some() || !cfg.hires.enabled {
+            None
+        } else if secrets.hires_token.trim().is_empty() {
+            tracing::warn!("hires 开着但没有 HIRES_TOKEN：05 / 11 只能交来源库 640 图，自检会明写");
+            None
+        } else {
+            Some(HiresClient::new(HiresConfig {
+                base_url: cfg.hires.base_url.clone(),
+                token: secrets.hires_token.clone(),
+                timeout: Duration::from_secs(cfg.hires.timeout_secs),
+            })?)
+        };
+
         let brands = BrandIndex::load(conn).context("读别名表")?;
         if brands.is_empty() {
             tracing::warn!("别名表是空的，品牌那一路召回会全空。先跑一次 `kb sync`。");
@@ -136,6 +153,7 @@ impl Services {
             store,
             brands,
             tok,
+            hires,
         })
     }
 }

@@ -12,6 +12,7 @@ pub mod collector;
 pub mod csw;
 pub mod download;
 pub mod fetch;
+pub mod hires;
 pub mod netguard;
 pub mod pipeline;
 pub mod recognize;

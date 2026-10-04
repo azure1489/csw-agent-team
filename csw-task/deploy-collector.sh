@@ -162,6 +162,8 @@ CSW_ENGINE_TOKEN=
 CSW_API_URL=https://agent-api.campsomewhere.com
 # Jev 不填就是关着，判断退回生成模型
 TYPESAFE_API_KEY=
+# 高清原图服务（hires-service，Mac mini ~/.config/hires/token）。不填＝05/11 只交来源库 640 图并明写
+HIRES_TOKEN=
 # 运维告警群。谁拿到都能往群里发消息，所以它也算密钥。不填＝告警关着只进日志
 CSW_COLLECTOR_ALERT_WEBHOOK=
 # 不设就一行日志都没有（默认过滤全关）
