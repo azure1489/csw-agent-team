@@ -1736,6 +1736,24 @@ pub async fn rework_in_place(
             }
         }
     }
+    // 查重「未确认」的推荐 / 备选代表帖：带着现在齐全的对照材料（生成稿正文已给）再判一次，
+    // 能下结论的就下结论；轮不到重判的由导出前口径落待核并写明核哪篇（10-05 r62 v1 退回：
+    // 八张首批卡全是未确认却推荐）。主编校准过的不动
+    for t in topics
+        .iter()
+        .filter(|t| matches!(t.tier, Some(Tier::Recommend | Tier::Alternate)))
+    {
+        if focus.len() >= REWORK_FOCUS_MAX.max(must) {
+            break;
+        }
+        let unconfirmed = judgements.iter().any(|j| {
+            j.candidate_key == t.primary_key
+                && j.comparison.verdict == csw_collector_core::types::ComparisonVerdict::Unconfirmed
+        });
+        if unconfirmed && !focus.contains(&t.primary_key) && !calibrated.contains(&t.primary_key) {
+            focus.push(t.primary_key.clone());
+        }
+    }
     focus.truncate(REWORK_FOCUS_MAX.max(must));
     // 主编写明不重判的，点名条目也不交模型：只做代码口径与导出修复（10-01 r59 v7–v9：
     // 「不再自动重判/深核/升版」，e1cd9d 每版重判都在待核与推荐之间跳、缺口文字跟着变）
