@@ -370,9 +370,31 @@ async fn shots_for(
     // 高清原图：来源库只有 640 档，Van 要的是原帖的图（10-02 r60）。按轮播序号对应、逐张画面校验
     if let Some(h) = svc.hires.as_ref() {
         let ordinals: Vec<u16> = photos.iter().map(|m| m.ordinal).collect();
-        attach_hires(cfg, h, &dl, &short, &ordinals, &mut item).await?;
+        // `short` 是 csw 的贴文 id（数字），hires-service 要的是 Instagram 短码，从贴文链接里切
+        //（10-05 r62 05 首跑：把数字 id 当短码送过去，服务按 base64 解成了一个 35 位的假 media_id，五条全 400）
+        match ig_shortcode(&c) {
+            Some(code) => attach_hires(cfg, h, &dl, &code, &ordinals, &mut item).await?,
+            None => {
+                let why = format!(
+                    "贴文链接里切不出 Instagram 短码（{}），无法向 hires-service 取原图",
+                    c.url
+                );
+                if cfg.hires.required {
+                    anyhow::bail!("高清原图未取到：{why}");
+                }
+                item.gaps
+                    .push(format!("高清原图未取到，包内是来源库 640 档：{why}"));
+            }
+        }
     }
     Ok(item)
+}
+
+/// 贴文的 Instagram 短码（`/p/<code>/`），给 hires-service 用。**不是** csw 的数字贴文 id。
+fn ig_shortcode(c: &Candidate) -> Option<String> {
+    from_url(&c.url)
+        .and_then(|s| sane(&s))
+        .filter(|s| !s.chars().all(|ch| ch.is_ascii_digit()))
 }
 
 /// 把 hires-service 取到的高清图换进 `item.shots`，每张记来历与校验结论。
@@ -903,6 +925,19 @@ mod tests {
         let s = hires_check(Some(&part));
         assert!(s.contains("1/3") && s.contains("第 2 张：x"), "{s}");
         assert!(hires_check(None).contains("未配置 hires-service"));
+    }
+
+    /// 10-05 r62 05 首跑：csw 的数字贴文 id 被当成短码送给 hires-service
+    #[test]
+    fn 送给hires的是链接里的短码不是csw数字id() {
+        let mut c = cand();
+        c.source_id = "3998767843600818383".into();
+        c.url = "https://www.instagram.com/p/Dd-eirZFODP/".into();
+        assert_eq!(ig_shortcode(&c).as_deref(), Some("Dd-eirZFODP"));
+        c.url = "https://www.instagram.com/p/3998767843600818383/".into();
+        assert!(ig_shortcode(&c).is_none(), "全数字的不是短码");
+        c.url = "https://example.com/x".into();
+        assert!(ig_shortcode(&c).is_none());
     }
 
     #[test]
