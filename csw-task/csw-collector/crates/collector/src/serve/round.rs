@@ -1870,7 +1870,8 @@ pub async fn rework_in_place(
         if col == register::collector_of("csw-window") {
             // 查询文字写本期窗口：旧的写的是开工时刻的止点（主编 #615：query 仍是旧止点）
             sw.query = format!(
-                "按原始披露时间收口：{} ~ {}（本期窗口，左闭右开）；接口按发布时间取宽，取回 {} 条、去重 {} 条",
+                "按原始披露时间收口：{} ~ {}（本期窗口，左闭右开）；接口按发布时间取宽，取回 {} 条、去重 {} 条；\
+                 派工单现行口径为 first_seen_at（首次入库），工作台按原始披露筛，两口径的逐键差异与结论见 trace/window_summary.json「实际筛选依据」",
                 prev.window_start, win_end, sw.found, sw.fetched_unique
             );
         }

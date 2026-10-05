@@ -498,6 +498,19 @@ pub fn unconfirmed_to_pending(j: &mut Judgement) -> Vec<String> {
             "{NOTE}查重未确认：{before:?} 落待核，对照正文核清后再定档"
         ));
     }
+    // 对照正文没拿到就不能说资料齐全（10-05 r62 v2 退回：仍推荐且 material_complete=true）
+    if j.readiness.material_complete {
+        j.readiness.material_complete = false;
+        if !j.readiness.note.contains("对照正文未得") {
+            if !j.readiness.note.trim().is_empty() {
+                j.readiness.note.push('；');
+            }
+            j.readiness
+                .note
+                .push_str("对照正文未得，查重未确认，资料不算齐全");
+        }
+        notes.push(format!("{NOTE}查重未确认：资料齐全改为否"));
+    }
     notes
 }
 
@@ -1135,8 +1148,11 @@ mod tests {
                 dup_fact: String::new(),
             }],
         };
+        j.readiness.material_complete = true;
         let notes = unconfirmed_to_pending(&mut j);
         assert_eq!(j.tier, Tier::PendingCheck);
+        assert!(!j.readiness.material_complete, "对照正文未得不算资料齐全");
+        assert!(j.readiness.note.contains("对照正文未得"));
         assert!(j.has_decision_gap());
         let g = j
             .gaps
@@ -1149,7 +1165,7 @@ mod tests {
             g.what
         );
         assert_eq!(g.owner, GapOwner::Editor);
-        assert_eq!(notes.len(), 2);
+        assert_eq!(notes.len(), 3);
         // 幂等；不推荐的不动档
         assert!(unconfirmed_to_pending(&mut j).is_empty());
         let mut k = Judgement::fixture("x-000001", Tier::NotRecommend);
