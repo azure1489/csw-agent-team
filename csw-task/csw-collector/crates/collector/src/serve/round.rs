@@ -1286,7 +1286,7 @@ fn settle_before_export(
             }
             conn.execute(
                 "UPDATE judgements SET tier = ?3, comparison_json = ?4, check_flags_json = ?5,
-                        gaps_json = ?6
+                        gaps_json = ?6, readiness_json = ?7
                   WHERE round_id = ?1 AND candidate_key = ?2",
                 rusqlite::params![
                     round_id,
@@ -1294,7 +1294,9 @@ fn settle_before_export(
                     serde_json::to_value(j.tier)?.as_str().unwrap_or_default(),
                     serde_json::to_string(&j.comparison)?,
                     serde_json::to_string(&flags)?,
-                    serde_json::to_string(&j.gaps)?
+                    serde_json::to_string(&j.gaps)?,
+                    // 资料齐全也在这里改（10-05 r62 v5：包里已是否，本地台账还是是）
+                    serde_json::to_string(&j.readiness)?
                 ],
             )?;
             Ok(())

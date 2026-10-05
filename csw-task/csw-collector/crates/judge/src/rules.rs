@@ -571,6 +571,18 @@ pub fn normalize_bodies(
             }
         })
         .collect();
+    // 早先版本追加过「只能是未确认」尾句、后来结论已明确的：把尾句改掉，不留自相矛盾
+    if j.comparison.verdict != ComparisonVerdict::Unconfirmed
+        && j.comparison.note.contains("这几条的事实级查重只能是未确认")
+    {
+        j.comparison.note = j.comparison.note.replace(
+            "这几条的事实级查重只能是未确认",
+            "查重结论基于已给正文的材料，这几条未计入；未得正文不是已发证据",
+        );
+        notes.push(format!(
+            "{NOTE}查重结论已明确，未得正文的尾句改为「未计入」"
+        ));
+    }
     if !missing.is_empty() && ALL_PROVIDED.is_match(&j.comparison.note) {
         j.comparison.note = ALL_PROVIDED
             .replace_all(&j.comparison.note, "五类材料都查过（查过不等于正文已得）")
@@ -1250,6 +1262,13 @@ mod tests {
         assert!(!ALL_PROVIDED.is_match("五类材料都查过（查过不等于正文已得）"));
         assert_eq!(notes.len(), 2);
         // 幂等：再跑一次不再改
+        assert!(normalize_bodies(&mut j, |_| None).is_empty());
+        // 结论后来明确了：旧尾句改成「未计入」，不再说只能是未确认
+        j.comparison.verdict = ComparisonVerdict::Unrelated;
+        let n2 = normalize_bodies(&mut j, |_| None);
+        assert_eq!(n2.len(), 1, "{n2:?}");
+        assert!(!j.comparison.note.contains("只能是未确认"));
+        assert!(j.comparison.note.contains("未计入"));
         assert!(normalize_bodies(&mut j, |_| None).is_empty());
         // 有材料时以材料为准：正式发布但没给正文摘要的也是否
         let notes = normalize_bodies(&mut j, |h| Some(h.ref_no != "M1"));
