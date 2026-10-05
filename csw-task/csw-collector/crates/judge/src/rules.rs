@@ -447,12 +447,27 @@ pub fn apply(j: &mut Judgement, ctx: &Ctx<'_>) -> Applied {
 /// 「未确认」只在对照材料正文不可得时出现（见 `verdict` 的口径）。核不了是否同一事实，
 /// 就不能说「能改变采用决定的缺口：无」，也不能占推荐位——主编按缺口里指的那篇去核，核清再定档。
 pub fn unconfirmed_to_pending(j: &mut Judgement) -> Vec<String> {
-    // 不推荐的不碰：它不推荐是因为价值不足，查重核不核得清都不改变这个结论
-    //（给它加缺口反而会让 R3 把它误翻成待核）
-    if j.comparison.verdict != ComparisonVerdict::Unconfirmed || j.tier == Tier::NotRecommend {
+    if j.comparison.verdict != ComparisonVerdict::Unconfirmed {
         return Vec::new();
     }
     let mut notes = Vec::new();
+    // 不推荐的不动档、不加缺口：它不推荐是因为价值不足，查重核不核得清都不改变这个结论
+    //（给它加缺口反而会让 R3 把它误翻成待核）；但「资料齐全」同样不能写真
+    if j.tier == Tier::NotRecommend {
+        if j.readiness.material_complete {
+            j.readiness.material_complete = false;
+            if !j.readiness.note.contains("对照正文未得") {
+                if !j.readiness.note.trim().is_empty() {
+                    j.readiness.note.push('；');
+                }
+                j.readiness
+                    .note
+                    .push_str("对照正文未得，查重未确认，资料不算齐全");
+            }
+            notes.push(format!("{NOTE}查重未确认：资料齐全改为否"));
+        }
+        return notes;
+    }
     let missing: Vec<String> = j
         .comparison
         .hits
@@ -566,8 +581,15 @@ pub fn normalize_bodies(
             } else {
                 "；"
             };
+            // 结论已经明确（无关 / 同品牌有增量 / 同一事实）的，没正文的那几条只是没计入，
+            // 不能反过来说「只能是未确认」（10-05 r62 v3 退回：无关材料与真正缺口要分开）
+            let tail = if j.comparison.verdict == ComparisonVerdict::Unconfirmed {
+                "这几条的事实级查重只能是未确认"
+            } else {
+                "查重结论基于已给正文的材料，这几条未计入；未得正文不是已发证据"
+            };
             j.comparison.note.push_str(&format!(
-                "{sep}正文未得：{}（只有标题或决定摘要），这几条的事实级查重只能是未确认。",
+                "{sep}正文未得：{}（只有标题或决定摘要），{tail}。",
                 missing.join("、")
             ));
         }
@@ -1170,8 +1192,12 @@ mod tests {
         assert!(unconfirmed_to_pending(&mut j).is_empty());
         let mut k = Judgement::fixture("x-000001", Tier::NotRecommend);
         k.comparison.verdict = ComparisonVerdict::Unconfirmed;
-        unconfirmed_to_pending(&mut k);
+        k.readiness.material_complete = true;
+        let kn = unconfirmed_to_pending(&mut k);
         assert_eq!(k.tier, Tier::NotRecommend);
+        assert!(!k.has_decision_gap(), "不推荐的不加缺口");
+        assert!(!k.readiness.material_complete, "但资料齐全同样改为否");
+        assert_eq!(kn.len(), 1);
         // 查重已下结论的不碰
         let mut m = Judgement::fixture("y-000002", Tier::Recommend);
         m.comparison.verdict = ComparisonVerdict::Unrelated;

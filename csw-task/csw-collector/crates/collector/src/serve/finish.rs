@@ -1506,29 +1506,32 @@ fn window_ids(
             "before_window": TraceOutcome::BeforeWindow.cn(),
             "after_window": TraceOutcome::AfterWindow.cn(),
             "no_time": TraceOutcome::NoTime.cn(),
-            "判定次序": "先去重，再筛图文，再按原始披露时间 [起, 止) 左闭右开（生产约定）；没有披露时间的退回按首次入库时间",
+            "判定次序": "先去重，再筛图文，再按 posted_at（平台贴文时间）优先、缺失按首次入库，落在 [起, 止) 左闭右开（代码事实）；派工单口径为 first_seen_at，两口径逐键差异见「实际筛选依据」",
         },
     });
     Ok((out, summary))
 }
 
 /// 窗口实际按哪个字段筛、代码在哪、与「按首次入库」相比差在哪些帖（逐键）。
-fn window_basis(
+/// 两种入窗口径（按 posted_at / 按首次入库）逐键差异：
+/// （按贴文时间在窗内而按入库不在，按入库在窗内而按贴文时间不在，没有贴文时间按入库判）。
+/// 窗口起止读不出来是 None。
+pub fn two_scope_diff(
     rows: &[csw_collector_core::window_trace::TraceRow],
     from: &str,
     to: &str,
-) -> serde_json::Value {
+) -> Option<(Vec<String>, Vec<String>, Vec<String>)> {
     let ts = |s: &Option<String>| s.as_deref().and_then(|x| x.parse::<jiff::Timestamp>().ok());
     let (Ok(f), Ok(t)) = (
         from.parse::<jiff::Timestamp>(),
         to.parse::<jiff::Timestamp>(),
     ) else {
-        return serde_json::json!({"说明": "窗口起止读不出来，未逐键比对"});
+        return None;
     };
     let inside = |x: Option<jiff::Timestamp>| x.is_some_and(|x| x >= f && x < t);
-    let mut only_posted = Vec::new(); // 按披露在窗内、按首次入库不在
-    let mut only_seen = Vec::new(); // 按首次入库在窗内、按披露不在（晚抓到的旧帖）
-    let mut fallback = Vec::new(); // 没有披露时间、按首次入库判的
+    let mut only_posted = Vec::new();
+    let mut only_seen = Vec::new();
+    let mut fallback = Vec::new();
     for r in rows {
         if matches!(
             r.outcome.as_str(),
@@ -1549,12 +1552,40 @@ fn window_basis(
             _ => {}
         }
     }
+    Some((only_posted, only_seen, fallback))
+}
+
+/// 两口径差异的一句话，写进采集轮 query 与窗口摘要。
+pub fn two_scope_sentence(conn: &Connection, round_id: i64, from: &str, to: &str) -> String {
+    let rows = csw_collector_core::window_trace::of_round(conn, round_id).unwrap_or_default();
+    match two_scope_diff(&rows, from, to) {
+        None => "两口径差异未比对（窗口起止读不出来）".into(),
+        Some((a, b, c)) if a.is_empty() && b.is_empty() && c.is_empty() => {
+            "本批按 posted_at 与按首次入库筛出的集合相同（差异 0 条）".into()
+        }
+        Some((a, b, c)) => format!(
+            "本批两口径有差异：按贴文时间在窗内而按入库不在 {} 条、按入库在窗内而按贴文时间不在 {} 条、无贴文时间按入库判 {} 条，逐键见 trace/window_summary.json「实际筛选依据」",
+            a.len(),
+            b.len(),
+            c.len()
+        ),
+    }
+}
+
+fn window_basis(
+    rows: &[csw_collector_core::window_trace::TraceRow],
+    from: &str,
+    to: &str,
+) -> serde_json::Value {
+    let Some((only_posted, only_seen, fallback)) = two_scope_diff(rows, from, to) else {
+        return serde_json::json!({"说明": "窗口起止读不出来，未逐键比对"});
+    };
     serde_json::json!({
         "窗口": format!("{from} ~ {to}（UTC，左闭右开）"),
-        "实际过滤字段": "posted_at（csw 接口 postedAt，平台贴文时间）；posted_at 缺失时用 ingested_at（csw 首次入库）",
+        "实际过滤字段": "posted_at（csw 接口 postedAt，平台贴文时间）优先；posted_at 缺失时用 ingested_at（csw 首次入库）",
         "代码位置": "csw-collector crates/harvest/src/pipeline.rs window_outcome / in_window：c.posted_at.or(c.ingested_at) 落在 [起, 止) 内",
-        "说明": "posted_at 是来源库记录的平台贴文时间，不等于另行核实过的首次披露；首次入库只作抓取证据",
-        "first_seen_at 入口": "csw 接口 ingestedAt（贴文首次进入来源库的时间），逐条写在 trace/items.jsonl 的 first_seen_at 与 trace/window_ids.jsonl 的 first_seen_at；本期派工单（定义 v9）写的是首次入库口径，生产约定与 Van 要求是原始披露时间，工作台按原始披露筛，两口径的逐键差异列在下面三组",
+        "说明": "现行派工单（daily_news v9）与反馈 22 的入窗口径是 first_seen_at（首次入库）；工作台实际执行的是 posted_at 优先，这是代码事实如实记录，不代表现行规则。posted_at 只是平台贴文时间，不是另行核实过的首次披露——独立核到的首次披露另列在卡片上。定义 v10 草稿把口径改为原始披露，激活前以派工单为准",
+        "first_seen_at 入口": "csw 接口 ingestedAt（贴文首次进入来源库的时间），逐条写在 trace/items.jsonl 与 trace/window_ids.jsonl 的 first_seen_at；两口径的逐键差异列在下面三组",
         "两口径结论": if only_posted.is_empty() && only_seen.is_empty() && fallback.is_empty() {
             "按原始披露与按首次入库筛出的集合相同（差异 0 条）；本期按哪个口径结果一致".to_string()
         } else {

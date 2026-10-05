@@ -91,7 +91,7 @@ impl Collector for CswWindow {
                     found,
                     paged_to_end: true, // window() 内部翻到 has_more=false 才返回
                     query: format!(
-                        "接口按发布时间宽取 {start}~{end}；本地按原始披露时间 {from}~{to}（左闭右开）收口"
+                        "接口按发布时间宽取 {start}~{end}；本地按平台贴文时间 posted_at 优先（缺失按首次入库）{from}~{to}（左闭右开）收口；派工单口径为 first_seen_at，两口径逐键差异见 trace/window_summary.json"
                     ),
                 })
             }
