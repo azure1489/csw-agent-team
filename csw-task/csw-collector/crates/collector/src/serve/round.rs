@@ -1092,6 +1092,118 @@ pub fn enforce_image_seen(conn: &Connection, round_id: i64, judgements: &mut [Ju
     n
 }
 
+/// 上一期 Van 已批准写作（引擎条目 written / approved）但没有发布记录的贴文，再次出现在台账里时
+/// 要写明「历史资产、本期重选待 Van 确认」，不能当作本期新批准，也不能当已发
+///（10-05 r62 主编退回：CMF 在 r61 为 written、08/09 已取消）。返回留痕。幂等。
+fn annotate_history(conn: &Connection, j: &mut Judgement) -> Vec<String> {
+    let Some(note) = history_note(conn, &j.candidate_key) else {
+        return Vec::new();
+    };
+    if j.comparison.note.contains("历史：r") {
+        return Vec::new();
+    }
+    j.comparison.note = if j.comparison.note.trim().is_empty() {
+        note.clone()
+    } else {
+        format!("{note}；{}", j.comparison.note)
+    };
+    vec![format!("{}{note}", csw_collector_judge::rules::NOTE)]
+}
+
+/// 知识库里这条贴文在以前各期的引擎结论（`decision` 类，ref_id = `{run}#{条目键}`）：
+/// 有 written / approved / adopted 的就给一句说明；是否已发按知识库的正式发布记录（post_id）查。
+pub fn history_note(conn: &Connection, candidate_key: &str) -> Option<String> {
+    let mut st = conn
+        .prepare(
+            "SELECT ref_id, body FROM kb_docs WHERE kind = 'decision' AND ref_id LIKE '%#' || ?1
+              ORDER BY ref_id DESC",
+        )
+        .ok()?;
+    let rows: Vec<(String, String)> = st
+        .query_map([candidate_key], |r| Ok((r.get(0)?, r.get(1)?)))
+        .ok()?
+        .filter_map(Result::ok)
+        .collect();
+    let approved: Vec<(String, String)> = rows
+        .iter()
+        .filter_map(|(ref_id, body)| {
+            let run = ref_id.split('#').next().unwrap_or_default().to_string();
+            let verdict = body
+                .lines()
+                .find_map(|l| l.strip_prefix("结论："))
+                .map(|v| v.split_whitespace().next().unwrap_or_default().to_string())
+                .unwrap_or_default();
+            matches!(
+                verdict.as_str(),
+                "written" | "approved" | "adopted" | "selected"
+            )
+            .then_some((run, verdict))
+        })
+        .collect();
+    let (run, verdict) = approved.first()?;
+    let published: bool = conn
+        .query_row(
+            "SELECT 1 FROM kb_docs WHERE kind = 'published_item'
+              AND post_id <> '' AND post_id = (SELECT source_id FROM candidates WHERE candidate_key = ?1)
+              LIMIT 1",
+            [candidate_key],
+            |_| Ok(()),
+        )
+        .is_ok();
+    Some(if published {
+        format!("历史：r{run} 已批准写作（引擎结论 {verdict}）且有正式发布记录，本期不应再作新选题")
+    } else {
+        format!(
+            "历史：r{run} 已批准写作（引擎结论 {verdict}）但未见发布记录（该期后续已取消）；本期为重选，待 Van 确认，不当本期新批准"
+        )
+    })
+}
+
+/// 新采集那条路径上的历史标注：改了的写回本地库。
+fn persist_history_notes(conn: &Connection, round_id: i64, judgements: &mut [Judgement]) {
+    let mut n = 0;
+    for j in judgements.iter_mut() {
+        let notes = annotate_history(conn, j);
+        if notes.is_empty() {
+            continue;
+        }
+        n += 1;
+        let r = (|| -> Result<()> {
+            let mut flags: Vec<String> = conn
+                .query_row(
+                    "SELECT check_flags_json FROM judgements WHERE round_id = ?1 AND candidate_key = ?2",
+                    rusqlite::params![round_id, j.candidate_key],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+            for x in notes {
+                if !flags.contains(&x) {
+                    flags.push(x);
+                }
+            }
+            conn.execute(
+                "UPDATE judgements SET comparison_json = ?3, check_flags_json = ?4
+                  WHERE round_id = ?1 AND candidate_key = ?2",
+                rusqlite::params![
+                    round_id,
+                    j.candidate_key,
+                    serde_json::to_string(&j.comparison)?,
+                    serde_json::to_string(&flags)?
+                ],
+            )?;
+            Ok(())
+        })();
+        if let Err(e) = r {
+            tracing::warn!(候选 = %j.candidate_key, "历史标注没写回本地库：{e:#}");
+        }
+    }
+    if n > 0 {
+        tracing::info!(条数 = n, "上一期已批准未发布的贴文已标注");
+    }
+}
+
 /// 退回意见里写明了不要再重判（「不重判」「不再自动重判」「禁止重判」等）。
 fn forbids_rejudge(review: &str) -> bool {
     static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
@@ -1137,6 +1249,12 @@ fn settle_before_export(
                 .collect();
             Some(!csw_collector_judge::materials::plain_text(&head).is_empty())
         });
+        // 查重未确认的推荐 / 备选落待核并写清核哪篇（主编校准过的不动档）
+        if !calibrated.contains(&j.candidate_key) {
+            notes.extend(csw_collector_judge::rules::unconfirmed_to_pending(j));
+        }
+        // 上一期 Van 已批准写作但没发出去的：卡上要写明是历史资产、本期重选待 Van 确认
+        notes.extend(annotate_history(conn, j));
         if j.tier == Tier::Recommend
             && j.has_decision_gap()
             && !calibrated.contains(&j.candidate_key)
@@ -1167,14 +1285,16 @@ fn settle_before_export(
                 }
             }
             conn.execute(
-                "UPDATE judgements SET tier = ?3, comparison_json = ?4, check_flags_json = ?5
+                "UPDATE judgements SET tier = ?3, comparison_json = ?4, check_flags_json = ?5,
+                        gaps_json = ?6
                   WHERE round_id = ?1 AND candidate_key = ?2",
                 rusqlite::params![
                     round_id,
                     j.candidate_key,
                     serde_json::to_value(j.tier)?.as_str().unwrap_or_default(),
                     serde_json::to_string(&j.comparison)?,
-                    serde_json::to_string(&flags)?
+                    serde_json::to_string(&flags)?,
+                    serde_json::to_string(&j.gaps)?
                 ],
             )?;
             Ok(())
@@ -1350,6 +1470,7 @@ pub async fn run_intake(
 
     // 「读到实图」以本地媒体表为准再核一遍，再登记
     enforce_image_seen(conn, round.id, &mut j.judgements);
+    persist_history_notes(conn, round.id, &mut j.judgements);
 
     // 八、登记
     let carried: HashSet<String> = HashSet::new();
@@ -2980,6 +3101,38 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    /// 10-05 r62 CMF d6a40c：r61 为 written、08/09 取消，本期再出现要标历史资产
+    #[test]
+    fn 上一期已批未发布的贴文标成历史资产() {
+        let conn = csw_collector_core::store::open_in_memory().unwrap();
+        let ins = |ref_id: &str, body: &str| {
+            conn.execute(
+                "INSERT INTO kb_docs(kind, ref_id, title, body, content_hash, created_at)
+                 VALUES ('decision', ?1, 't', ?2, ?1, 'now')",
+                rusqlite::params![ref_id, body],
+            )
+            .unwrap();
+        };
+        ins(
+            "61#cmf-d6a40c",
+            "结论：written 品牌：CMF 理由：该条的逐条任务全部通过 理由码：auto_written",
+        );
+        ins("60#cmf-d6a40c", "结论：dropped 品牌：CMF 理由：x");
+        ins("61#other-000000", "结论：dropped 品牌：X 理由：y");
+        let n = history_note(&conn, "cmf-d6a40c").unwrap();
+        assert!(
+            n.contains("r61 已批准写作") && n.contains("未见发布记录"),
+            "{n}"
+        );
+        assert!(history_note(&conn, "other-000000").is_none());
+        let mut j = Judgement::fixture("cmf-d6a40c", csw_collector_core::types::Tier::Recommend);
+        j.comparison.note = "无同事实已发".into();
+        let notes = annotate_history(&conn, &mut j);
+        assert_eq!(notes.len(), 1);
+        assert!(j.comparison.note.starts_with("历史：r61"));
+        assert!(annotate_history(&conn, &mut j).is_empty(), "幂等");
     }
 
     #[test]

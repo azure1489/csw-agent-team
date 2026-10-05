@@ -225,7 +225,10 @@ fn preamble(work_standard: &str, confirmed_rules: &[String]) -> String {
            合作预告没说做了什么），这是价值不足：unanswered 填 low_value、tier 判 not_recommend，不判待核。\n\
          - 查重：comparison.hits 逐条列出命中的对照材料（ref_no 抄材料编号如 M3），写明状态与具体重复了哪条事实。\
            **生成稿（仅生成稿）不是近期已发的证据**，只能帮着复用资料；\
-           命中材料的正文不可得、无法核对事实时，verdict 填 unconfirmed，不许给 unrelated。\n\
+           正式发布、范例、生成稿都给了正文，决定记录给了结论与理由码——给了就要下结论\
+           （unrelated / same_brand_with_gain / same_fact_no_gain）；\
+           只有命中材料明确标着「正文不可得」、事实核不了时，才填 unconfirmed（不许给 unrelated），\
+           并在 gaps 写一条 decision 级缺口「核对《标题》正文」。决定记录只有结论与理由码不算正文不可得。\n\
          - 缺口分三级：decision（影响选题判断：产品身份、关键看点、报道价值无法确认）/ \
            production（影响成稿：必要规格、关键图片、时间信息缺失）/ \
            boundary（表达边界：如品牌声称的性能未经独立实测）。每条写清 what、owner（collector/editor/van）、\

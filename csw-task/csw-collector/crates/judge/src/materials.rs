@@ -179,9 +179,11 @@ pub fn assemble(retrieved: &Retrieved, prior: &[PriorLedgerItem]) -> Vec<Materia
     let mut out = Vec::new();
     for (kind, hits) in retrieved.by_kind() {
         for s in hits.into_iter().take(PER_KIND) {
+            // 已发、范例、生成稿都带正文：生成稿是我们自己的稿，不算已发，但正文能核事实——
+            // 不给的话模型只能对每条都判「未确认」（10-05 r62：383 条里 332 条未确认，主编退回）
             let has_body = matches!(
                 MaterialKind::from(kind),
-                MaterialKind::Published | MaterialKind::Example
+                MaterialKind::Published | MaterialKind::Example | MaterialKind::GeneratedPost
             );
             // 生成稿与决定按类型定死：生成稿**永远不是**「已发」，哪怕库里带着别的状态
             let publish_state = if s.doc.kind == KbKind::Decision.as_str() {
@@ -216,7 +218,7 @@ pub fn assemble(retrieved: &Retrieved, prior: &[PriorLedgerItem]) -> Vec<Materia
                 } else {
                     String::new()
                 },
-                // 只有已发与范例的正文是查重要用的；取不到（或只有标签没有字）就如实说「正文不可得」
+                // 已发、范例、生成稿的正文是查重要用的；取不到（或只有标签没有字）就如实说「正文不可得」
                 body_available: !has_body || !plain_text(&s.doc.body).is_empty(),
                 brand: s.doc.brand.clone(),
             });
@@ -316,11 +318,19 @@ pub fn as_prompt_block(materials: &[Material]) -> String {
                 s.push_str(&format!("，{state}"));
             }
             s.push_str(")\n");
-            if matches!(m.kind, MaterialKind::Published | MaterialKind::Example) {
-                if m.body_available && !m.body_excerpt.trim().is_empty() {
-                    s.push_str(&format!("  正文：{}\n", one_line(&m.body_excerpt)));
+            if matches!(
+                m.kind,
+                MaterialKind::Published | MaterialKind::Example | MaterialKind::GeneratedPost
+            ) {
+                let label = if m.kind == MaterialKind::GeneratedPost {
+                    "生成稿正文（我们自己写过的稿，仅供核对事实，不算已发）"
                 } else {
-                    s.push_str("  正文不可得（查重只能是「未确认」）\n");
+                    "正文"
+                };
+                if m.body_available && !m.body_excerpt.trim().is_empty() {
+                    s.push_str(&format!("  {label}：{}\n", one_line(&m.body_excerpt)));
+                } else {
+                    s.push_str(&format!("  {label}不可得（查重只能是「未确认」）\n"));
                 }
             }
             if !m.quote.trim().is_empty() {

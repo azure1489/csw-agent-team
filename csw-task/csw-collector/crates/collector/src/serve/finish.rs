@@ -1554,6 +1554,17 @@ fn window_basis(
         "实际过滤字段": "posted_at（csw 接口 postedAt，平台贴文时间）；posted_at 缺失时用 ingested_at（csw 首次入库）",
         "代码位置": "csw-collector crates/harvest/src/pipeline.rs window_outcome / in_window：c.posted_at.or(c.ingested_at) 落在 [起, 止) 内",
         "说明": "posted_at 是来源库记录的平台贴文时间，不等于另行核实过的首次披露；首次入库只作抓取证据",
+        "first_seen_at 入口": "csw 接口 ingestedAt（贴文首次进入来源库的时间），逐条写在 trace/items.jsonl 的 first_seen_at 与 trace/window_ids.jsonl 的 first_seen_at；本期派工单（定义 v9）写的是首次入库口径，生产约定与 Van 要求是原始披露时间，工作台按原始披露筛，两口径的逐键差异列在下面三组",
+        "两口径结论": if only_posted.is_empty() && only_seen.is_empty() && fallback.is_empty() {
+            "按原始披露与按首次入库筛出的集合相同（差异 0 条）；本期按哪个口径结果一致".to_string()
+        } else {
+            format!(
+                "两口径有差异：按披露在窗内而按入库不在 {} 条、按入库在窗内而按披露不在 {} 条、无披露时间按入库判 {} 条，逐键见下",
+                only_posted.len(),
+                only_seen.len(),
+                fallback.len()
+            )
+        },
         "按披露在窗内_按首次入库不在": {"条数": only_posted.len(), "条目": only_posted},
         "按首次入库在窗内_按披露不在（晚抓到的旧帖，已排除）": {"条数": only_seen.len(), "条目": only_seen},
         "无披露时间_按首次入库判": {"条数": fallback.len(), "条目": fallback},

@@ -424,16 +424,81 @@ pub fn apply(j: &mut Judgement, ctx: &Ctx<'_>) -> Applied {
     let by_no: HashMap<&str, &Material> = numbered.iter().map(|(n, m)| (n.as_str(), *m)).collect();
     out.notes.extend(normalize_bodies(j, |h| {
         Some(by_no.get(h.ref_no.as_str()).is_some_and(|m| {
-            matches!(m.kind, MaterialKind::Published | MaterialKind::Example)
-                && m.body_available
+            matches!(
+                m.kind,
+                MaterialKind::Published | MaterialKind::Example | MaterialKind::GeneratedPost
+            ) && m.body_available
                 && !m.body_excerpt.trim().is_empty()
         }))
     }));
+
+    // R10 查重「未确认」不能与「推荐 / 备选、无决定级缺口」同时成立：核不了是否重复就不是可采用，
+    // 要落待核并写清核哪篇（10-05 r62 主编退回：八张首批卡全是未确认却推荐且「缺口：无」）
+    out.notes.extend(unconfirmed_to_pending(j));
 
     if !retry.is_empty() {
         out.rejudge = Some(retry.join("\n"));
     }
     out
+}
+
+/// 查重「未确认」的处置：补一条决定级缺口（核哪篇正文），推荐 / 备选落待核。返回留痕。幂等。
+///
+/// 「未确认」只在对照材料正文不可得时出现（见 `verdict` 的口径）。核不了是否同一事实，
+/// 就不能说「能改变采用决定的缺口：无」，也不能占推荐位——主编按缺口里指的那篇去核，核清再定档。
+pub fn unconfirmed_to_pending(j: &mut Judgement) -> Vec<String> {
+    // 不推荐的不碰：它不推荐是因为价值不足，查重核不核得清都不改变这个结论
+    //（给它加缺口反而会让 R3 把它误翻成待核）
+    if j.comparison.verdict != ComparisonVerdict::Unconfirmed || j.tier == Tier::NotRecommend {
+        return Vec::new();
+    }
+    let mut notes = Vec::new();
+    let missing: Vec<String> = j
+        .comparison
+        .hits
+        .iter()
+        .filter(|h| !h.body_available)
+        .map(|h| {
+            if h.ref_no.is_empty() {
+                format!("《{}》", h.title)
+            } else {
+                format!("{}《{}》", h.ref_no, h.title)
+            }
+        })
+        .collect();
+    let what = if missing.is_empty() {
+        "查重未确认：对照材料核不了是否同一事实".to_string()
+    } else {
+        format!(
+            "查重未确认：{}正文不可得，核不了是否同一事实",
+            missing.join("、")
+        )
+    };
+    let has = j.gaps.iter().any(|g| {
+        g.level == GapLevel::Decision
+            && (g.what.contains("查重") || g.what.contains("正文不可得") || g.what.contains("对照"))
+    });
+    if !has {
+        j.gaps.push(Gap {
+            level: GapLevel::Decision,
+            what,
+            owner: GapOwner::Editor,
+            tried: "判断时给的对照材料见 comparison.hits；标正文不可得的那几篇只给了标题或摘要"
+                .into(),
+            next: "人工核对那几篇正文是否同一事实，核清后再定档".into(),
+        });
+        notes.push(format!(
+            "{NOTE}查重未确认：补一条决定级缺口（核对对照正文）"
+        ));
+    }
+    if matches!(j.tier, Tier::Recommend | Tier::Alternate) {
+        let before = j.tier;
+        j.tier = Tier::PendingCheck;
+        notes.push(format!(
+            "{NOTE}查重未确认：{before:?} 落待核，对照正文核清后再定档"
+        ));
+    }
+    notes
 }
 
 /// 把查重命中的「正文可得」改成事实，并把「五类材料齐备」改成「都查过」。返回留痕。
@@ -724,8 +789,8 @@ mod tests {
         assert_eq!(j.comparison.verdict, ComparisonVerdict::Unconfirmed);
         let g = j.gaps.iter().find(|g| g.owner == GapOwner::Editor).unwrap();
         assert!(g.next.contains("Dapple Born 露营桌"));
-        // 档位不因此动
-        assert_eq!(j.tier, Tier::Recommend);
+        // 查重核不清就不占推荐位：R10 落待核（10-05 r62 主编口径），缺口里指明核哪篇
+        assert_eq!(j.tier, Tier::PendingCheck);
         // 不推荐的不因查重未确认而多一条缺口（否则 R3 会把它误改成待核）
         let mut j = Judgement::fixture("k", Tier::NotRecommend);
         j.unanswered = Unanswered::LowValue;
@@ -1048,6 +1113,54 @@ mod tests {
         assert!(wants_refetch(&j));
         j.gaps = vec![Gap::decision("产品身份无法确认")];
         assert!(!wants_refetch(&j));
+    }
+
+    /// 10-05 r62：首批卡查重全是未确认却推荐、写「缺口：无」
+    #[test]
+    fn 查重未确认的推荐落待核并指明核哪篇() {
+        use csw_collector_core::types::{Comparison, ComparisonHit, HitState};
+        let mut j = Judgement::fixture("bamboo-381568", Tier::Recommend);
+        j.gaps.clear();
+        j.comparison = Comparison {
+            verdict: ComparisonVerdict::Unconfirmed,
+            against: String::new(),
+            note: String::new(),
+            hits: vec![ComparisonHit {
+                ref_no: "M1".into(),
+                title: "BAMBOO SHOOTS 登山裤旧文".into(),
+                url: String::new(),
+                state: HitState::Published,
+                published_at: String::new(),
+                body_available: false,
+                dup_fact: String::new(),
+            }],
+        };
+        let notes = unconfirmed_to_pending(&mut j);
+        assert_eq!(j.tier, Tier::PendingCheck);
+        assert!(j.has_decision_gap());
+        let g = j
+            .gaps
+            .iter()
+            .find(|g| g.what.contains("查重未确认"))
+            .unwrap();
+        assert!(
+            g.what.contains("M1《BAMBOO SHOOTS 登山裤旧文》正文不可得"),
+            "{}",
+            g.what
+        );
+        assert_eq!(g.owner, GapOwner::Editor);
+        assert_eq!(notes.len(), 2);
+        // 幂等；不推荐的不动档
+        assert!(unconfirmed_to_pending(&mut j).is_empty());
+        let mut k = Judgement::fixture("x-000001", Tier::NotRecommend);
+        k.comparison.verdict = ComparisonVerdict::Unconfirmed;
+        unconfirmed_to_pending(&mut k);
+        assert_eq!(k.tier, Tier::NotRecommend);
+        // 查重已下结论的不碰
+        let mut m = Judgement::fixture("y-000002", Tier::Recommend);
+        m.comparison.verdict = ComparisonVerdict::Unrelated;
+        assert!(unconfirmed_to_pending(&mut m).is_empty());
+        assert_eq!(m.tier, Tier::Recommend);
     }
 
     /// 10-01 r59 C65 e1cd9d：M3–M5 仅生成稿标题、M6 只有决定摘要，模型却写正文可得
