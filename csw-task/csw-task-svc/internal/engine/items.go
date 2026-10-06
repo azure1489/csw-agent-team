@@ -84,11 +84,20 @@ func (e *Engine) UpsertItems(ctx context.Context, actor domain.Agent, role domai
 		if err := requireRunParticipant(ctx, q, wf, role, runID, "登记条目"); err != nil {
 			return err
 		}
+		guard, err := downstreamGuard(ctx, q, wf, role, runID)
+		if err != nil {
+			return err
+		}
 		for _, it := range items {
 			prev, perr := q.GetItem(ctx, runID, it.Key)
 			existed := perr == nil
 			if perr != nil && !isNoRows(perr) {
 				return perr
+			}
+			if existed && it.Status != "" && it.Status != string(prev.Status) && guard(it.Key) {
+				// 下游（或中枢）已经定过的状态，上游重登记不改它；其他字段照常更新
+				it.Status = string(prev.Status)
+				it.Rank = ""
 			}
 			if err := q.UpsertItem(ctx, domain.RunItem{
 				RunID: runID, ItemKey: it.Key, Title: it.Title, Brand: it.Brand, Product: it.Product,
@@ -109,6 +118,53 @@ func (e *Engine) UpsertItems(ctx context.Context, actor domain.Agent, role domai
 		return err
 	})
 	return out, err
+}
+
+// downstreamGuard 返回一个判断：这个条目最近一次状态变化是不是中枢或**更下游**的角色定的。
+//
+// 10-06 r63：02 研究员 14:46 把约百条定为淘汰，01 工作台 15:18 一次失败返工把同一批判断重登记，
+// 把其中 42 条改回入围/待核。上游重登记不该推翻下游的决定。中枢不受限（它本来就能改任何状态）；
+// 没有轨迹、或最后一次是自己或引擎改的，照常写。下游 = 本期任务里该角色最早阶段的 seq 更大。
+func downstreamGuard(ctx context.Context, q *sqlite.Queries, wf domain.Workflow, role domain.Role, runID int64) (func(string) bool, error) {
+	none := func(string) bool { return false }
+	if role.Code == wf.HubRoleCode {
+		return none, nil
+	}
+	tasks, err := q.ListTasksByRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	first := map[string]int{}
+	for _, t := range tasks {
+		if s, ok := first[t.RoleCode]; !ok || t.Seq < s {
+			first[t.RoleCode] = t.Seq
+		}
+	}
+	mine, ok := first[role.Code]
+	if !ok {
+		return none, nil
+	}
+	traces, err := q.ListTracesByRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	last := map[string]string{}
+	for _, tr := range traces { // 按 id 升序，后者覆盖前者
+		if tr.FromStatus != tr.ToStatus {
+			last[tr.ItemKey] = tr.ActorRole
+		}
+	}
+	return func(key string) bool {
+		who := last[key]
+		switch {
+		case who == "" || who == role.Code || who == "engine":
+			return false
+		case who == wf.HubRoleCode:
+			return true
+		}
+		s, ok := first[who]
+		return ok && s > mine
+	}, nil
 }
 
 // ItemDecision 条目决定结果。

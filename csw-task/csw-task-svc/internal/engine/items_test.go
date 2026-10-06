@@ -480,3 +480,52 @@ func TestItemDropAndTrace(t *testing.T) {
 		t.Fatalf("改判应再落一条轨迹，got %d", len(traces))
 	}
 }
+
+// r63：下游（或中枢）定过的状态，上游重登记不推翻；上游自己的、下游改上游的照常。
+func TestUpstreamReRegisterKeepsDownstreamStatus(t *testing.T) {
+	e, st, ctx, runID := itemFlow(t, "")
+	collector, colRole := who(t, st, "collector")
+	designer, desRole := who(t, st, "designer")
+	editor, edRole := who(t, st, "editor")
+	put := func(a domain.Agent, r domain.Role, key, status string) {
+		t.Helper()
+		in := ItemInput{Key: key, Title: key, Status: status}
+		if status == string(domain.ItemDropped) {
+			in.ReasonCode, in.Reason = "no_value", "价值不足"
+		}
+		if _, err := e.UpsertItems(ctx, a, r, runID, []ItemInput{in}); err != nil {
+			t.Fatalf("%s %s→%s: %v", r.Code, key, status, err)
+		}
+	}
+	status := func(key string) domain.ItemStatus {
+		t.Helper()
+		it, err := st.Q().GetItem(ctx, runID, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return it.Status
+	}
+	for _, k := range []string{"k1", "k2", "k3"} {
+		put(collector, colRole, k, "shortlisted")
+	}
+	put(designer, desRole, "k1", "dropped")   // 下游淘汰
+	put(editor, edRole, "k2", "pending_check") // 中枢改待核
+	// 上游重登记同一批判断
+	for _, k := range []string{"k1", "k2"} {
+		put(collector, colRole, k, "shortlisted")
+	}
+	if s := status("k1"); s != domain.ItemDropped {
+		t.Fatalf("k1 下游已淘汰，上游重登记不该改回：%s", s)
+	}
+	if s := status("k2"); s != domain.ItemPendingCheck {
+		t.Fatalf("k2 中枢已改待核，上游重登记不该改回：%s", s)
+	}
+	put(collector, colRole, "k3", "dropped") // 自己的条目照常改
+	if s := status("k3"); s != domain.ItemDropped {
+		t.Fatalf("k3 上游改自己登记的状态应生效：%s", s)
+	}
+	put(designer, desRole, "k3", "shortlisted") // 下游改上游的照常
+	if s := status("k3"); s != domain.ItemShortlisted {
+		t.Fatalf("k3 下游改上游应生效：%s", s)
+	}
+}
