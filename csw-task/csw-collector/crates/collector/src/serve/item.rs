@@ -41,7 +41,7 @@ pub const STAGE_MATERIAL: &str = "material";
 pub const STAGE_XHS_PICK: &str = "xhs_pick";
 
 /// 原图下载器。**与 01 那个分开建**：宽度不同，共用一个就得改全局配置。
-fn original_downloader(cfg: &Config) -> Result<Downloader> {
+pub(crate) fn original_downloader(cfg: &Config) -> Result<Downloader> {
     Downloader::new(DownloadConfig {
         dir: cfg.blob_dir(),
         // 0 = 原图。设计师要拿它做头图

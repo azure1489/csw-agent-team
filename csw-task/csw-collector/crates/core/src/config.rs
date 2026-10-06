@@ -49,6 +49,9 @@ pub struct Engine {
     pub ack_secs: u64,
     /// 上传上限。引擎是 64 MiB，留出余量。
     pub max_upload_mib: u64,
+    /// 不接、不做的任务号。运营方手工交付期间用（10-06 r63 #699：手工交的版本被退回后，
+    /// 工作台 30 秒内就把它当返工接走、跑全池流程报失败，主编只好取消任务）。用完删掉。
+    pub hands_off_tasks: Vec<i64>,
 }
 
 /// 高清原图服务（`hires-service`）：输入 shortcode，用已登录的 Instagram 会话取每张图的
@@ -334,6 +337,7 @@ impl Default for Config {
                 poll_secs: 30,
                 ack_secs: 120,
                 max_upload_mib: 48,
+                hands_off_tasks: Vec::new(),
             },
             csw: Csw {
                 base_url: "https://agent-api.campsomewhere.com".into(),

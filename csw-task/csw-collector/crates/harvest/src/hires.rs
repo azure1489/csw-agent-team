@@ -68,6 +68,23 @@ pub struct HiresResult {
     pub cached: bool,
     #[serde(default)]
     pub items: Vec<HiresItem>,
+    /// 帖子原文、账号、发布时间（hires-service 902d32e 起有；旧版服务没有这一段时为空）
+    #[serde(default)]
+    pub post: HiresPost,
+}
+
+/// 同一次 Instagram 请求里的帖子信息。Instagram 没给的字段是空串或 0。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HiresPost {
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub full_name: String,
+    #[serde(default)]
+    pub caption: String,
+    /// unix 秒；0 表示没给
+    #[serde(default)]
+    pub taken_at: i64,
 }
 
 impl HiresResult {

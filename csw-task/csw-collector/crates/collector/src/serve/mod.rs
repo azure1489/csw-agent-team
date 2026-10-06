@@ -14,6 +14,7 @@
 //! 群消息只是提示。
 
 pub mod calibration;
+pub mod designated;
 pub mod finish;
 pub mod hires_match;
 pub mod http;
@@ -542,7 +543,15 @@ async fn tick(
     beats: &mut std::collections::HashMap<i64, tasks::Beat>,
 ) -> Result<()> {
     let mine = engine.my_tasks().await.context("取派单")?;
-    let batch = tasks::plan(&mine.tasks);
+    let mut batch = tasks::plan(&mine.tasks);
+    // 运营方手工交付中的任务：不接、不心跳、不返工、不报失败
+    batch.retain(|(t, _)| {
+        let off = cfg.engine.hands_off_tasks.contains(&t.task.id);
+        if off {
+            tracing::debug!(任务 = t.task.id, "在 hands_off_tasks 里，不接");
+        }
+        !off
+    });
 
     // 一、先全接下来。ack 就是心跳，重复发是无害的。
     // **被退回的不接单**：引擎只让「已派工 / 进行中」的接单，退回的按意见改完直接重交
@@ -833,6 +842,25 @@ async fn start_round(
             == 0
     });
     let in_place = rework && t.task.stage_code == STAGE_INTAKE && prev.is_some() && !prev_empty;
+    // 指定帖：重开 01、派工单点名了原轮次里没有的帖子（10-06 r63 #699）。只读这几条、直接交，
+    // 不在原轮次上返工、不重登记、不过全池自查
+    if rework && t.task.stage_code == STAGE_INTAKE {
+        let codes = designated::new_codes(conn, prev.as_ref().map(|p| p.id), &detail.editor_note);
+        if designated::is_designation(&detail.editor_note) && !codes.is_empty() {
+            return designated::deliver(
+                conn,
+                engine,
+                cfg,
+                svc,
+                t,
+                &detail,
+                prev.as_ref(),
+                &codes,
+                target_version,
+            )
+            .await;
+        }
+    }
     // 上一次返工算下来与已交的一模一样、没重交的：同一版退回意见不再反复重做
     //（否则每 30 秒一次轮询就重做一遍）。主编给了新意见（版本变了）才再做
     let unchanged_mark = format!("{UNCHANGED}@v{}", t.task.cur_version);
