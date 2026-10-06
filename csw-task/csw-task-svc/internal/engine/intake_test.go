@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/azure1489/csw-agent-team/csw-task-svc/internal/domain"
 )
 
 // TestReportSweepsIdempotent 同一 sweep_key 重报只更新不新增；非参与角色被拒。
@@ -311,4 +313,34 @@ func names(checks []IntakeCheck) []string {
 		out = append(out, c.Name)
 	}
 	return out
+}
+
+// r63：研究员登记的官网核对轮失败，不该让 01 的「失败换源」判红。
+func TestFallbackIgnoresOtherRolesSweeps(t *testing.T) {
+	tr := IntakeTrace{
+		Sweeps: []domain.IntakeSweep{
+			{SweepKey: "csw-window", Platform: "instagram", Result: "ok", RoleCode: "collector"},
+			{SweepKey: "r63-research-final-official", Platform: "web", Result: "failed", Error: "429", RoleCode: "researcher"},
+		},
+		Judgements: []domain.IntakeJudgement{{RoleCode: "collector"}},
+	}
+	own := tr
+	own.Sweeps = sweepsOfLedgerRoles(tr)
+	if c := checkFallback(own, len(own.Sweeps) > 0); !c.OK {
+		t.Fatalf("研究员的核对轮不该算进 01：%+v", c)
+	}
+	// 同一份数据不过滤时确实会判红——证明过滤是起作用的那一步
+	if c := checkFallback(tr, true); c.OK {
+		t.Fatalf("不过滤应当判红：%+v", c)
+	}
+	// 01 自己的平台整轮全败照样判红
+	tr.Sweeps = append(tr.Sweeps, domain.IntakeSweep{SweepKey: "xhs", Platform: "xhs", Result: "failed", Error: "x", RoleCode: "collector"})
+	own.Sweeps = sweepsOfLedgerRoles(tr)
+	if c := checkFallback(own, true); c.OK {
+		t.Fatalf("collector 自己的平台全败应判红：%+v", c)
+	}
+	// 没有台账（旧 run）或没记角色：原样
+	if got := sweepsOfLedgerRoles(IntakeTrace{Sweeps: tr.Sweeps}); len(got) != len(tr.Sweeps) {
+		t.Fatalf("旧 run 不过滤，得到 %d 条", len(got))
+	}
 }

@@ -265,9 +265,35 @@ func BuildIntakeCheck(ctx context.Context, q *sqlite.Queries, runID int64) ([]In
 	out = append(out, checkDropExplained(tr, hasTraces))
 	out = append(out, checkDedup(tr))
 	out = append(out, checkEvidence(tr))
-	out = append(out, checkFallback(tr, hasSweeps))
-	out = append(out, checkSourceSpread(tr))
+	// 「失败换源」「来源分布」问的是 01 自己的采集。别的角色也能往本期登记采集轮（研究员核官网、
+	// 主编补查），那些是核对不是发现：r63 研究员 7 页官网核对有 1 页 429、整轮记了 failed，
+	// 被算进 01 自查判红，工作台连续四次自拦。有判断台账时只看写台账的角色登记的采集轮。
+	own := tr
+	own.Sweeps = sweepsOfLedgerRoles(tr)
+	out = append(out, checkFallback(own, len(own.Sweeps) > 0))
+	out = append(out, checkSourceSpread(own))
 	return out, nil
+}
+
+// sweepsOfLedgerRoles 写判断台账的角色自己登记的采集轮。没有台账（旧 run）或台账没记角色时原样返回；
+// 没记角色的采集轮（旧数据）一律保留。
+func sweepsOfLedgerRoles(tr IntakeTrace) []domain.IntakeSweep {
+	roles := map[string]bool{}
+	for _, j := range tr.Judgements {
+		if j.RoleCode != "" {
+			roles[j.RoleCode] = true
+		}
+	}
+	if len(roles) == 0 {
+		return tr.Sweeps
+	}
+	out := make([]domain.IntakeSweep, 0, len(tr.Sweeps))
+	for _, sw := range tr.Sweeps {
+		if sw.RoleCode == "" || roles[sw.RoleCode] {
+			out = append(out, sw)
+		}
+	}
+	return out
 }
 
 // checkJudgedAll 每条都判：台账行数要盖住窗口内的候选数。
