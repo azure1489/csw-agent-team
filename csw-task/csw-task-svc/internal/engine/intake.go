@@ -247,6 +247,12 @@ func BuildIntakeCheck(ctx context.Context, q *sqlite.Queries, runID int64) ([]In
 	winFrom, winTo := runWindow(ctx, q, runID, tr.Sweeps)
 	hasSweeps, hasTraces := len(tr.Sweeps) > 0, len(tr.Traces) > 0
 	out := make([]IntakeCheck, 0, 8)
+	// 「每条都判」「失败换源」「来源分布」问的是 01 自己的采集。别的角色也能往本期登记采集轮（研究员核官网、
+	// 主编补查），那些是核对不是发现：r63 研究员 7 页官网核对有 1 页 429、整轮记了 failed，被算进 01 自查判红；
+	// r64 研究员的 161 条佐证轮被加进「每条都判」的分母（161 → 322），工作台连续自拦。
+	// 有判断台账时这三条只看写台账的角色登记的采集轮。
+	own := tr
+	own.Sweeps = sweepsOfLedgerRoles(tr)
 
 	out = append(out, checkCoverage(tr, hasSweeps))
 	// 有判断台账就换一套对账口径。
@@ -256,7 +262,7 @@ func BuildIntakeCheck(ctx context.Context, q *sqlite.Queries, runID int64) ([]In
 	// 拿旧判据去套，这个落差会永远是三百多，每期必判红。
 	// 新口径对的是「判过的条数 = 窗口内候选数」：一条都不许漏判。
 	if len(tr.Judgements) > 0 {
-		out = append(out, checkJudgedAll(tr))
+		out = append(out, checkJudgedAll(own))
 		out = append(out, checkPendingCheckConsistency(tr))
 	} else {
 		out = append(out, checkYield(tr, hasSweeps, hasTraces))
@@ -265,11 +271,6 @@ func BuildIntakeCheck(ctx context.Context, q *sqlite.Queries, runID int64) ([]In
 	out = append(out, checkDropExplained(tr, hasTraces))
 	out = append(out, checkDedup(tr))
 	out = append(out, checkEvidence(tr))
-	// 「失败换源」「来源分布」问的是 01 自己的采集。别的角色也能往本期登记采集轮（研究员核官网、
-	// 主编补查），那些是核对不是发现：r63 研究员 7 页官网核对有 1 页 429、整轮记了 failed，
-	// 被算进 01 自查判红，工作台连续四次自拦。有判断台账时只看写台账的角色登记的采集轮。
-	own := tr
-	own.Sweeps = sweepsOfLedgerRoles(tr)
 	out = append(out, checkFallback(own, len(own.Sweeps) > 0))
 	out = append(out, checkSourceSpread(own))
 	return out, nil

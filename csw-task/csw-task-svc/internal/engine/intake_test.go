@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -342,5 +343,28 @@ func TestFallbackIgnoresOtherRolesSweeps(t *testing.T) {
 	// 没有台账（旧 run）或没记角色：原样
 	if got := sweepsOfLedgerRoles(IntakeTrace{Sweeps: tr.Sweeps}); len(got) != len(tr.Sweeps) {
 		t.Fatalf("旧 run 不过滤，得到 %d 条", len(got))
+	}
+}
+
+// r64：研究员的 csw_api 佐证轮不该进「每条都判」的分母。
+func TestJudgedAllIgnoresOtherRolesSweeps(t *testing.T) {
+	js := make([]domain.IntakeJudgement, 161)
+	for i := range js {
+		js[i] = domain.IntakeJudgement{CandidateKey: fmt.Sprintf("k-%d", i), RoleCode: "collector", Tier: "not_recommend"}
+	}
+	tr := IntakeTrace{
+		Sweeps: []domain.IntakeSweep{
+			{SweepKey: "csw-window", Tool: "csw_api", InWindow: 161, RoleCode: "collector", Result: "ok"},
+			{SweepKey: "r64-02-source-corroboration", Tool: "csw_api", InWindow: 161, RoleCode: "researcher", Result: "ok"},
+		},
+		Judgements: js,
+	}
+	if c := checkJudgedAll(tr); c.OK {
+		t.Fatalf("不过滤时分母 322，应判红：%+v", c)
+	}
+	own := tr
+	own.Sweeps = sweepsOfLedgerRoles(tr)
+	if c := checkJudgedAll(own); !c.OK {
+		t.Fatalf("只算 collector 的采集轮应通过：%+v", c)
 	}
 }

@@ -508,7 +508,7 @@ func TestUpstreamReRegisterKeepsDownstreamStatus(t *testing.T) {
 	for _, k := range []string{"k1", "k2", "k3"} {
 		put(collector, colRole, k, "shortlisted")
 	}
-	put(designer, desRole, "k1", "dropped")   // 下游淘汰
+	put(designer, desRole, "k1", "dropped")    // 下游淘汰
 	put(editor, edRole, "k2", "pending_check") // 中枢改待核
 	// 上游重登记同一批判断
 	for _, k := range []string{"k1", "k2"} {
