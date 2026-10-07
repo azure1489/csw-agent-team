@@ -43,6 +43,22 @@ pub fn is_designation(note: &str) -> bool {
     ["指定", "追加", "Van"].iter().any(|w| note.contains(w))
 }
 
+/// 派工单要求重新采集的标记。只认这个标记：主编的措辞变化太大，按关键词猜会误判
+///（10-07 r64：四张「只上传诊断包」的派工单里都出现过「采集」相关字样，主编并不要重采）。
+pub const MARK_RECOLLECT: &str = "【重新采集】";
+/// 派工单叫工作台让开、由人工直传的标记。
+pub const MARK_HANDS_OFF: &str = "【工作台不接】";
+
+/// 派工单要求重新采集（开新轮次，窗口 = 派工时刻往前 24 小时），不是在原轮次上改。
+pub fn wants_recollect(note: &str) -> bool {
+    note.contains(MARK_RECOLLECT)
+}
+
+/// 派工单叫工作台让开（主编要人工直传）。
+pub fn hands_off_note(note: &str) -> bool {
+    note.contains(MARK_HANDS_OFF)
+}
+
 /// 派工单里**原轮次没有**的短码。主编在退回意见里引用池内帖子的链接很常见，那些不算指定。
 pub fn new_codes(conn: &Connection, round_id: Option<i64>, note: &str) -> Vec<String> {
     let codes = shortcodes_in(note);
@@ -554,6 +570,18 @@ mod tests {
         assert!(!is_designation(
             "卡5 对照 https://www.instagram.com/p/AAAAA1/ 的写法"
         ));
+    }
+
+    #[test]
+    fn 只认明确标记() {
+        assert!(wants_recollect(
+            "【重新采集】按滚动 24 小时取有热度的新资讯"
+        ));
+        assert!(!wants_recollect(
+            "Van全部退回，重采滚动24小时有可核热度的新资讯"
+        ));
+        assert!(hands_off_note("【工作台不接】运营方直传 v5"));
+        assert!(!hands_off_note("不跑旧工作台、累计未审不改0"));
     }
 
     #[test]

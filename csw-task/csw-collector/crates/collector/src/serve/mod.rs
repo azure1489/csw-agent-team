@@ -841,7 +841,30 @@ async fn start_round(
         .unwrap_or(0)
             == 0
     });
-    let in_place = rework && t.task.stage_code == STAGE_INTAKE && prev.is_some() && !prev_empty;
+    // 派工单明确说「不用工作台」：让开，不做、不报失败（主编要人工直传时，工作台抢做会盖掉状态）
+    if t.task.stage_code == STAGE_INTAKE && designated::hands_off_note(&detail.editor_note) {
+        tracing::info!(任务 = t.task.id, "派工单写明不用工作台：不做，等人工交付");
+        return Ok(());
+    }
+    // 主编重开 01 要求重新采集（10-07 r64：Van 全部退回，主编要滚动 24 小时重采）：开新轮次按新窗口采，
+    // 不在原轮次上返工。窗口 = 派工时刻往前 24 小时
+    let recollect = rework
+        && t.task.stage_code == STAGE_INTAKE
+        && designated::wants_recollect(&detail.editor_note);
+    let (window_start, window_end) = if recollect {
+        match parse_engine_ts(&t.task.dispatched_at) {
+            Some(end) => {
+                let start = end - jiff::SignedDuration::from_hours(24);
+                tracing::info!(任务 = t.task.id, 窗口 = %format!("{start} ~ {end}"), "派工单要求重新采集：开新轮次");
+                (start.to_string(), end.to_string())
+            }
+            None => (window_start, window_end),
+        }
+    } else {
+        (window_start, window_end)
+    };
+    let in_place =
+        rework && !recollect && t.task.stage_code == STAGE_INTAKE && prev.is_some() && !prev_empty;
     // 指定帖：重开 01、派工单点名了原轮次里没有的帖子（10-06 r63 #699）。只读这几条、直接交，
     // 不在原轮次上返工、不重登记、不过全池自查
     if rework && t.task.stage_code == STAGE_INTAKE {
@@ -1124,7 +1147,19 @@ async fn start_round(
                         )
                     })
                     .collect();
-                if !red.is_empty() {
+                if !red.is_empty() && rework {
+                    // 返工 / 重开：报失败会盖掉任务现状（10-07 r64 #720：主编另交的 v4、v5 被退回后，
+                    // 工作台 30 秒内接走、自查红、报失败，前后五次）。红项写进缺口照交，由主编在闸上看
+                    tracing::warn!(
+                        任务 = t.task.id,
+                        轮次 = r.id,
+                        红项 = red.len(),
+                        "返工版自查有红，写进缺口照交，不报失败"
+                    );
+                    gaps.extend(red.iter().map(|l| {
+                        format!("引擎自查红项（返工版照交、不报失败，请主编在闸上裁定）：{l}")
+                    }));
+                } else if !red.is_empty() {
                     let why = format!(
                         "引擎自查（intake-check）未全绿，本版不提交：{}。登记已按本地判断写入引擎，交付包未提交",
                         red.join("；")
