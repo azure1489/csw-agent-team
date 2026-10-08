@@ -23,10 +23,11 @@ const MIGRATIONS: &[(u32, &str)] = &[
         7,
         include_str!("../migrations/0007_submitted_state_patches.sql"),
     ),
+    (8, include_str!("../migrations/0008_magazine.sql")),
 ];
 
 /// 当前 schema 版本。与 `MIGRATIONS` 最后一项对齐。
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 
 pub fn open(path: &Path) -> Result<Connection> {
     if let Some(dir) = path.parent() {
@@ -116,6 +117,7 @@ mod tests {
             "brands",
             "brand_aliases",
             "kb_cursors",
+            "kb_doc_images",
             "memory_rules",
             "memory_cases",
             "work_queue",

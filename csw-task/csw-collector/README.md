@@ -61,6 +61,19 @@ token 走 env `HIRES_TOKEN`），拿原帖每张图的最大一档换进包，�
 张数不一致），不交 640 图冒充；应急才关 `required`。没有 `HIRES_TOKEN` 时自动当没配，
 自检明写「高清原图未取」。服务本身在 Mac mini 上（`~/project/hires-service`）。
 
+**杂志背景库（`[magazine]`）**：刊译台（csw-kb）把裁图与整页上传 OSS 后，每本写
+`{dir}/{book_key}/manifest.jsonl`（默认 `dir = /data/kanyitai/output`，同在 centos9，只走本机文件；
+契约见 `docs/情报收集员工作台_杂志清单契约.md`）。`kb sync` 与定时同步扫这个目录：一张有译文的
+裁图一条 `magazine_item`，按本对账（清单里没有的该书条目删掉），入库后写回 `ingested.json`。
+杂志**不进判断**——品牌路、全文路、向量路、补位都只看参考库四类。
+
+```bash
+csw-collector kb import-magazine /data/kanyitai/output/GO-OUT-2016.06   # 入库一本（不看清单变没变）
+csw-collector kb purge --book GO-OUT-2016.06                           # 清掉一本的条目与向量（共用的图向量保留）
+```
+
+融合 / 纯图向量由回填任务另算（`fused_batch` / `image_batch` / `image_side`）。
+
 `CSW_COLLECTOR_ALERT_WEBHOOK` 也只从 env 走：它是一个**谁拿到都能往群里发消息**
 的地址。不填＝告警关着，只进日志。这个群是给运维看的，不是编辑部群——
 流程上的事由引擎播报，这里只发这个服务自己的毛病（磁盘、outbox 冲突、

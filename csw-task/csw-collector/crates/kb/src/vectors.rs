@@ -391,6 +391,24 @@ impl VectorStore {
         Ok(())
     }
 
+    /// 删一批图片向量（杂志整本清理 / 对账后已无人引用的 blake3）。
+    pub async fn drop_images(&self, blake3s: &[String]) -> Result<()> {
+        if blake3s.is_empty() {
+            return Ok(());
+        }
+        let list = blake3s
+            .iter()
+            .map(|k| lit(k))
+            .collect::<Result<Vec<_>>>()?
+            .join(", ");
+        let _guard = self.write.lock().await;
+        self.images
+            .delete(format!("blake3 IN ({list})").as_str())
+            .await
+            .context("删图片向量")?;
+        Ok(())
+    }
+
     /// （文档数，图片数）
     pub async fn counts(&self) -> Result<(usize, usize)> {
         Ok((

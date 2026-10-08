@@ -287,6 +287,13 @@ enum KbCommand {
         #[arg(long)]
         path: String,
     },
+    /// 入库一本杂志：刊译台的清单文件或书目录（`{产出目录}/{book_key}/`）。不管清单变没变都重入。
+    ImportMagazine { path: String },
+    /// 清掉一本杂志在知识库里的全部条目与向量（刊译台删除整本后用）
+    Purge {
+        #[arg(long)]
+        book: String,
+    },
     /// 待补录清单：进过选题却不在 csw 在册名单里的品牌（只读）
     Backfill {
         /// 只列前几行。0 = 全部
@@ -381,6 +388,8 @@ async fn main() -> anyhow::Result<()> {
                     .await
                 }
                 KbCommand::Import { path } => kb::import(&cfg, &path),
+                KbCommand::ImportMagazine { path } => kb::import_magazine(&cfg, &path).await,
+                KbCommand::Purge { book } => kb::purge_book(&cfg, &book).await,
                 KbCommand::Backfill { limit } => kb::backfill(&cfg, limit),
             }
         }

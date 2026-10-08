@@ -34,6 +34,7 @@ pub struct Config {
     pub features: Features,
     pub web: Web,
     pub alert: Alert,
+    pub magazine: Magazine,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +169,32 @@ pub struct Schedule {
     pub backup_at_utc: String,
     /// 隔几天备一次。到点了但离上一份没这么久，就跳过
     pub backup_every_days: u32,
+}
+
+/// 杂志背景库：刊译台写的清单（`{dir}/{book_key}/manifest.jsonl`，契约见
+/// `docs/情报收集员工作台_杂志清单契约.md`）。两服务同在 centos9，只走本机文件。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Magazine {
+    /// 刊译台产出目录。空 = 不同步杂志。
+    pub dir: PathBuf,
+    /// 融合向量一批几条（回填任务用）
+    pub fused_batch: usize,
+    /// 纯图向量一批几张（回填任务用）
+    pub image_batch: usize,
+    /// 送向量服务前图缩到多宽（px）
+    pub image_side: u32,
+}
+
+impl Default for Magazine {
+    fn default() -> Self {
+        Self {
+            dir: PathBuf::from("/data/kanyitai/output"),
+            fused_batch: 4,
+            image_batch: 2,
+            image_side: 768,
+        }
+    }
 }
 
 /// 开发群告警。**默认关着**：地址填进来才发。
@@ -423,6 +450,7 @@ impl Default for Config {
                 send_draft_rules_to_model: true,
             },
             alert: Alert::default(),
+            magazine: Magazine::default(),
             web: Web {
                 secure_cookie: true,
                 van_usernames: vec![],

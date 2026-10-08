@@ -138,12 +138,38 @@ pub struct Hit {
 ///
 /// 查询语法错时返回空而不是报错：用户在搜索框里打什么都可能，
 /// 一个引号不该让整页崩掉。
+/// **只看参考库四类**（判断路径用）；杂志用 [`search_kind`]。
 pub fn search(conn: &Connection, tok: &Tokenizer, query: &str, limit: usize) -> Result<Vec<Hit>> {
+    search_in(conn, tok, query, limit, crate::docs::REFERENCE_KINDS_SQL)
+}
+
+/// 只看某一类（杂志检索用 `docs::MAGAZINE`）。
+pub fn search_kind(
+    conn: &Connection,
+    tok: &Tokenizer,
+    query: &str,
+    kind: &str,
+    limit: usize,
+) -> Result<Vec<Hit>> {
+    let lit = format!("'{}'", kind.replace('\'', "''"));
+    search_in(conn, tok, query, limit, &lit)
+}
+
+fn search_in(
+    conn: &Connection,
+    tok: &Tokenizer,
+    query: &str,
+    limit: usize,
+    kinds_sql: &str,
+) -> Result<Vec<Hit>> {
     let Some(q) = tok.phrase_query(query) else {
         return Ok(vec![]);
     };
     let mut st = conn
-        .prepare("SELECT rowid, bm25(kb_fts) FROM kb_fts WHERE kb_fts MATCH ?1 ORDER BY bm25(kb_fts) LIMIT ?2")
+        .prepare(&format!(
+            "SELECT f.rowid, bm25(kb_fts) FROM kb_fts f JOIN kb_docs d ON d.id = f.rowid
+             WHERE kb_fts MATCH ?1 AND d.kind IN ({kinds_sql}) ORDER BY bm25(kb_fts) LIMIT ?2"
+        ))
         .context("准备全文查询")?;
     let rows = match st.query_map(rusqlite::params![q, limit as i64], |r| {
         Ok(Hit {
@@ -169,9 +195,14 @@ pub fn doc_frequency(conn: &Connection, tok: &Tokenizer, term: &str) -> Result<u
     let Some(q) = tok.phrase_query(term) else {
         return Ok(0);
     };
+    // 只数参考库四类：杂志条目十万量级，会把判断那边「满库都有」的阈值整体抬高
     let n: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM kb_fts WHERE kb_fts MATCH ?1",
+            &format!(
+                "SELECT COUNT(*) FROM kb_fts f JOIN kb_docs d ON d.id = f.rowid
+                 WHERE kb_fts MATCH ?1 AND d.kind IN ({})",
+                crate::docs::REFERENCE_KINDS_SQL
+            ),
             [&q],
             |r| r.get(0),
         )

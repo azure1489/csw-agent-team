@@ -55,6 +55,17 @@ impl KbKind {
     }
 }
 
+/// 杂志条目（刊译台清单里一张有译文的裁图）。
+///
+/// **刻意不进 [`KbKind`]**：`KbKind` 是参考库四类，必须能一一转成判断用的对照材料
+/// （[`MaterialKind`]）；杂志阶段一只进检索、不进判断（方案决策 2），硬塞进枚举就得
+/// 给它编一个对照材料类型。判断路径的品牌路、全文路、向量路、补位都按
+/// [`REFERENCE_KINDS_SQL`] 只看四类。
+pub const MAGAZINE: &str = "magazine_item";
+
+/// 参考库四类的 SQL 列表（`kind IN (…)` 用）。与 [`KbKind::ALL`] 一致，单测钉住。
+pub const REFERENCE_KINDS_SQL: &str = "'published_item','example','generated_post','decision'";
+
 impl From<KbKind> for MaterialKind {
     fn from(k: KbKind) -> Self {
         match k {
@@ -100,7 +111,15 @@ impl KbDoc {
     }
 
     /// 内容指纹。**只覆盖 [`Self::text`]**——见模块文档。
+    ///
+    /// 杂志条目另把裁图地址（含图片 blake3）算进去：融合向量是「文字 + 图」，换了图
+    /// 文字没变也要重算。
     pub fn content_hash(&self) -> String {
+        if self.kind == MAGAZINE {
+            return blake3::hash(format!("{}\n{}", self.text(), self.url).as_bytes())
+                .to_hex()
+                .to_string();
+        }
         blake3::hash(self.text().as_bytes()).to_hex().to_string()
     }
 
@@ -276,7 +295,7 @@ pub fn norm_url(u: &str) -> String {
     u.to_lowercase()
 }
 
-/// 品牌召回路：这个品牌下最近的若干条。
+/// 品牌召回路：这个品牌下最近的若干条。**只看参考库四类**（杂志不进判断）。
 ///
 /// 按发布时间倒序，**没有发布时间的排在最后**——`published_at` 为空的多是范例
 /// 与决定，它们本来就不该挤掉近期的已发条目。
@@ -290,7 +309,9 @@ pub fn by_brand(conn: &Connection, brand: &str, limit: usize) -> Result<Vec<KbDo
         return Ok(Vec::new());
     }
     let spellings: Vec<String> = conn
-        .prepare("SELECT DISTINCT brand FROM kb_docs WHERE brand <> ''")?
+        .prepare(&format!(
+            "SELECT DISTINCT brand FROM kb_docs WHERE brand <> '' AND kind IN ({REFERENCE_KINDS_SQL})"
+        ))?
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?
         .into_iter()
@@ -303,7 +324,7 @@ pub fn by_brand(conn: &Connection, brand: &str, limit: usize) -> Result<Vec<KbDo
         .collect::<Vec<_>>()
         .join(",");
     let mut st = conn.prepare(&format!(
-        "SELECT {COLS} FROM kb_docs WHERE brand IN ({holes})
+        "SELECT {COLS} FROM kb_docs WHERE brand IN ({holes}) AND kind IN ({REFERENCE_KINDS_SQL})
          ORDER BY published_at IS NULL, published_at DESC LIMIT ?"
     ))?;
     let mut args: Vec<Box<dyn rusqlite::ToSql>> = spellings
@@ -321,9 +342,12 @@ pub fn by_brand(conn: &Connection, brand: &str, limit: usize) -> Result<Vec<KbDo
 }
 
 /// 还没用当前模型算过向量的行。空的 `embed_model` 与「用别的模型算的」一样都要重算。
+///
+/// **杂志条目不在这里**：它们要的是融合向量（文字 + 裁图），由回填任务另算；
+/// 这里给的是纯文本向量的那几类。
 pub fn needs_embedding(conn: &Connection, model: &str, limit: usize) -> Result<Vec<KbDoc>> {
     let mut st = conn.prepare(&format!(
-        "SELECT {COLS} FROM kb_docs WHERE embed_model <> ?1 ORDER BY id LIMIT ?2"
+        "SELECT {COLS} FROM kb_docs WHERE embed_model <> ?1 AND kind <> '{MAGAZINE}' ORDER BY id LIMIT ?2"
     ))?;
     Ok(st
         .query_map(params![model, limit as i64], row)?
@@ -387,6 +411,67 @@ mod tests {
         );
         assert_eq!(KbKind::parse("example"), Some(KbKind::Example));
         assert_eq!(KbKind::parse("prior_ledger"), None, "上一轮台账不进参考库");
+    }
+
+    #[test]
+    fn 参考库四类的sql列表与枚举一致() {
+        let want = KbKind::ALL
+            .iter()
+            .map(|k| format!("'{}'", k.as_str()))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(REFERENCE_KINDS_SQL, want);
+        assert_eq!(KbKind::parse(MAGAZINE), None, "杂志不是参考库四类");
+    }
+
+    fn mag(ref_id: &str, brand: &str, body: &str, url: &str) -> KbDoc {
+        KbDoc {
+            kind: MAGAZINE.into(),
+            ref_id: ref_id.into(),
+            brand: brand.into(),
+            body: body.into(),
+            url: url.into(),
+            platform: "magazine".into(),
+            publish_state: "magazine".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn 杂志条目不进品牌路也不进纯文本向量() {
+        let c = conn();
+        upsert(&c, &d(KbKind::Example, "ex-1", "范例", "正文")).unwrap();
+        upsert(
+            &c,
+            &mag("T:1:0", "山と道", "杂志里的山と道背包", "https://x/a.jpg"),
+        )
+        .unwrap();
+        let got = by_brand(&c, "山と道", 10).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].kind, "example", "判断的品牌路不该召回杂志");
+        let todo = needs_embedding(&c, "qwen3-vl", 10).unwrap();
+        assert!(
+            todo.iter().all(|d| d.kind != MAGAZINE),
+            "杂志走融合向量回填，不走纯文本"
+        );
+        assert_eq!(todo.len(), 1);
+    }
+
+    #[test]
+    fn 杂志换图要重算() {
+        let a = mag("T:1:0", "", "同一段译文", "https://x/aa.jpg");
+        let mut b = a.clone();
+        b.url = "https://x/bb.jpg".into();
+        assert_ne!(
+            a.content_hash(),
+            b.content_hash(),
+            "融合向量含图，换图必须重算"
+        );
+        // 参考库四类不受影响：url 不进指纹
+        let mut e = d(KbKind::Example, "ex-1", "t", "b");
+        let h = e.content_hash();
+        e.url = "https://example.com/x".into();
+        assert_eq!(e.content_hash(), h);
     }
 
     #[test]

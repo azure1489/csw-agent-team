@@ -19,7 +19,7 @@ use csw_collector_harvest::csw::{CswClient, CswConfig};
 use csw_collector_kb::brands::{Alias, BrandIndex};
 use csw_collector_kb::fts::Tokenizer;
 use csw_collector_kb::vectors::VectorStore;
-use csw_collector_kb::{docs, fts, sync};
+use csw_collector_kb::{docs, fts, magazine, sync};
 
 pub struct SyncOpts {
     /// 全量重拉，不用重叠窗口
@@ -85,6 +85,10 @@ pub async fn sync(cfg: &Config, secrets: &Secrets, o: SyncOpts) -> Result<()> {
         );
     }
 
+    // ── 二点七、杂志背景库 ──
+    // 刊译台写的清单（本机文件）。不算向量：融合 / 纯图向量由回填任务另算。
+    let mag = sync_magazine_dir(&conn, &tok, cfg, false);
+
     // 全文索引整理一次：contentless 的 FTS5 删行是追加一条反向记录，
     // 不 optimize 的话查询会越来越慢
     fts::optimize(&conn).context("整理全文索引")?;
@@ -99,6 +103,7 @@ pub async fn sync(cfg: &Config, secrets: &Secrets, o: SyncOpts) -> Result<()> {
         batch_weight: cfg.vector.text_batch,
         ..Default::default()
     })?;
+    drop_vectors(&store, &mag.0, &mag.1).await;
     if !vector.healthy().await {
         println!(
             "\n向量服务 {} 不可达，这一轮只同步材料不算向量",
@@ -223,6 +228,125 @@ async fn print_counts(conn: &rusqlite::Connection, store: &VectorStore) -> Resul
             .map(|(k, n)| format!("{k} {n}"))
             .collect::<Vec<_>>()
             .join("、")
+    );
+    Ok(())
+}
+
+/// 扫杂志清单目录并入库，打印每本一行。返回要从向量库删的 (doc 键, 图 blake3)。
+pub fn sync_magazine_dir(
+    conn: &rusqlite::Connection,
+    tok: &Tokenizer,
+    cfg: &Config,
+    force: bool,
+) -> (Vec<String>, Vec<String>) {
+    let mut keys = Vec::new();
+    let mut imgs = Vec::new();
+    let dir = &cfg.magazine.dir;
+    if dir.as_os_str().is_empty() || !dir.is_dir() {
+        println!("杂志清单目录 {} 不存在，跳过", dir.display());
+        return (keys, imgs);
+    }
+    match magazine::sync_dir(conn, tok, dir, force) {
+        Ok(reports) => {
+            if reports.is_empty() {
+                println!("杂志：没有新清单");
+            }
+            for r in reports {
+                match r {
+                    Ok(r) => {
+                        println!(
+                            "杂志 {:<28} 行 {:>4} 新 {:>4} 变 {:>4} 没变 {:>4} 无译文 {:>4} 删 {:>4} 坏行 {}",
+                            r.book_key,
+                            r.lines,
+                            r.inserted,
+                            r.changed,
+                            r.unchanged,
+                            r.no_text,
+                            r.deleted,
+                            r.bad_lines
+                        );
+                        keys.extend(r.drop_doc_keys);
+                        imgs.extend(r.drop_image_blake3);
+                    }
+                    Err(e) => println!("  杂志一本失败：{e:#}"),
+                }
+            }
+            let _ = sync::set_cursor(
+                conn,
+                magazine::SRC_MAGAZINE,
+                &jiff::Timestamp::now().to_string(),
+            );
+        }
+        Err(e) => println!("  杂志目录扫描失败：{e:#}"),
+    }
+    (keys, imgs)
+}
+
+/// 对账 / 清理删掉的条目，把向量库里对应的行也删掉。删失败只告警：
+/// SQLite 里已经没有这些条目，检索取回时会自然跳过，下次清理再补删。
+pub async fn drop_vectors(store: &VectorStore, keys: &[String], imgs: &[String]) {
+    if let Err(e) = store.drop_docs(keys).await {
+        tracing::warn!(原因 = %format!("{e:#}"), 条数 = keys.len(), "删杂志文档向量失败");
+    }
+    if let Err(e) = store.drop_images(imgs).await {
+        tracing::warn!(原因 = %format!("{e:#}"), 张数 = imgs.len(), "删杂志图片向量失败");
+    }
+}
+
+fn kb_tokenizer(conn: &rusqlite::Connection) -> Result<Tokenizer> {
+    let index = BrandIndex::load(conn)?;
+    Ok(Tokenizer::with_brands(&index.dict_words()))
+}
+
+/// `kb import-magazine <路径>`：入库一本（清单文件或书目录），不看「清单没变」直接重入。
+pub async fn import_magazine(cfg: &Config, path: &str) -> Result<()> {
+    let p = std::path::Path::new(path);
+    let book_dir = if p.is_file() {
+        p.parent().context("清单文件没有上级目录")?.to_path_buf()
+    } else {
+        p.to_path_buf()
+    };
+    anyhow::ensure!(
+        book_dir.join(magazine::MANIFEST).is_file(),
+        "{} 下没有 {}（刊译台全部上传成功后才写清单）",
+        book_dir.display(),
+        magazine::MANIFEST
+    );
+    let conn = csw_collector_core::store::open(&cfg.db_path())?;
+    let tok = kb_tokenizer(&conn)?;
+    let r = magazine::sync_book(&conn, &tok, &book_dir, true)?.context("清单为空")?;
+    println!(
+        "{}：清单 {} 行（坏行 {}）→ 新 {} 变 {} 没变 {} 无译文 {}，对账删 {}",
+        r.book_key, r.lines, r.bad_lines, r.inserted, r.changed, r.unchanged, r.no_text, r.deleted
+    );
+    for e in r.errors.iter().take(10) {
+        println!("  坏行：{e}");
+    }
+    let store = VectorStore::open(&cfg.lance_path(), crate::EMBED_DIM, &cfg.vector.embed_model)
+        .await
+        .context("打开向量库")?;
+    drop_vectors(&store, &r.drop_doc_keys, &r.drop_image_blake3).await;
+    println!("已写 {}/{}", book_dir.display(), magazine::INGESTED);
+    Ok(())
+}
+
+/// `kb purge --book <book_key>`：清掉这本书在知识库里的全部条目与向量（共用的图向量保留）。
+pub async fn purge_book(cfg: &Config, book: &str) -> Result<()> {
+    let conn = csw_collector_core::store::open(&cfg.db_path())?;
+    let (n, keys, imgs) = magazine::purge_book(&conn, book)?;
+    let store = VectorStore::open(&cfg.lance_path(), crate::EMBED_DIM, &cfg.vector.embed_model)
+        .await
+        .context("打开向量库")?;
+    drop_vectors(&store, &keys, &imgs).await;
+    // 清单还在的话，ingested.json 会让刊译台误以为已入库：一并删掉
+    let ing = cfg.magazine.dir.join(book).join(magazine::INGESTED);
+    if ing.is_file() {
+        std::fs::remove_file(&ing).with_context(|| format!("删 {}", ing.display()))?;
+    }
+    println!(
+        "{book}：删条目 {n}；向量库按键清掉文档向量 {} 个、图片向量 {} 个（仍被别的刊期引用的图保留）",
+        keys.len(),
+        imgs.len()
     );
     Ok(())
 }

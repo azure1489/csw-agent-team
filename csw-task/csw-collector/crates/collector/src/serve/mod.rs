@@ -489,6 +489,37 @@ async fn kb_sync_job(
         Ok((rules, cases)) => notes.push(format!("选题记忆 准则 {rules} 案例 {cases}")),
         Err(e) => failed.push(format!("选题记忆：{e:#}")),
     }
+    // 杂志背景库：读刊译台写在本机的清单。各本各报各的，一本失败不挡别的
+    if !cfg.magazine.dir.as_os_str().is_empty() && cfg.magazine.dir.is_dir() {
+        match csw_collector_kb::magazine::sync_dir(conn, &svc.tok, &cfg.magazine.dir, false) {
+            Ok(reports) => {
+                let (mut books, mut new, mut del) = (0, 0, 0);
+                let (mut keys, mut imgs) = (Vec::new(), Vec::new());
+                for r in reports {
+                    match r {
+                        Ok(r) => {
+                            books += 1;
+                            new += r.inserted + r.changed;
+                            del += r.deleted;
+                            keys.extend(r.drop_doc_keys);
+                            imgs.extend(r.drop_image_blake3);
+                        }
+                        Err(e) => failed.push(format!("杂志：{e:#}")),
+                    }
+                }
+                crate::kb::drop_vectors(&svc.store, &keys, &imgs).await;
+                let _ = sync::set_cursor(
+                    conn,
+                    csw_collector_kb::magazine::SRC_MAGAZINE,
+                    &jiff::Timestamp::now().to_string(),
+                );
+                if books > 0 {
+                    notes.push(format!("杂志 {books} 本 新/变 {new} 删 {del}"));
+                }
+            }
+            Err(e) => failed.push(format!("杂志：{e:#}")),
+        }
+    }
     if let Err(e) = csw_collector_kb::fts::optimize(conn) {
         tracing::warn!(原因 = %format!("{e:#}"), "整理全文索引失败");
     }

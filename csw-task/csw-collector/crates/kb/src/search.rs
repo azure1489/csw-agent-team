@@ -375,7 +375,14 @@ impl Retriever<'_> {
     /// 一个词命中多少篇就算「满库都有」。
     fn df_cap(&self, conn: &Connection) -> Result<usize> {
         let total: i64 = conn
-            .query_row("SELECT COUNT(*) FROM kb_docs", [], |r| r.get(0))
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM kb_docs WHERE kind IN ({})",
+                    docs::REFERENCE_KINDS_SQL
+                ),
+                [],
+                |r| r.get(0),
+            )
             .unwrap_or(0);
         Ok((total as usize / FTS_DF_RATIO).max(FTS_DF_FLOOR))
     }
