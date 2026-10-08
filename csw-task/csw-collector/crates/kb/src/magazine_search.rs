@@ -123,19 +123,8 @@ pub struct TextQuery<'a> {
     pub limit: usize,
 }
 
-/// 文字检索：全文 ∪ 向量，RRF 融合。
-pub async fn search_text(
-    conn: &Connection,
-    store: &VectorStore,
-    tok: &Tokenizer,
-    q: &TextQuery<'_>,
-    model: &str,
-) -> Result<Vec<MagazineHit>> {
-    let ids = vector_ids(store, q).await?;
-    fuse(conn, tok, q, &ids, model)
-}
-
-/// 向量路（要 await，不碰 SQLite）。HTTP 层要在两段之间放掉连接锁，所以拆开给。
+/// 文字检索第一段：向量路（要 await，不碰 SQLite）。第二段是 [`fuse`]；
+/// 分两段是为了 HTTP / MCP 在中间放掉连接锁。
 pub async fn vector_ids(store: &VectorStore, q: &TextQuery<'_>) -> Result<Vec<(i64, f32)>> {
     let Some(v) = q.vector else {
         return Ok(vec![]);
@@ -164,7 +153,7 @@ fn pool_size(q: &TextQuery<'_>) -> usize {
     }
 }
 
-/// 全文路 + 与向量路融合（纯查库）。
+/// 文字检索第二段：全文路 + 与向量路按 RRF 融合（纯查库）。
 pub fn fuse(
     conn: &Connection,
     tok: &Tokenizer,
@@ -507,6 +496,80 @@ mod tests {
         assert_eq!((s.books, s.docs, s.eligible, s.fused_done), (2, 4, 4, 1));
         assert_eq!((s.pure_target, s.pure_done), (3, 1), "纯图按不同的图算");
         assert_eq!(s.last_book.as_deref(), Some("b2"));
+    }
+
+    /// 护栏 1（判断路径端到端）：杂志融合向量比参考库更近，判断用的默认检索也召回不到杂志
+    #[tokio::test]
+    async fn 判断路径召回不到杂志() {
+        let (c, tok) = conn_with_books();
+        let dir = tempdir::TempDir::new("judge").unwrap();
+        let store = VectorStore::open(dir.path(), DIM, M).await.unwrap();
+        let mags: Vec<DocVector> = ids(&c)
+            .into_iter()
+            .map(|id| DocVector {
+                key: format!("kb:{MAGAZINE}:{id}"),
+                kind: MAGAZINE.into(),
+                doc_id: id,
+                post_id: String::new(),
+                brand: "TNF".into(),
+                at: String::new(),
+                is_reference: false,
+                vector: unit(0),
+            })
+            .collect();
+        store.put_docs(&mags).await.unwrap();
+        let ex = docs::upsert(
+            &c,
+            &KbDoc {
+                kind: "example".into(),
+                ref_id: "e1".into(),
+                body: "范例 双肩包".into(),
+                brand: "TNF".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        fts::index_doc(&c, ex.id, &tok, "范例 双肩包").unwrap();
+        let mut far = unit(0);
+        far[1] = 1.0;
+        store
+            .put_docs(&[DocVector {
+                key: "kb:example:e1".into(),
+                kind: "example".into(),
+                doc_id: ex.id,
+                post_id: String::new(),
+                brand: "TNF".into(),
+                at: String::new(),
+                is_reference: false,
+                vector: far,
+            }])
+            .await
+            .unwrap();
+        let brands = crate::brands::BrandIndex::new(
+            crate::brands::Alias::new("TNF", "TNF")
+                .into_iter()
+                .collect(),
+        );
+        let r = crate::search::Retriever {
+            store: &store,
+            brands: &brands,
+            tok: &tok,
+            reranker: None,
+        };
+        let q = crate::search::Query {
+            text: "TNF 双肩包",
+            vector: Some(&unit(0)),
+            limit: 10,
+            backfill_kinds: true,
+            ..Default::default()
+        };
+        let got = r.search(&c, &q).await.unwrap();
+        assert!(!got.docs.is_empty());
+        assert!(
+            got.docs.iter().all(|s| s.doc.kind != MAGAZINE),
+            "判断路径召回了杂志：{:?}",
+            got.docs.iter().map(|s| &s.doc.kind).collect::<Vec<_>>()
+        );
     }
 
     /// 护栏 1：库里塞 10 万条杂志向量（都比参考库更近），按四类检索 top-K 一条不丢——

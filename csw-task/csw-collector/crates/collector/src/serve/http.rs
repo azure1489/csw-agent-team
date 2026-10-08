@@ -1665,10 +1665,11 @@ async fn kb_status(State(st): State<Arc<AppState>>) -> Result<Json<serde_json::V
             "decision": one("SELECT COUNT(*) FROM kb_docs WHERE kind='decision'"),
         },
         // 判据与 kb::docs::needs_embedding 同一条：**换了模型的也算待算**，
-        // 不是「没算过的才算」——混着两个模型的向量，检索会悄悄失准且不报错
+        // 不是「没算过的才算」——混着两个模型的向量，检索会悄悄失准且不报错。
+        // 只算参考库四类：杂志由回填任务另算，进度在下面 `magazine` 一节
         "待算向量": conn
             .query_row(
-                "SELECT COUNT(*) FROM kb_docs WHERE embed_model <> ?1",
+                "SELECT COUNT(*) FROM kb_docs WHERE embed_model <> ?1 AND kind <> 'magazine_item'",
                 [&st.cfg.vector.embed_model],
                 |r| r.get::<_, i64>(0),
             )
@@ -2707,6 +2708,7 @@ mod tests {
         let (_, v) = get(&app, "/api/kb/status").await;
         assert_eq!(v["magazine"]["books"], 1);
         assert_eq!(v["magazine"]["docs"], 1);
+        assert_eq!(v["待算向量"], 0, "杂志不算进参考库的待算向量");
 
         let (code, _) = get(&app, "/api/kb/magazine/search?q=%E5%B8%90%E7%AF%B7").await;
         assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
@@ -2730,7 +2732,13 @@ mod tests {
         let as_viewer = api_router(st.clone(), auth_with("viewer"));
         assert_eq!(post(as_viewer, b"x").await, StatusCode::FORBIDDEN);
         assert_eq!(post(app.clone(), b"").await, StatusCode::BAD_REQUEST);
-        assert_eq!(post(app, b"x").await, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            post(app.clone(), b"x").await,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        // 请求体上限放到了 20MB：3MB 不该被 axum 默认的 2MB 挡成 413
+        let big: &'static [u8] = Box::leak(vec![0u8; 3 << 20].into_boxed_slice());
+        assert_eq!(post(app, big).await, StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
