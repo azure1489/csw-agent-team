@@ -1283,9 +1283,17 @@ async fn start_round(
             // 交付包里还有原文与译文、补采记录、窗口起止：这些变了导出就变，也要算进来。
             // 10-01 r59：主编改了 C65 的译文，指纹只看判断与选题，返工五次都说「内容相同」没重交
             let sources = export_sources(conn, &r, &judgements);
+            // 与引擎的逐键对账结果也算：引擎侧归属修好了（10-08 r66 v3：两条旧归属清掉），
+            // 包里的对账与红灯就变了，该重交，不能当「内容相同」
+            // 只取不一致的键（报告里还有核对时间，每次都变，不能进指纹）
+            let recon = serde_json::to_string(&serde_json::json!([
+                reconciled.pointer("/条目/不一致"),
+                reconciled.pointer("/判断/不一致"),
+            ]))
+            .unwrap_or_default();
             let state = blake3::hash(
                 format!(
-                    "{EXPORT_REV}\u{1}{}\u{1}{}\u{1}{}\u{1}{trace}\u{1}{sources}",
+                    "{EXPORT_REV}\u{1}{}\u{1}{}\u{1}{}\u{1}{trace}\u{1}{sources}\u{1}{recon}",
                     serde_json::to_string(&judgements).unwrap_or_default(),
                     serde_json::to_string(&fin.topics).unwrap_or_default(),
                     serde_json::to_string(&items).unwrap_or_default()
