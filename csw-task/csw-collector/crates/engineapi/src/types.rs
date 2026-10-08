@@ -98,6 +98,9 @@ pub struct TaskDetail {
     /// 各版产出；**最新审核记录挂在每一版上**，不在顶层
     #[serde(default)]
     pub deliverables: Vec<serde_json::Value>,
+    /// 与本任务相关的主编备忘（最近几条）。returned 状态不能重开 / 重派时，主编用它给新指示（10-08 r66 #56）
+    #[serde(default)]
+    pub feedback: Vec<serde_json::Value>,
 }
 
 impl TaskDetail {

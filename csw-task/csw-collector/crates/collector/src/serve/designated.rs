@@ -59,10 +59,59 @@ pub fn hands_off_note(note: &str) -> bool {
     note.contains(MARK_HANDS_OFF)
 }
 
-/// 主编**最新的**指示里有没有【工作台不接】：派工单写了，或比当前派工更新的那次退回意见写了。
-/// 主编重开会生成更新的派工，盖过之前退回意见里的标记（10-07 r65 #731：标记写在退回意见里，
-/// 工作台只看派工单，半分钟内原样返工重交三次）。
+/// 主编**最新的**指示里有没有【工作台不接】。指示有三处：派工单、各版的退回意见、与本任务相关的主编备忘；
+/// 按引擎给的时间取最新的那一处，看它写没写标记。
+///
+/// - 10-07 r65 #731：标记写在退回意见里，工作台只看派工单，半分钟内原样返工重交三次；
+/// - 10-08 r66 #752：主编退回时写了标记，之后同意交工作台处理，但 returned 不能重开、不能重派，
+///   只能录一条任务备忘 #56「覆盖此前暂停及旧隔离要求」——最新指示在备忘里。
+///
+/// 引擎没给时间（旧版）时退回按编号比：比当前派工更新的退回意见写了标记就让开。
 pub fn hands_off(detail: &TaskDetail) -> bool {
+    let task_ref = format!("task:{}", detail.task.id);
+    let ts = |v: &serde_json::Value| -> Option<String> {
+        v.get("created_at")
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.chars().take(19).collect())
+    };
+    let review_text = |r: &serde_json::Value| -> String {
+        ["comment", "return_direction", "return_location"]
+            .iter()
+            .filter_map(|k| r.get(*k).and_then(|v| v.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    // (时间, 内容)
+    let mut said: Vec<(Option<String>, String)> = Vec::new();
+    if let Some(d) = detail.dispatch.as_ref() {
+        said.push((ts(d), detail.editor_note.clone()));
+    } else {
+        said.push((None, detail.editor_note.clone()));
+    }
+    for d in &detail.deliverables {
+        if let Some(r) = d.get("latest_review") {
+            said.push((ts(r), review_text(r)));
+        }
+    }
+    for f in &detail.feedback {
+        if f.get("object_ref").and_then(|v| v.as_str()) == Some(task_ref.as_str()) {
+            said.push((
+                ts(f),
+                f.get("quote")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            ));
+        }
+    }
+    if said.iter().all(|(t, _)| t.is_some()) {
+        return said
+            .iter()
+            .max_by(|a, b| a.0.cmp(&b.0))
+            .is_some_and(|(_, text)| hands_off_note(text));
+    }
+    // 旧引擎没有时间：按编号比
     if hands_off_note(&detail.editor_note) {
         return true;
     }
@@ -77,12 +126,7 @@ pub fn hands_off(detail: &TaskDetail) -> bool {
         .iter()
         .filter(|d| d.get("id").and_then(|v| v.as_i64()).unwrap_or(0) > dispatch_id)
         .filter_map(|d| d.get("latest_review"))
-        .any(|r| {
-            ["comment", "return_direction", "return_location"]
-                .iter()
-                .filter_map(|k| r.get(*k).and_then(|v| v.as_str()))
-                .any(hands_off_note)
-        })
+        .any(|r| hands_off_note(&review_text(r)))
 }
 
 /// 派工单里**原轮次没有**的短码。主编在退回意见里引用池内帖子的链接很常见，那些不算指定。
@@ -596,6 +640,38 @@ mod tests {
         assert!(!is_designation(
             "卡5 对照 https://www.instagram.com/p/AAAAA1/ 的写法"
         ));
+    }
+
+    #[test]
+    fn 按时间取最新指示_备忘可以撤销退回意见里的标记() {
+        let mk = |fb: serde_json::Value| -> TaskDetail {
+            serde_json::from_value(serde_json::json!({
+                "task": {"id": 752, "run_id": 66, "stage_code": "intake", "dispatched_at": "x", "cur_version": 1, "status": "returned"},
+                "editor_note": "派工单正文",
+                "dispatch": {"id": 1123, "created_at": "2026-10-07T21:30:02Z"},
+                "deliverables": [{"id": 1128, "version": 1, "latest_review":
+                    {"return_direction": "【工作台不接】运营方沿原#752定点校准", "created_at": "2026-10-08T10:57:02Z"}}],
+                "feedback": fb
+            }))
+            .unwrap()
+        };
+        // 只有退回意见（最新）写了标记：让开
+        assert!(hands_off(&mk(serde_json::json!([]))));
+        // 之后主编录了备忘（更新），不再写标记：工作台接
+        assert!(!hands_off(&mk(
+            serde_json::json!([{"id": 56, "object_ref": "task:752",
+            "quote": "主编同意恢复工作台原轮次定点校准，覆盖此前暂停及旧隔离要求", "created_at": "2026-10-08T12:03:30Z"}])
+        )));
+        // 别的任务的备忘不算
+        assert!(hands_off(&mk(
+            serde_json::json!([{"id": 9, "object_ref": "task:751",
+            "quote": "恢复", "created_at": "2026-10-08T12:03:30Z"}])
+        )));
+        // 备忘本身写了标记：让开
+        assert!(hands_off(&mk(
+            serde_json::json!([{"id": 57, "object_ref": "task:752",
+            "quote": "【工作台不接】改人工", "created_at": "2026-10-08T13:00:00Z"}])
+        )));
     }
 
     #[test]
