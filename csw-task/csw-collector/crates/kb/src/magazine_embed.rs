@@ -108,6 +108,7 @@ fn next_fused(
     model: &str,
     n: usize,
     skip: &HashSet<i64>,
+    held: &HashSet<i64>,
 ) -> Result<Vec<FusedRow>> {
     let mut st = conn.prepare(
         "SELECT i.doc_id, i.book_key, i.local_path
@@ -115,7 +116,7 @@ fn next_fused(
          WHERE i.vector_eligible = 1 AND d.embed_model <> ?1
          ORDER BY i.book_key, i.doc_id LIMIT ?2",
     )?;
-    let rows = st.query_map(params![model, (n + skip.len()) as i64], |r| {
+    let rows = st.query_map(params![model, (n + skip.len() + held.len()) as i64], |r| {
         Ok(FusedRow {
             doc_id: r.get(0)?,
             book_key: r.get(1)?,
@@ -124,7 +125,7 @@ fn next_fused(
     })?;
     Ok(rows
         .filter_map(Result::ok)
-        .filter(|r| !skip.contains(&r.doc_id))
+        .filter(|r| !skip.contains(&r.doc_id) && !held.contains(&r.doc_id))
         .take(n)
         .collect())
 }
@@ -134,6 +135,7 @@ fn next_pure(
     model: &str,
     n: usize,
     skip: &HashSet<String>,
+    held: &HashSet<String>,
 ) -> Result<Vec<PureRow>> {
     let mut st = conn.prepare(
         "SELECT blake3, MIN(book_key), MIN(local_path)
@@ -141,7 +143,7 @@ fn next_pure(
          WHERE vector_eligible = 1 AND image_embed_model <> ?1
          GROUP BY blake3 ORDER BY MIN(book_key), MIN(doc_id) LIMIT ?2",
     )?;
-    let rows = st.query_map(params![model, (n + skip.len()) as i64], |r| {
+    let rows = st.query_map(params![model, (n + skip.len() + held.len()) as i64], |r| {
         Ok(PureRow {
             blake3: r.get(0)?,
             book_key: r.get(1)?,
@@ -150,7 +152,7 @@ fn next_pure(
     })?;
     Ok(rows
         .filter_map(Result::ok)
-        .filter(|r| !skip.contains(&r.blake3))
+        .filter(|r| !skip.contains(&r.blake3) && !held.contains(&r.blake3))
         .take(n)
         .collect())
 }
@@ -217,6 +219,59 @@ async fn load_all(paths: Vec<String>, side: u32) -> Vec<Result<String>> {
     .unwrap_or_else(|e| vec![Err(anyhow::anyhow!("读图线程失败：{e}"))])
 }
 
+/// 攒够这么多行才写一次向量库。LanceDB 每次写都是一次提交、生成新碎片文件，
+/// 而 `docs` 表是正式轮判断暴力扫的那张；一批 4 行一提交，两次整理之间会积上万个碎片。
+const FLUSH_ROWS: usize = 64;
+
+/// 已算好、还没写进向量库的向量。写进去之后才标记（先写向量库再标记，同 embed_pending）。
+#[derive(Default)]
+struct Held {
+    docs: Vec<(DocVector, String)>,
+    doc_ids: HashSet<i64>,
+    imgs: Vec<(ImageVector, String)>,
+    b3s: HashSet<String>,
+}
+
+impl Held {
+    fn len(&self) -> usize {
+        self.docs.len() + self.imgs.len()
+    }
+
+    async fn flush(
+        &mut self,
+        conn: &Connection,
+        store: &VectorStore,
+        model: &str,
+        rep: &mut BackfillReport,
+    ) -> Result<()> {
+        if !self.docs.is_empty() {
+            let rows: Vec<DocVector> = self.docs.iter().map(|(v, _)| v.clone()).collect();
+            store.put_docs(&rows).await?;
+            let ids: Vec<i64> = rows.iter().map(|v| v.doc_id).collect();
+            docs::mark_embedded(conn, &ids, model)?;
+            rep.fused += ids.len();
+            rep.books.extend(self.docs.drain(..).map(|(_, b)| b));
+            self.doc_ids.clear();
+        }
+        if !self.imgs.is_empty() {
+            let rows: Vec<ImageVector> = self.imgs.iter().map(|(v, _)| v.clone()).collect();
+            store.put_images(&rows).await?;
+            let tx = conn.unchecked_transaction()?;
+            for r in &rows {
+                tx.execute(
+                    "UPDATE kb_doc_images SET image_embed_model = ?1 WHERE blake3 = ?2",
+                    params![model, r.blake3],
+                )?;
+            }
+            tx.commit()?;
+            rep.pure += rows.len();
+            rep.books.extend(self.imgs.drain(..).map(|(_, b)| b));
+            self.b3s.clear();
+        }
+        Ok(())
+    }
+}
+
 /// 算一批（或几批），直到没活、`stop` 为真或向量服务失败。
 pub async fn embed_magazine(
     conn: &Connection,
@@ -230,13 +285,17 @@ pub async fn embed_magazine(
     let fused_n = o.fused_batch.max(1);
     let image_n = o.image_batch.max(1);
     inherit_pure(conn, &o.model)?;
+    let mut held = Held::default();
     loop {
+        if held.len() >= FLUSH_ROWS {
+            held.flush(conn, store, &o.model, &mut rep).await?;
+        }
         if stop() {
             rep.stopped = true;
             break;
         }
         // ── 第一遍：融合向量 ──
-        let todo = next_fused(conn, &o.model, fused_n, &state.skip_docs)?;
+        let todo = next_fused(conn, &o.model, fused_n, &state.skip_docs, &held.doc_ids)?;
         if !todo.is_empty() {
             let imgs = load_all(
                 todo.iter().map(|r| r.local_path.clone()).collect(),
@@ -272,10 +331,9 @@ pub async fn embed_magazine(
                 Ok(vs) if vs.len() == docs_ok.len() => {
                     rep.embed_ms += t.elapsed().as_millis();
                     rep.images_sent += inputs.len();
-                    let rows: Vec<DocVector> = docs_ok
-                        .iter()
-                        .zip(vs)
-                        .map(|((d, _), v)| DocVector {
+                    for ((d, b), v) in docs_ok.into_iter().zip(vs) {
+                        held.doc_ids.insert(d.id);
+                        let row = DocVector {
                             key: d.vector_key(),
                             kind: MAGAZINE.into(),
                             doc_id: d.id,
@@ -284,14 +342,9 @@ pub async fn embed_magazine(
                             at: d.published_at.clone().unwrap_or_default(),
                             is_reference: false,
                             vector: v,
-                        })
-                        .collect();
-                    // 先写向量库再标记（同 embed_pending）
-                    store.put_docs(&rows).await?;
-                    let ids: Vec<i64> = docs_ok.iter().map(|(d, _)| d.id).collect();
-                    docs::mark_embedded(conn, &ids, &o.model)?;
-                    rep.fused += ids.len();
-                    rep.books.extend(docs_ok.into_iter().map(|(_, b)| b));
+                        };
+                        held.docs.push((row, b));
+                    }
                 }
                 Ok(vs) => {
                     rep.error = Some(format!(
@@ -312,7 +365,7 @@ pub async fn embed_magazine(
         // ── 第二遍：纯图向量 ──
         // 不受 `features.image_vectors` 约束：那个开关只管候选逐图向量（正式轮里占卡），
         // 杂志纯图向量在空闲时回填，是以图搜图的底子。
-        let todo = next_pure(conn, &o.model, image_n, &state.skip_b3)?;
+        let todo = next_pure(conn, &o.model, image_n, &state.skip_b3, &held.b3s)?;
         if todo.is_empty() {
             break;
         }
@@ -344,23 +397,16 @@ pub async fn embed_magazine(
             Ok(vs) if vs.len() == ok.len() => {
                 rep.embed_ms += t.elapsed().as_millis();
                 rep.images_sent += inputs.len();
-                let rows: Vec<ImageVector> = ok
-                    .iter()
-                    .zip(vs)
-                    .map(|(r, v)| ImageVector {
-                        blake3: r.blake3.clone(),
-                        vector: v,
-                    })
-                    .collect();
-                store.put_images(&rows).await?;
-                for r in &ok {
-                    conn.execute(
-                        "UPDATE kb_doc_images SET image_embed_model = ?1 WHERE blake3 = ?2",
-                        params![o.model, r.blake3],
-                    )?;
-                    rep.books.insert(r.book_key.clone());
+                for (r, v) in ok.iter().zip(vs) {
+                    held.b3s.insert(r.blake3.clone());
+                    held.imgs.push((
+                        ImageVector {
+                            blake3: r.blake3.clone(),
+                            vector: v,
+                        },
+                        r.book_key.clone(),
+                    ));
                 }
-                rep.pure += ok.len();
             }
             Ok(vs) => {
                 rep.error = Some(format!(
@@ -376,6 +422,8 @@ pub async fn embed_magazine(
             }
         }
     }
+    // 每条出口（让路、没活、向量服务失败）都把已算好的写进去
+    held.flush(conn, store, &o.model, &mut rep).await?;
     (rep.fused_left, rep.pure_left) = left(conn, &o.model)?;
     Ok(rep)
 }
@@ -562,6 +610,11 @@ mod tests {
         assert_eq!((rep.fused, rep.pure), (4, 0), "只做完已开始的那一批");
         assert_eq!(rep.fused_left, 6);
         assert_eq!(
+            f.store.counts().await.unwrap(),
+            (4, 0),
+            "让路前算好的要写进向量库"
+        );
+        assert_eq!(
             count(
                 &f.conn,
                 "SELECT COUNT(*) FROM kb_docs WHERE embed_model = '测试模型'"
@@ -593,6 +646,31 @@ mod tests {
         assert!(rep.error.is_some());
         assert_eq!((rep.fused, rep.fused_left, rep.pure_left), (0, 3, 3));
         assert_eq!(f.store.counts().await.unwrap(), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn 中途失败_已算好的照样落库() {
+        let f = fixture(500, 10, |i| 10 + i as u8).await;
+        // 前 4 次请求成功（第一批 4 条；融合一条一请求），之后才是挂载在先的 500
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(Echo)
+            .up_to_n_times(4)
+            .with_priority(1)
+            .mount(&f._srv)
+            .await;
+        let rep = embed_magazine(
+            &f.conn,
+            &f.store,
+            &f.vector,
+            &opts(),
+            &mut Backfill::default(),
+            &|| false,
+        )
+        .await
+        .unwrap();
+        assert!(rep.error.is_some());
+        assert_eq!((rep.fused, rep.fused_left), (4, 6));
+        assert_eq!(f.store.counts().await.unwrap(), (4, 0));
     }
 
     #[tokio::test]
