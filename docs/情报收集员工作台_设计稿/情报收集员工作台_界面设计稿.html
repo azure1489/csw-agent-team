@@ -73,13 +73,39 @@ table.dims th { background:none; width:6em; font-weight:600; color:var(--ink); }
 table.audit td { font-size:12px; } .actions { display:flex; gap:6px; margin-top:12px; }
 table.rub th { width:6em; white-space:normal; }
 .chart svg { display:block; }
+
+.seg { display:inline-flex; border:1px solid var(--rule); border-radius:6px; overflow:hidden; }
+.seg span { padding:4px 10px; font-size:12.5px; color:var(--muted); border-right:1px solid var(--rule); } .seg span:last-child { border-right:0; }
+.seg span.on { background:var(--accent-soft); color:var(--accent); font-weight:600; }
+.mag { display:grid; grid-template-columns:96px minmax(0,1fr); gap:12px; border:1px solid var(--rule); border-radius:8px; padding:10px; margin-bottom:8px; }
+.mag img, .mag .ph { width:96px; height:96px; object-fit:cover; border-radius:6px; background:var(--ground); }
+.mag .meta { font-size:11.5px; color:var(--muted); } .mag b { font-size:13px; display:block; margin:2px 0; }
+.mag .price { font-family:var(--mono); font-size:12px; }
+.mag details { font-size:12px; color:var(--muted); margin-top:4px; } .mag details summary { cursor:pointer; color:var(--accent); }
+.drop { border:1.5px dashed var(--rule); border-radius:8px; padding:22px 12px; text-align:center; color:var(--muted); font-size:12.5px; }
+.drop b { display:block; color:var(--ink); font-size:13px; margin-bottom:4px; }
+.states { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; }
+.state h4 { margin:0 0 6px; }
+.qimg { display:flex; gap:10px; align-items:center; border:1px solid var(--rule); border-radius:8px; padding:8px; }
+.qimg img { width:64px; height:64px; object-fit:cover; border-radius:6px; }
+.bar { height:6px; border-radius:3px; background:var(--ground); overflow:hidden; margin:6px 0 2px; } .bar i { display:block; height:100%; background:var(--accent); }
+.igrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(110px,1fr)); gap:8px; }
+.igrid figure { margin:0; border:1px solid var(--rule); border-radius:6px; overflow:hidden; }
+.igrid img { width:100%; aspect-ratio:1; object-fit:cover; display:block; background:var(--ground); }
+.igrid figcaption { font-size:11px; padding:4px 6px; color:var(--muted); line-height:1.4; } .igrid figcaption b { color:var(--ink); font-size:11.5px; }
+.pagebox { position:relative; display:inline-block; max-width:100%; } .pagebox img { display:block; max-width:100%; border-radius:6px; border:1px solid var(--rule); }
+.pagebox i { position:absolute; border:2px solid var(--accent); background:rgba(79,70,229,.10); border-radius:2px; }
+.crop { max-width:100%; border-radius:6px; border:1px solid var(--rule); display:block; }
+.kv { display:grid; grid-template-columns:6.5em minmax(0,1fr); gap:4px 10px; font-size:12.5px; } .kv dt { color:var(--muted); } .kv dd { margin:0; word-break:break-all; }
+.md { font-size:12.5px; white-space:pre-line; }
+
 @media (max-width:900px) { .frame { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--rule); } nav.side { display:flex; flex-wrap:wrap; } .role { display:none; } .crumb { white-space:normal; } }
 </style>
 <div class="frame">
 <aside>
   <div class="brand"><i></i><div><b>情报收集员工作台</b><span>营事编集室 · 设计稿</span></div></div>
   <div class="navh">导航</div>
-  <nav class="side"><a href="#" data-s="overview" class="on">今日总览</a><a href="#" data-s="board" class="">判断台账</a><a href="#" data-s="van" class="">Van 模式</a><a href="#" data-s="detail" class="">事件详情</a><a href="#" data-s="harvest" class="">采集与覆盖</a><a href="#" data-s="pending" class="">待核结转</a><a href="#" data-s="kb" class="">知识库</a><a href="#" data-s="memory" class="">选题记忆</a><a href="#" data-s="rubric" class="">判断框架与锚点</a><a href="#" data-s="metrics" class="">指标</a><a href="#" data-s="ops" class="">运行与设置</a></nav>
+  <nav class="side"><a href="#" data-s="overview" class="on">今日总览</a><a href="#" data-s="board" class="">判断台账</a><a href="#" data-s="van" class="">Van 模式</a><a href="#" data-s="detail" class="">事件详情</a><a href="#" data-s="harvest" class="">采集与覆盖</a><a href="#" data-s="pending" class="">待核结转</a><a href="#" data-s="kb" class="">知识库</a><a href="#" data-s="magazine" class="">杂志条目</a><a href="#" data-s="memory" class="">选题记忆</a><a href="#" data-s="rubric" class="">判断框架与锚点</a><a href="#" data-s="metrics" class="">指标</a><a href="#" data-s="ops" class="">运行与设置</a></nav>
   <div class="role">当前身份：主编（operator）<br>切换到 Van 视图只保留「Van 模式 · 选题记忆 · 知识库 · 指标」</div>
 </aside>
 <main>
@@ -94,7 +120,7 @@ table.rub th { width:6em; white-space:normal; }
  <div class="card"><span class="k">已判断</span><b>100%</b><span class="s">160 / 160 事件 · 每条都判</span></div>
 </div>
 <div class="grid2">
- <div class="panel"><h3>告警</h3><ul class="alerts"><li class="warn">小红书采集器：opencli 超时 2 次，已重试成功（非必扫）</li><li class="warn">对照材料缺：0 条 · 知识库同步到 09-20，生成过文章的贴文同步到 09-21 01:20</li><li>向量服务：入库 1,204 个向量 · 8 分 40 秒 · 无失败</li><li>模型调用失败 1 次（429），重试成功</li></ul></div>
+ <div class="panel"><h3>告警</h3><ul class="alerts"><li class="warn">小红书采集器：opencli 超时 2 次，已重试成功（非必扫）</li><li class="warn">对照材料缺：0 条 · 知识库同步到 09-20，生成过文章的贴文同步到 09-21 01:20</li><li>向量服务：入库 1,204 个向量 · 8 分 40 秒 · 无失败</li><li class="warn">杂志背景：GO-OUT-2026.03 清单已写 3 小时仍未入库</li><li>模型调用失败 1 次（429），重试成功</li></ul></div>
  <div class="panel"><h3>值得主编看一眼</h3><ul class="alerts"><li>不推荐档里热度是账号常态 3 倍以上的：2 条</li><li>Van 链接：1 条已进推荐档并优先深核</li><li>与 03 否决同事实被硬性排除的：1 条（可捞回）</li><li>待补录账号：4 个（来自本期候选与 Van 链接）</li></ul></div>
 </div></section><section class="screen" id="s-board" hidden><div class="shead"><div><h2>判断台账</h2><p class="note">核心页。窗口内每条图文贴文都判，按档分组，不推荐照样列出、随时捞回；没有综合分和权重；展开行看逐维依据、三句话、热度与标签、缺口、对照材料五类。</p></div><span class="crumb">r48 · 任务驱动 · 窗口 09-17 → 09-18（UTC）</span></div>
 <div class="toolbar">
@@ -372,20 +398,86 @@ table.rub th { width:6em; white-space:normal; }
 <tr><td><b>FUTURE FOX｜炉顶附件 10 月下旬新型</b><span class="sub">@futurefox</span></td><td>缺官方页与价格</td><td>r47</td><td>3</td><td>r48：仍缺价格</td><td><button>补证后重判</button><button>关闭</button></td></tr>
 <tr><td><b>New Balance｜Flying 77 与石</b><span class="sub">@newbalance</span></td><td>图不足（只有 1 张海报）</td><td>r47</td><td>3</td><td>r48：无新图</td><td><button>补证后重判</button><button>关闭</button></td></tr>
 <tr><td><b>示意｜未识别的图</b><span class="sub">下载失败</span></td><td>未读到实图，不算看过</td><td>r48</td><td>7</td><td>—</td><td><button>重试下载</button></td></tr>
-</tbody></table></div><p class="muted">当期截止前未补齐不阻塞已批准选题；到期自动关闭并写明原因，不自动入选。</p></div></section><section class="screen" id="s-kb" hidden><div class="shead"><div><h2>知识库</h2><p class="note">向量 + 全文混合召回、重排；结果按五类参考分组，每条带发布状态、日期与出处；同步与索引状态常驻。</p></div><span class="crumb">r48 · 任务驱动 · 窗口 09-17 → 09-18（UTC）</span></div>
-<div class="toolbar"><input class="search" value="Brompton" placeholder="输入品牌、产品、关键词，或拖一张图"><span class="tag">向量 + 全文（jieba）召回 38 · 重排 8</span><span class="tag">品牌别名：小布 · ブロンプトン</span></div>
+</tbody></table></div><p class="muted">当期截止前未补齐不阻塞已批准选题；到期自动关闭并写明原因，不自动入选。</p></div></section><section class="screen" id="s-kb" hidden><div class="shead"><div><h2>知识库</h2><p class="note">向量 + 全文混合召回；范围切换「判断参考库（四类）/ 杂志背景」，默认参考库；文字搜与以图搜两入口；参考库结果按类分组，杂志结果带缩略图与刊期页码；品牌页分「CSW 历史覆盖」与「杂志里出现过」两节；同步与回填状态常驻。</p></div><span class="crumb">r48 · 任务驱动 · 窗口 09-17 → 09-18（UTC）</span></div>
+<div class="cards">
+ <div class="card"><span class="k">参考库条目（四类）</span><b>22,140</b><span class="s">判断只看这四类</span></div>
+ <div class="card"><span class="k">待算向量</span><b>0</b><span class="s">只算参考库四类</span></div>
+ <div class="card"><span class="k">品牌</span><b>918</b><span class="s">别名 2,304</span></div>
+ <div class="card"><span class="k">杂志背景</span><b>5 本 · 2,960 条</b><span class="s">融合向量 1,204 / 2,710 · 纯图 0 / 2,488<br>预计约 3 小时算完（按 0.6 秒 / 图）· <span class="tag warn">正式轮期间暂停</span></span></div>
+</div>
+<div class="toolbar"><div class="filters"><span class="seg"><span class="on">文字搜</span><span>以图搜</span></span> <span class="seg"><span>判断参考库（四类）</span><span class="on">杂志背景</span></span></div><div class="right"><input class="search" value="snow peak" placeholder="品牌、产品、关键词"><select><option>全部杂志</option><option>GO OUT 2016.08</option></select><button class="primary">搜</button></div></div>
+<p class="muted" style="margin:-6px 0 0">范围默认「判断参考库」。切到「杂志背景」只搜杂志：全文 ∪ 向量，不重排；杂志是背景参照，不进判断。</p>
 <div class="grid2">
-<div class="panel"><h3>检索结果 · 按五类分组</h3>
-<h4>正式已发布 · 2</h4>
-<div class="ref"><b>and wander × Brompton：骑小布，有了一套官方穿法 · vol.248</b><span class="sub">2026-09-02 · <span class="tag ok">正式已发布</span> · 拆条 5 · 本条：联名骑行服与折叠车</span></div>
-<div class="ref"><b>Carhartt WIP × OMNIUM：把工装骑上街 · vol.260</b><span class="sub">2026-09-18 · <span class="tag ok">正式已发布</span> · 货运自行车联名</span></div>
-<h4>范例 · 1</h4><div class="ref"><b>vol.248 条目 1 · and wander × Brompton</b><span class="sub">选题对象：联名骑行装与折叠车 · 切口：通勤与山野切换 · 六维度全部成立</span></div>
-<h4>生成过文章的贴文 · 0</h4><p class="muted">1,911 条里无 Brompton</p>
-<h4>03 决定 · 0</h4><p class="muted">无同品牌决定</p>
-<h4>上一轮台账 · 1</h4><p class="muted">r47：ROBIN 门店 Brompton 陈列 · 备选</p>
-<h3>品牌页 · Brompton</h3><p class="muted">近 30 天：1 篇 · 近 90 天：1 篇 · 角度：联名骑行装、通勤与户外切换</p></div>
-<div class="panel"><h3>同步与索引</h3><table class="plain"><tr><td>刊发记录</td><td>同步到 2026-09-20 · 正式已发布 261 篇 · 拆条 1,412</td></tr><tr><td>生成过文章的贴文</td><td>1,911 条 · 9,373 图 · 09-21 01:20 同步</td></tr><tr><td>范例</td><td>10 篇 · 41 条 · 225 图 · 拆解与图片说明完成</td></tr><tr><td>03 决定</td><td>37 条（含否决 21）· 实时</td></tr><tr><td>LanceDB 索引</td><td>向量 22,140 · 176 MB · 全文 jieba</td></tr><tr><td>向量服务</td><td class="ok">Qwen3-VL · 健康 · 队列 0</td></tr><tr><td>缺口</td><td>群发类 3 篇公开页抓取失败 · 已列清单</td></tr></table>
-<h3>十篇范例</h3><table class="plain"><tr><td>09-18</td><td>Carhartt WIP × OMNIUM：把工装骑上街 vol.260</td><td><span class="tag ok">5 条 · 25 图</span></td></tr><tr><td>09-16</td><td>BRUNT：用装备，唱情歌 专题 Vol.12</td><td><span class="tag ok">4 章 · 16 图</span></td></tr><tr><td>09-11</td><td>Apple Ultra 4：够不够让户外人换表？vol.255</td><td><span class="tag ok">5 条 · 18 图</span></td></tr><tr><td>09-03</td><td>1983年，数字游民OG把办公室装上单车（贴图文）</td><td><span class="tag ok">1 条 · 22 图</span></td></tr><tr><td colspan="3" class="muted">…共 10 篇、41 条、225 图；待核推断 65 条单独标出</td></tr></table></div>
+<div class="panel"><h3>杂志背景 · 「snow peak」· 3 条（示意排序）</h3><div class="mag"><img loading="lazy" src="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/51/51789907714e3dbe79de02365fc498ec9cdec20ac15bdb0acf0346d308e6a987.jpg" alt="snow peak × Grizzly Hard Rock Cooler">
+<div><span class="meta">GO OUT 2016.08 P.19 · GO OUT Choice <span class="tag">全文</span><span class="tag">向量</span></span>
+<b>snow peak × Grizzly Hard Rock Cooler</b>
+<span class="price">¥77,760（含税）</span>
+<details><summary>描述与译文</summary>大型棕灰色 snow peak × Grizzly 硬壳冷藏箱，配有红色锁扣，并展示品牌压印、刻度和排水孔细节。<br>### snow peak「Hard Rock Cooler」75QT
+
+由 snow peak 与 Grizzly 合作推出的硬壳冷藏箱，具备优秀的抗冲击性与保冷能力。系列提供 20、40、75QT 三种尺寸，图中为 75QT。盖子正面和背面分别压印 snow peak 与 Grizzly 品牌名，正面带量尺刻度，侧面下部设排水孔。
+
+**¥77,760（含税）**</details>
+<span class="meta"><a href="#" style="color:var(--accent)">条目详情</a> · <a href="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/51/51789907714e3dbe79de02365fc498ec9cdec20ac15bdb0acf0346d308e6a987.jpg" style="color:var(--accent)">裁图</a> · <a href="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/ce/ce650aaa1f845c84484b8e3cdff6d5168a4b0eaade93fac21baa4d3f42bfecea.jpg" style="color:var(--accent)">整页</a></span></div></div><div class="mag"><img loading="lazy" src="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/38/38c6b80fce61bcba12571647743b1f4c33801b1d602b9478186d4c9ccfe36547.jpg" alt="snow peak Trek Titanium Bowl">
+<div><span class="meta">GO OUT 2016.08 P.43 · PART 1 价格亲民的超值好物 <span class="tag">全文</span></span>
+<b>snow peak Trek Titanium Bowl</b>
+<span class="price">¥1,512（含税）</span> <span class="meta">另 1 件商品</span>
+<details><summary>描述与译文</summary>snow peak 钛制碗与圆形餐盘。<br>### snow peak｜Trek Titanium Bowl / Plate
+超轻钛制碗和餐盘可堆叠收纳，轻便、易清洁，也能用于辅助烹饪。
+
+- Trek Titanium Bowl：¥1,512（含税）
+- Plate：¥1,512（含税）</details>
+<span class="meta"><a href="#" style="color:var(--accent)">条目详情</a> · <a href="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/38/38c6b80fce61bcba12571647743b1f4c33801b1d602b9478186d4c9ccfe36547.jpg" style="color:var(--accent)">裁图</a> · <a href="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/ea/eae439fd0ee595ccff6a6dd37d7d3d19533b9fcce98d28329a339c699d83cf39.jpg" style="color:var(--accent)">整页</a></span></div></div><div class="mag"><img loading="lazy" src="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/a5/a56c19901083efed6e627685918c02b9e4b4fc9028f57bd67e62b97a3ba30d3f.jpg" alt="Wanderlust Equipment Picogrill 760">
+<div><span class="meta">GO OUT 2016.08 P.72 · THE CAMP STYLE 2016 春夏露营风格 <span class="tag">向量</span></span>
+<b>Wanderlust Equipment Picogrill 760</b>
+<span class="price"></span> <span class="meta">另 8 件商品</span>
+<details><summary>描述与译文</summary>六张细节照片展示焚火台、贴纸装饰的收纳箱、行军床与织物、定制椅、皮手套和木柄餐具。<br>1. 最喜欢的焚火台是 Picogrill。
+2. Snow Peak Shelf Container 上贴有喜爱品牌的贴纸。
+3. Byer of Maine 行军床搭配 Mountain Research 靠垫与 Horse Blanket Research 毛毯。
+4. Kermit Chair 换上当年 Mountain Research 的定制椅布。
+5. Caiman 焊接用皮手套用于焚火作业；Hultafors 砍刀是短柄型号，坐着也能劈柴。
+6. 木柄折叠刀叉</details>
+<span class="meta"><a href="#" style="color:var(--accent)">条目详情</a> · <a href="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/a5/a56c19901083efed6e627685918c02b9e4b4fc9028f57bd67e62b97a3ba30d3f.jpg" style="color:var(--accent)">裁图</a> · <a href="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/58/58b5b226dc5de5009e8ec5250ceb8655b0092f985b2e5bf0713090e00e036bcb.jpg" style="color:var(--accent)">整页</a></span></div></div>
+<p class="muted">同一本杂志可以出多条；每条带刊名期号页码、品牌商品价格，描述与译文折叠；缩略图走 OSS 公开地址、懒加载。</p></div>
+<div class="panel"><h3>以图搜图 · 三态</h3><div class="states">
+<div class="state"><h4>上传前</h4><div class="drop"><b>拖一张图进来</b>或粘贴 · 或 <button>选文件</button><br>jpg / png / webp，≤20MB；缩到 768 宽再算</div><p class="muted">只有主编那一档能用：一次占一块 GPU 约一秒</p></div>
+<div class="state"><h4>计算中</h4><div class="qimg"><img src="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/51/51789907714e3dbe79de02365fc498ec9cdec20ac15bdb0acf0346d308e6a987.jpg" alt=""><div><b style="font-size:12.5px">ig_cooler.jpg · 1.8 MB</b><div class="bar"><i style="width:60%"></i></div><span class="muted" style="font-size:11.5px">算向量中…（正式轮在跑时排队）</span></div></div></div>
+<div class="state"><h4>出结果</h4><p class="muted" style="margin:0 0 6px;font-size:12px">算向量 0.9 秒 · 共 1.1 秒 · 回 4 条</p><div class="igrid"><figure><img loading="lazy" src="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/51/51789907714e3dbe79de02365fc498ec9cdec20ac15bdb0acf0346d308e6a987.jpg" alt=""><figcaption><b>snow peak × Grizzly</b><br>GO OUT 2016.08 P.19 · 0.97</figcaption></figure><figure><img loading="lazy" src="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/0a/0a0fb37cac0531989df3e3504d4a5ee1a9c845d988cb12ba8c0229b0d17ed645.jpg" alt=""><figcaption><b>Stussy × Coleman</b><br>GO OUT 2016.08 P.19 · 0.83</figcaption></figure><figure><img loading="lazy" src="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/0a/0ad3e161e4415234b90475aaf71b89b534afc7555bcca6f29be7de7faff3c156.jpg" alt=""><figcaption><b>PELICAN</b><br>GO OUT 2016.08 P.46 · 0.79</figcaption></figure><figure><img loading="lazy" src="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/75/750ff22500fe106d5d3e07ee57be4d47add4841a1cb017b6801fcf0053e784da.jpg" alt=""><figcaption><b>Coleman</b><br>GO OUT 2016.08 P.75 · 0.74</figcaption></figure></div></div>
+</div><p class="muted">命中经 <code>kb_doc_images</code> 回到条目；同一张图出现在几期就给几条；纯图向量还没算完的书暂时搜不到，统计卡上写着进度。</p></div>
+</div>
+<div class="grid2">
+<div class="panel"><h3>品牌页 · THE NORTH FACE PURPLE LABEL</h3>
+<h4>CSW 历史覆盖 · 3</h4><div class="ref"><b>TNF 紫标 2026 秋冬（示意）</b><span class="sub">2026-09-05 · <span class="tag ok">正式已发布</span></span></div><p class="muted">近 30 天 1 篇 · 近 90 天 3 篇（示意）</p>
+<h4>杂志里出现过 · 按刊期新的在前</h4><table class="plain"><tr><th>刊期</th><th>页</th><th>商品</th><th>价格</th><th></th></tr><tr><td>GO OUT 2016.08</td><td>P.15</td><td>MHAK as MASAHIRO AKUTAGAWA Collaboration Backpack</td><td class="num">¥25,920（含税）</td><td><img loading="lazy" src="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/08/08d06756bfdcde3460fd5e559286c90a3e6f7e4a16faa3f7da92fdbb7b7cdea2.jpg" alt="" width="40" height="40" style="object-fit:cover;border-radius:4px"></td></tr><tr><td>GO OUT 2016.08</td><td>P.15</td><td>MHAK as MASAHIRO AKUTAGAWA Collaboration Jacket</td><td class="num">¥34,560（含税）</td><td><img loading="lazy" src="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/03/039d9eecd1d8923af336388cf2467fadcae0a4ad7b06648a00fc087cf2c19291.jpg" alt="" width="40" height="40" style="object-fit:cover;border-radius:4px"></td></tr><tr><td>GO OUT 2016.08</td><td>P.15</td><td>MHAK as MASAHIRO AKUTAGAWA Collaboration Short Pants</td><td class="num">¥19,440（含税）</td><td><img loading="lazy" src="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/25/25e47c230d2209d726b98e3fe97971feab0004b3e06537aacf9a099df18ca269.jpg" alt="" width="40" height="40" style="object-fit:cover;border-radius:4px"></td></tr><tr><td>GO OUT 2016.08</td><td>P.15</td><td>MHAK as MASAHIRO AKUTAGAWA Collaboration Bucket Hat</td><td class="num">¥9,504（含税）</td><td><img loading="lazy" src="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/e7/e7b866fbae1b918ab53272047974840a0497f43d6d925bbc08d3eec1c13fee09.jpg" alt="" width="40" height="40" style="object-fit:cover;border-radius:4px"></td></tr></table>
+<p class="muted">两节分开、不混排：杂志不是编辑部的口味证据。品牌按品牌键比（大小写、空格、标点不计）；「THE NORTH FACE」与「THE NORTH FACE PURPLE LABEL」是两个品牌。</p></div>
+<div class="panel"><h3>同步与索引</h3><table class="plain">
+<tr><td>刊发记录</td><td>同步到 2026-10-08 · 正式已发布 291 篇</td></tr>
+<tr><td>生成过文章的贴文</td><td>2,140 条 · 10-09 01:20 同步</td></tr>
+<tr><td>范例 · 03 决定</td><td>10 篇 41 条 · 决定 52 条</td></tr>
+<tr><td>杂志同步</td><td>10-09 02:30 · 5 本 · 最近入库 GO-OUT-2026.02（873 张图 → 612 条）</td></tr>
+<tr><td>杂志回填</td><td class="warn">融合剩 1,506 · 纯图剩 2,488 · 正式轮 05:25–06:30 暂停</td></tr>
+<tr><td>坏图</td><td>2 张读不出来（本进程跳过，重启后重试）</td></tr>
+<tr><td>LanceDB</td><td>docs 23,344 · images 9,120</td></tr>
+</table>
+<h4>总览告警措辞</h4><ul class="alerts">
+<li>杂志背景：GO-OUT-2026.03 清单已写 3 小时仍未入库（看刊译台 ingested.json 与工作台日志）</li>
+<li class="warn">杂志回填：向量服务连续失败，已暂停 10 分钟（不影响判断）</li>
+<li>杂志回填进度只作提示，不进告警：正常的「还剩多少」不是要人处理的事</li></ul></div>
+</div></section><section class="screen" id="s-magazine" hidden><div class="shead"><div><h2>杂志条目</h2><p class="note">杂志条目详情（新页）：裁图大图、整页图上框出位置、商品表、描述与译文、出处，复制 OSS 地址，以这张图再搜。杂志数据为 GO OUT 2016.08 真实清单。</p></div><span class="crumb">r48 · 任务驱动 · 窗口 09-17 → 09-18（UTC）</span></div>
+<div class="toolbar"><div class="filters"><button class="link">← 返回检索</button><span class="tag">GO OUT 2016.08 P.19</span><span class="tag">GO OUT Choice</span><span class="tag">product</span><span class="tag ok">融合向量已算</span><span class="tag ok">纯图向量已算</span></div>
+<div class="right"><button>复制裁图地址</button><button>复制整页地址</button><button class="primary">以这张图搜图</button></div></div>
+<div class="detail">
+<div class="col"><h3>snow peak × Grizzly · Hard Rock Cooler</h3><img class="crop" src="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/51/51789907714e3dbe79de02365fc498ec9cdec20ac15bdb0acf0346d308e6a987.jpg" alt="裁图">
+<h3>商品</h3><table class="plain"><tr><th>品牌</th><th>商品</th><th>价格</th><th>规格</th></tr><tr><td>snow peak × Grizzly</td><td>Hard Rock Cooler</td><td class="num">¥77,760（含税）</td><td>图示为75QT；另有20QT、40QT；盖面带刻度，箱盖两面分别压印snow peak与Grizzly标志，侧面下部设排水孔。</td></tr></table></div>
+<div class="col"><h3>整页 · 框出这张图的位置</h3><div class="pagebox"><img src="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/ce/ce650aaa1f845c84484b8e3cdff6d5168a4b0eaade93fac21baa4d3f42bfecea.jpg" alt="整页"><i style="left:5.99%;top:24.35%;width:57.07%;height:29.64%"></i></div>
+<p class="muted">框按清单的 bbox（PDF 点）与 page_size 换算成百分比，整页图缩放后照样对得上。</p></div>
+<div class="col"><h3>描述</h3><p class="md">大型棕灰色 snow peak × Grizzly 硬壳冷藏箱，配有红色锁扣，并展示品牌压印、刻度和排水孔细节。</p>
+<h3>译文</h3><p class="md"><b>snow peak「Hard Rock Cooler」75QT</b>
+
+由 snow peak 与 Grizzly 合作推出的硬壳冷藏箱，具备优秀的抗冲击性与保冷能力。系列提供 20、40、75QT 三种尺寸，图中为 75QT。盖子正面和背面分别压印 snow peak 与 Grizzly 品牌名，正面带量尺刻度，侧面下部设排水孔。
+
+<b>¥77,760（含税）</b></p>
+<h3>出处</h3><dl class="kv"><dt>刊物</dt><dd>GO OUT 2016.08（2016-08-01）</dd><dt>页码</dt><dd>P.19 · PDF 第 19 页</dd><dt>书</dt><dd class="mono">goout-16-08日本</dd><dt>裁图</dt><dd><a href="https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/51/51789907714e3dbe79de02365fc498ec9cdec20ac15bdb0acf0346d308e6a987.jpg" style="color:var(--accent)">https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/51/51789907714e3dbe79de02365fc498ec9cdec20ac15bdb0acf0346d308e6a987.jpg</a></dd></dl>
+<p class="muted">只读。要删整本走 <code>kb purge --book</code>（运维）；刊译台重新解析后按本对账，旧条目自动清掉。</p></div>
 </div></section><section class="screen" id="s-memory" hidden><div class="shead"><div><h2>选题记忆</h2><p class="note">每条准则标明身份（具体案例 / 模型推断 / 本人确认）与原话；Van 校准模式逐条对不对；回收覆盖清单如实列缺口。</p></div><span class="crumb">r48 · 任务驱动 · 窗口 09-17 → 09-18（UTC）</span></div>
 <div class="toolbar"><div class="filters"><span class="tag">身份：全部</span><span class="tag">线：选题偏好</span><span class="tag">状态：生效</span></div><div class="right"><button class="primary">进入 Van 校准模式</button></div></div>
 <div class="panel"><h3>选题准则卡</h3><div class="table-wrap"><table>

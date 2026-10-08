@@ -3,10 +3,12 @@
 用法：python build_mockup.py events_scored.json events_meta.json out.html
 9/21 按流程确认稿第 14 版重做：流程带、结论档 + 逐维判定（不打分、无权重）、热度与标签、对照材料五类、采集方案与手动开启。
 六维度判定由早期打分实验的 0–10 分换算（≥7 成立、4–6 不明、≤3 不成立），属示意；贴文、热度、标签、范例命中、Van 决定为真实数据。"""
-import json, sys, html
+import json, sys, html, os
+import mockup_magazine as MZ
 src, meta_src, out = sys.argv[1], sys.argv[2], sys.argv[3]
 EV = [e for e in json.load(open(src, encoding="utf-8")) if e.get("scores")]
 META = json.load(open(meta_src, encoding="utf-8"))
+MAG = MZ.load(os.path.join(os.path.dirname(os.path.abspath(meta_src)), "magazine_sample.json"))
 DIMS = [("change", "具体变化"), ("use", "使用关联"), ("gain", "信息增量"), ("compare", "比较参照"), ("explain", "值得解释"), ("csw", "调性适配")]
 E = lambda s: html.escape(str(s))
 
@@ -159,7 +161,7 @@ overview = '''
  <div class="card"><span class="k">已判断</span><b>100%</b><span class="s">160 / 160 事件 · 每条都判</span></div>
 </div>
 <div class="grid2">
- <div class="panel"><h3>告警</h3><ul class="alerts"><li class="warn">小红书采集器：opencli 超时 2 次，已重试成功（非必扫）</li><li class="warn">对照材料缺：0 条 · 知识库同步到 09-20，生成过文章的贴文同步到 09-21 01:20</li><li>向量服务：入库 1,204 个向量 · 8 分 40 秒 · 无失败</li><li>模型调用失败 1 次（429），重试成功</li></ul></div>
+ <div class="panel"><h3>告警</h3><ul class="alerts"><li class="warn">小红书采集器：opencli 超时 2 次，已重试成功（非必扫）</li><li class="warn">对照材料缺：0 条 · 知识库同步到 09-20，生成过文章的贴文同步到 09-21 01:20</li><li>向量服务：入库 1,204 个向量 · 8 分 40 秒 · 无失败</li><li class="warn">杂志背景：GO-OUT-2026.03 清单已写 3 小时仍未入库</li><li>模型调用失败 1 次（429），重试成功</li></ul></div>
  <div class="panel"><h3>值得主编看一眼</h3><ul class="alerts"><li>不推荐档里热度是账号常态 3 倍以上的：2 条</li><li>Van 链接：1 条已进推荐档并优先深核</li><li>与 03 否决同事实被硬性排除的：1 条（可捞回）</li><li>待补录账号：4 个（来自本期候选与 Van 链接）</li></ul></div>
 </div>'''
 
@@ -262,7 +264,7 @@ ops = '''
 <h3>设置</h3><table class="plain"><tr><td>窗口判定</td><td>首次入库时间在上次运行之后 · 发布时间 3 天内</td></tr><tr><td>并行</td><td>识别 3 · 判断 3 · 深核 2</td></tr><tr><td>首批深核</td><td>前 8 条 · 10 分钟时间盒</td></tr><tr><td>待核结转期限</td><td>7 期</td></tr><tr><td>准则版本</td><td>v0（改动写审计）</td></tr><tr><td>回放</td><td><button>选历史窗口重跑</button> <span class="muted">可指定知识库版本</span></td></tr></table></div>
 </div>'''
 
-NAV = [("overview", "今日总览"), ("board", "判断台账"), ("van", "Van 模式"), ("detail", "事件详情"), ("harvest", "采集与覆盖"), ("pending", "待核结转"), ("kb", "知识库"), ("memory", "选题记忆"), ("rubric", "判断框架与锚点"), ("metrics", "指标"), ("ops", "运行与设置")]
+NAV = [("overview", "今日总览"), ("board", "判断台账"), ("van", "Van 模式"), ("detail", "事件详情"), ("harvest", "采集与覆盖"), ("pending", "待核结转"), ("kb", "知识库"), ("magazine", "杂志条目"), ("memory", "选题记忆"), ("rubric", "判断框架与锚点"), ("metrics", "指标"), ("ops", "运行与设置")]
 NOTES = {
  "overview": "主编开工后第一眼看的页。顶部流程带十格，每格状态、计数、耗时，点开看产物与重跑；四个数字都由代码计数；告警只列需要人处理的；可手动开启一轮。",
  "board": "核心页。窗口内每条图文贴文都判，按档分组，不推荐照样列出、随时捞回；没有综合分和权重；展开行看逐维依据、三句话、热度与标签、缺口、对照材料五类。",
@@ -270,13 +272,14 @@ NOTES = {
  "detail": "三栏：左原料（图集带描述与用途、贴文、热度、标签、披露时间），中判断（结论档、逐维判定、三句话、缺口），右对照材料五类、深核与审计。",
  "harvest": "回答「跑了哪些采集器、取到几条、识别了几张」。只图文与过滤数单列；数量由代码计数；Van 补充的来源标为普通来源；待补录账号带依据。",
  "pending": "证据或图片不足的不永久淘汰：写明缺口、结转期数、上次重判结果；到期关闭要写原因。",
- "kb": "向量 + 全文混合召回、重排；结果按五类参考分组，每条带发布状态、日期与出处；同步与索引状态常驻。",
+ "kb": "向量 + 全文混合召回；范围切换「判断参考库（四类）/ 杂志背景」，默认参考库；文字搜与以图搜两入口；参考库结果按类分组，杂志结果带缩略图与刊期页码；品牌页分「CSW 历史覆盖」与「杂志里出现过」两节；同步与回填状态常驻。",
+ "magazine": "杂志条目详情（新页）：裁图大图、整页图上框出位置、商品表、描述与译文、出处，复制 OSS 地址，以这张图再搜。杂志数据为 GO OUT 2016.08 真实清单。",
  "memory": "每条准则标明身份（具体案例 / 模型推断 / 本人确认）与原话；Van 校准模式逐条对不对；回收覆盖清单如实列缺口。",
  "rubric": "维度定义直接取自 Van 的框架；每级锚点引用范例条目与被否案例；准则带版本；用她的决定回测落在哪一档。没有权重。",
  "metrics": "先看 Van 的三项目标指标，再看技术指标；她提供链接后的处理结果单独统计。",
  "ops": "开发用：服务与依赖状态（LanceDB、向量服务、Codex、csw 后端）、模型调用与费用、采集方案、手动开启、设置与回放。",
 }
-SCREENS = {"overview": overview, "board": board, "van": f'<div class="vgrid">{van_cards}</div>', "detail": detail, "harvest": harvest, "pending": pending, "kb": kb, "memory": memory, "rubric": rubric, "metrics": metrics, "ops": ops}
+SCREENS = {"overview": overview, "board": board, "van": f'<div class="vgrid">{van_cards}</div>', "detail": detail, "harvest": harvest, "pending": pending, "kb": (MZ.kb_screen(MAG) if MAG else kb), "magazine": (MZ.detail_screen(MAG) if MAG else "<p>缺 magazine_sample.json</p>"), "memory": memory, "rubric": rubric, "metrics": metrics, "ops": ops}
 TITLES = dict(NAV)
 sections = "".join(f'<section class="screen" id="s-{k}" {"" if k=="overview" else "hidden"}><div class="shead"><div><h2>{TITLES[k]}</h2><p class="note">{E(NOTES[k])}</p></div><span class="crumb">r48 · 任务驱动 · 窗口 09-17 → 09-18（UTC）</span></div>{SCREENS[k]}</section>' for k in SCREENS)
 navs = "".join(f'<a href="#" data-s="{k}" class="{"on" if k=="overview" else ""}">{n}</a>' for k, n in NAV)
@@ -356,6 +359,7 @@ table.dims th {{ background:none; width:6em; font-weight:600; color:var(--ink); 
 table.audit td {{ font-size:12px; }} .actions {{ display:flex; gap:6px; margin-top:12px; }}
 table.rub th {{ width:6em; white-space:normal; }}
 .chart svg {{ display:block; }}
+{MZ.CSS}
 @media (max-width:900px) {{ .frame {{ grid-template-columns:1fr; }} aside {{ border-right:0; border-bottom:1px solid var(--rule); }} nav.side {{ display:flex; flex-wrap:wrap; }} .role {{ display:none; }} .crumb {{ white-space:normal; }} }}
 </style>
 <div class="frame">

@@ -1,0 +1,651 @@
+{
+ "tnf": [
+  {
+   "image_id": "01M1S5KB17NRZPB59GVRSPSPWT:14:0",
+   "pdf_index": 14,
+   "printed_page": 15,
+   "section_title_zh": "GO OUT Choice",
+   "category": "product",
+   "description": "大幅展示米色与深棕色部落风几何印花的顶装式双肩背包。",
+   "md_zh": "**THE NORTH FACE PURPLE LABEL × MHAK as MASAHIRO AKUTAGAWA 双肩背包**。中央拉链方便快速取物，整体印花从俯视角度可呈现人字纹意象。",
+   "image_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/08/08d06756bfdcde3460fd5e559286c90a3e6f7e4a16faa3f7da92fdbb7b7cdea2.jpg",
+   "page_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/3c/3ce1e3b7f6b08f5c3f6ead3bb65067d8fb3547652e1f636b116995fe70f136fa.jpg",
+   "bbox_pt": [
+    12.0,
+    479.0,
+    1172.0,
+    1953.0
+   ],
+   "page_size": [
+    1535,
+    1967
+   ],
+   "products": [
+    {
+     "brand": "THE NORTH FACE PURPLE LABEL",
+     "name": "MHAK as MASAHIRO AKUTAGAWA Collaboration Backpack",
+     "price_jpy": 25920,
+     "specs": "带雨盖的顶部装载式结构，设中央拉链，并在人字纹织带等细节处呼应系列主题。",
+     "tax_included": true
+    }
+   ],
+   "issue": "2016.08",
+   "magazine": "GO OUT",
+   "issue_date": "2016-08-01",
+   "book_key": "goout-16-08日本"
+  },
+  {
+   "image_id": "01M1S5KB17NRZPB59GVRSPSPWT:14:1",
+   "pdf_index": 14,
+   "printed_page": 15,
+   "section_title_zh": "GO OUT Choice",
+   "category": "product",
+   "description": "带立领和隐藏式帽兜的满版几何印花轻量夹克。",
+   "md_zh": "**THE NORTH FACE PURPLE LABEL × MHAK as MASAHIRO AKUTAGAWA Jacket**。兼具防泼水性能与轻盈干爽的穿着质感。",
+   "image_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/03/039d9eecd1d8923af336388cf2467fadcae0a4ad7b06648a00fc087cf2c19291.jpg",
+   "page_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/3c/3ce1e3b7f6b08f5c3f6ead3bb65067d8fb3547652e1f636b116995fe70f136fa.jpg",
+   "bbox_pt": [
+    1094.0,
+    505.0,
+    1479.0,
+    818.0
+   ],
+   "page_size": [
+    1535,
+    1967
+   ],
+   "products": [
+    {
+     "brand": "THE NORTH FACE PURPLE LABEL",
+     "name": "MHAK as MASAHIRO AKUTAGAWA Collaboration Jacket",
+     "price_jpy": 34560,
+     "specs": "轻量干爽面料经防泼水处理，帽兜可收纳于衣领内。",
+     "tax_included": true
+    }
+   ],
+   "issue": "2016.08",
+   "magazine": "GO OUT",
+   "issue_date": "2016-08-01",
+   "book_key": "goout-16-08日本"
+  },
+  {
+   "image_id": "01M1S5KB17NRZPB59GVRSPSPWT:14:2",
+   "pdf_index": 14,
+   "printed_page": 15,
+   "section_title_zh": "GO OUT Choice",
+   "category": "product",
+   "description": "采用同系列几何印花、配织带腰带的宽松短裤。",
+   "md_zh": "**THE NORTH FACE PURPLE LABEL × MHAK as MASAHIRO AKUTAGAWA Short Pants**。宽松臀围与收窄裤脚兼顾活动性和利落轮廓。",
+   "image_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/25/25e47c230d2209d726b98e3fe97971feab0004b3e06537aacf9a099df18ca269.jpg",
+   "page_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/3c/3ce1e3b7f6b08f5c3f6ead3bb65067d8fb3547652e1f636b116995fe70f136fa.jpg",
+   "bbox_pt": [
+    1126.0,
+    924.0,
+    1430.0,
+    1197.0
+   ],
+   "page_size": [
+    1535,
+    1967
+   ],
+   "products": [
+    {
+     "brand": "THE NORTH FACE PURPLE LABEL",
+     "name": "MHAK as MASAHIRO AKUTAGAWA Collaboration Short Pants",
+     "price_jpy": 19440,
+     "specs": "防泼水高密度聚酯塔夫绸材质，配织带腰带与裆下三角裁片，臀部宽松、裤脚渐窄。",
+     "tax_included": true
+    }
+   ],
+   "issue": "2016.08",
+   "magazine": "GO OUT",
+   "issue_date": "2016-08-01",
+   "book_key": "goout-16-08日本"
+  },
+  {
+   "image_id": "01M1S5KB17NRZPB59GVRSPSPWT:14:3",
+   "pdf_index": 14,
+   "printed_page": 15,
+   "section_title_zh": "GO OUT Choice",
+   "category": "product",
+   "description": "可折叠的满版几何印花渔夫帽。",
+   "md_zh": "**THE NORTH FACE PURPLE LABEL × MHAK as MASAHIRO AKUTAGAWA Bucket Hat**。简洁帽型兼具便携收纳与通风功能。",
+   "image_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/e7/e7b866fbae1b918ab53272047974840a0497f43d6d925bbc08d3eec1c13fee09.jpg",
+   "page_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/3c/3ce1e3b7f6b08f5c3f6ead3bb65067d8fb3547652e1f636b116995fe70f136fa.jpg",
+   "bbox_pt": [
+    1151.0,
+    1311.0,
+    1406.0,
+    1526.0
+   ],
+   "page_size": [
+    1535,
+    1967
+   ],
+   "products": [
+    {
+     "brand": "THE NORTH FACE PURPLE LABEL",
+     "name": "MHAK as MASAHIRO AKUTAGAWA Collaboration Bucket Hat",
+     "price_jpy": 9504,
+     "specs": "简洁渔夫帽造型，可折叠收纳，并带有通风设计。",
+     "tax_included": true
+    }
+   ],
+   "issue": "2016.08",
+   "magazine": "GO OUT",
+   "issue_date": "2016-08-01",
+   "book_key": "goout-16-08日本"
+  },
+  {
+   "image_id": "01M1S5KB17NRZPB59GVRSPSPWT:37:6",
+   "pdf_index": 37,
+   "printed_page": 38,
+   "section_title_zh": "PART 1 价格亲民的超值好物",
+   "category": "product",
+   "description": "一条深蓝色 THE NORTH FACE 轻薄速干毛巾。",
+   "md_zh": "### THE NORTH FACE — ALPHADRY FRESH TOWEL L\n比普通毛圈毛巾更薄；特殊多孔纤维带来优秀的吸水性和速干性。\n\n**¥3,024（含税）**",
+   "image_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/88/88cae1e260830feff253f672d6c38b69b1fef9f64bc76fcb40d179681841f873.jpg",
+   "page_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/11/11fcd9e71869dfa2154dab04fba497482b402ec85580c13d8a0dc009e63bb001.jpg",
+   "bbox_pt": [
+    692.0,
+    686.0,
+    1014.0,
+    1119.0
+   ],
+   "page_size": [
+    1535,
+    1967
+   ],
+   "products": [
+    {
+     "brand": "THE NORTH FACE",
+     "name": "ALPHADRY FRESH TOWEL L",
+     "price_jpy": 3024,
+     "specs": "L号轻薄毛巾，采用多孔特殊纤维，吸水且速干。",
+     "tax_included": true
+    }
+   ],
+   "issue": "2016.08",
+   "magazine": "GO OUT",
+   "issue_date": "2016-08-01",
+   "book_key": "goout-16-08日本"
+  }
+ ],
+ "cool": [
+  {
+   "image_id": "01M1S5KB17NRZPB59GVRSPSPWT:18:0",
+   "pdf_index": 18,
+   "printed_page": 19,
+   "section_title_zh": "GO OUT Choice",
+   "category": "product",
+   "description": "大型棕灰色 snow peak × Grizzly 硬壳冷藏箱，配有红色锁扣，并展示品牌压印、刻度和排水孔细节。",
+   "md_zh": "### snow peak「Hard Rock Cooler」75QT\n\n由 snow peak 与 Grizzly 合作推出的硬壳冷藏箱，具备优秀的抗冲击性与保冷能力。系列提供 20、40、75QT 三种尺寸，图中为 75QT。盖子正面和背面分别压印 snow peak 与 Grizzly 品牌名，正面带量尺刻度，侧面下部设排水孔。\n\n**¥77,760（含税）**",
+   "image_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/51/51789907714e3dbe79de02365fc498ec9cdec20ac15bdb0acf0346d308e6a987.jpg",
+   "page_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/ce/ce650aaa1f845c84484b8e3cdff6d5168a4b0eaade93fac21baa4d3f42bfecea.jpg",
+   "bbox_pt": [
+    92.0,
+    479.0,
+    968.0,
+    1062.0
+   ],
+   "page_size": [
+    1535,
+    1967
+   ],
+   "products": [
+    {
+     "brand": "snow peak × Grizzly",
+     "name": "Hard Rock Cooler",
+     "price_jpy": 77760,
+     "specs": "图示为75QT；另有20QT、40QT；盖面带刻度，箱盖两面分别压印snow peak与Grizzly标志，侧面下部设排水孔。",
+     "tax_included": true
+    }
+   ],
+   "issue": "2016.08",
+   "magazine": "GO OUT",
+   "issue_date": "2016-08-01",
+   "book_key": "goout-16-08日本"
+  },
+  {
+   "image_id": "01M1S5KB17NRZPB59GVRSPSPWT:18:5",
+   "pdf_index": 18,
+   "printed_page": 19,
+   "section_title_zh": "GO OUT Choice",
+   "category": "product",
+   "description": "采用 OD 军事风配色的 Stussy × Coleman 小型手提冷藏箱，正面印有醒目的 Stussy 标志。",
+   "md_zh": "### Stussy「STF Coleman Excursion® 16QT Cooler」\n\n以 OD 配色改造 Coleman 经典款的轻量冷藏箱，容量为 16QT（约 15L），适用于露营、户外休闲及观看体育比赛。Coleman 压印标志下方印有 Stussy 标志，是代表「Summer Trip Fest／STF」系列的产品。\n\n**¥6,264（含税）**",
+   "image_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/0a/0a0fb37cac0531989df3e3504d4a5ee1a9c845d988cb12ba8c0229b0d17ed645.jpg",
+   "page_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/ce/ce650aaa1f845c84484b8e3cdff6d5168a4b0eaade93fac21baa4d3f42bfecea.jpg",
+   "bbox_pt": [
+    612.0,
+    1138.0,
+    1513.0,
+    1937.0
+   ],
+   "page_size": [
+    1535,
+    1967
+   ],
+   "products": [
+    {
+     "brand": "Stussy × Coleman",
+     "name": "STF Coleman Excursion® 16QT Cooler",
+     "price_jpy": 6264,
+     "specs": "16QT（约15L），OD军事风配色，轻量设计；正面带Coleman压印标志与Stussy印花标志。",
+     "tax_included": true
+    }
+   ],
+   "issue": "2016.08",
+   "magazine": "GO OUT",
+   "issue_date": "2016-08-01",
+   "book_key": "goout-16-08日本"
+  },
+  {
+   "image_id": "01M1S5KB17NRZPB59GVRSPSPWT:45:0",
+   "pdf_index": 45,
+   "printed_page": 46,
+   "section_title_zh": "PART 2 价格虽高但物有所值",
+   "category": "product",
+   "description": "白色 PELICAN ELITE COOLER 硬式冷藏箱，配有黑色锁扣与品牌标志。",
+   "md_zh": "**PELICAN ELITE COOLER**\n凭借高气密结构与超厚聚氨酯隔热层，即使盛夏也能实现一周以上的持久保冷。",
+   "image_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/0a/0ad3e161e4415234b90475aaf71b89b534afc7555bcca6f29be7de7faff3c156.jpg",
+   "page_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/95/956a341d0b530c8e99912d5d093d617d011c13af789ddc63ea471eba7abd964e.jpg",
+   "bbox_pt": [
+    151.0,
+    757.0,
+    1392.0,
+    1526.0
+   ],
+   "page_size": [
+    1535,
+    1967
+   ],
+   "products": [
+    {
+     "brand": "PELICAN",
+     "name": "ELITE COOLER",
+     "price_jpy": 65880,
+     "specs": "树脂制硬式冷藏箱，采用高气密结构与超厚聚氨酯隔热材料；在 32℃ 以下环境中约可保冷 1 周至 10 天。",
+     "tax_included": null
+    }
+   ],
+   "issue": "2016.08",
+   "magazine": "GO OUT",
+   "issue_date": "2016-08-01",
+   "book_key": "goout-16-08日本"
+  },
+  {
+   "image_id": "01M1S5KB17NRZPB59GVRSPSPWT:74:2",
+   "pdf_index": 74,
+   "printed_page": 75,
+   "section_title_zh": "THE CAMP STYLE 2016 春夏露营风格",
+   "category": "product",
+   "description": "经过木纹改装的 Coleman 冷藏箱与 CAPTAIN STAG 饮水桶摆放在帐篷外。",
+   "md_zh": "Coleman Steel Belt Cooler 委托熟识的喷漆师傅改为木纹涂装；CAPTAIN STAG 饮水桶也采用相同涂装，使风格保持一致。",
+   "image_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/75/750ff22500fe106d5d3e07ee57be4d47add4841a1cb017b6801fcf0053e784da.jpg",
+   "page_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/6f/6f373cdda7b935f92293928da4560c83b7346e1d9bbf588e734cfb3e344a9573.jpg",
+   "bbox_pt": [
+    92.0,
+    1612.0,
+    419.0,
+    1860.0
+   ],
+   "page_size": [
+    1535,
+    1967
+   ],
+   "products": [
+    {
+     "brand": "Coleman",
+     "name": "Steel Belt Cooler",
+     "price_jpy": null,
+     "specs": "由喷漆师傅定制为木纹外观。",
+     "tax_included": null
+    },
+    {
+     "brand": "CAPTAIN STAG",
+     "name": "Jug",
+     "price_jpy": null,
+     "specs": "采用与冷藏箱相同的木纹涂装。",
+     "tax_included": null
+    }
+   ],
+   "issue": "2016.08",
+   "magazine": "GO OUT",
+   "issue_date": "2016-08-01",
+   "book_key": "goout-16-08日本"
+  },
+  {
+   "image_id": "01M1S5KB17NRZPB59GVRSPSPWT:79:2",
+   "pdf_index": 79,
+   "printed_page": 80,
+   "section_title_zh": "SUMMER PLAY 夏日玩乐",
+   "category": "product",
+   "description": "蓝色圆筒形软式保冷包，配有黑色肩带。",
+   "md_zh": "**ICEMULE｜クラシッククーラー M**  \n吹入包内的空气可形成隔热层，支持肩背携带，冰块最长可保冷24小时。¥9,288（含税）",
+   "image_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/88/88e83f5f1e852288f5febc23cfe2e45d6134c80ed3779d25511a363044750d9c.jpg",
+   "page_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/8d/8d47f581766e0f1a70a5cebc1117fb6c26679ca29bfe18a4462df9432dbd655c.jpg",
+   "bbox_pt": [
+    546.0,
+    721.0,
+    815.0,
+    1160.0
+   ],
+   "page_size": [
+    1535,
+    1967
+   ],
+   "products": [
+    {
+     "brand": "ICEMULE",
+     "name": "クラシッククーラー M",
+     "price_jpy": 9288,
+     "specs": "可充气隔热的肩背式软保冷包，冰块最长保冷24小时。",
+     "tax_included": true
+    }
+   ],
+   "issue": "2016.08",
+   "magazine": "GO OUT",
+   "issue_date": "2016-08-01",
+   "book_key": "goout-16-08日本"
+  }
+ ],
+ "snow": [
+  {
+   "image_id": "01M1S5KB17NRZPB59GVRSPSPWT:18:0",
+   "pdf_index": 18,
+   "printed_page": 19,
+   "section_title_zh": "GO OUT Choice",
+   "category": "product",
+   "description": "大型棕灰色 snow peak × Grizzly 硬壳冷藏箱，配有红色锁扣，并展示品牌压印、刻度和排水孔细节。",
+   "md_zh": "### snow peak「Hard Rock Cooler」75QT\n\n由 snow peak 与 Grizzly 合作推出的硬壳冷藏箱，具备优秀的抗冲击性与保冷能力。系列提供 20、40、75QT 三种尺寸，图中为 75QT。盖子正面和背面分别压印 snow peak 与 Grizzly 品牌名，正面带量尺刻度，侧面下部设排水孔。\n\n**¥77,760（含税）**",
+   "image_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/51/51789907714e3dbe79de02365fc498ec9cdec20ac15bdb0acf0346d308e6a987.jpg",
+   "page_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/ce/ce650aaa1f845c84484b8e3cdff6d5168a4b0eaade93fac21baa4d3f42bfecea.jpg",
+   "bbox_pt": [
+    92.0,
+    479.0,
+    968.0,
+    1062.0
+   ],
+   "page_size": [
+    1535,
+    1967
+   ],
+   "products": [
+    {
+     "brand": "snow peak × Grizzly",
+     "name": "Hard Rock Cooler",
+     "price_jpy": 77760,
+     "specs": "图示为75QT；另有20QT、40QT；盖面带刻度，箱盖两面分别压印snow peak与Grizzly标志，侧面下部设排水孔。",
+     "tax_included": true
+    }
+   ],
+   "issue": "2016.08",
+   "magazine": "GO OUT",
+   "issue_date": "2016-08-01",
+   "book_key": "goout-16-08日本"
+  },
+  {
+   "image_id": "01M1S5KB17NRZPB59GVRSPSPWT:42:8",
+   "pdf_index": 42,
+   "printed_page": 43,
+   "section_title_zh": "PART 1 价格亲民的超值好物",
+   "category": "product",
+   "description": "snow peak 钛制碗与圆形餐盘。",
+   "md_zh": "### snow peak｜Trek Titanium Bowl / Plate\n超轻钛制碗和餐盘可堆叠收纳，轻便、易清洁，也能用于辅助烹饪。\n\n- Trek Titanium Bowl：¥1,512（含税）\n- Plate：¥1,512（含税）",
+   "image_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/38/38c6b80fce61bcba12571647743b1f4c33801b1d602b9478186d4c9ccfe36547.jpg",
+   "page_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/ea/eae439fd0ee595ccff6a6dd37d7d3d19533b9fcce98d28329a339c699d83cf39.jpg",
+   "bbox_pt": [
+    374.0,
+    1668.0,
+    787.0,
+    1965.0
+   ],
+   "page_size": [
+    1535,
+    1967
+   ],
+   "products": [
+    {
+     "brand": "snow peak",
+     "name": "Trek Titanium Bowl",
+     "price_jpy": 1512,
+     "specs": "超轻钛制碗，可与餐盘堆叠收纳，轻便且易于清洁。",
+     "tax_included": true
+    },
+    {
+     "brand": "snow peak",
+     "name": "Plate",
+     "price_jpy": 1512,
+     "specs": "超轻钛制餐盘，可堆叠收纳，并可用于辅助烹饪。",
+     "tax_included": true
+    }
+   ],
+   "issue": "2016.08",
+   "magazine": "GO OUT",
+   "issue_date": "2016-08-01",
+   "book_key": "goout-16-08日本"
+  },
+  {
+   "image_id": "01M1S5KB17NRZPB59GVRSPSPWT:71:1",
+   "pdf_index": 71,
+   "printed_page": 72,
+   "section_title_zh": "THE CAMP STYLE 2016 春夏露营风格",
+   "category": "product",
+   "description": "六张细节照片展示焚火台、贴纸装饰的收纳箱、行军床与织物、定制椅、皮手套和木柄餐具。",
+   "md_zh": "1. 最喜欢的焚火台是 Picogrill。\n2. Snow Peak Shelf Container 上贴有喜爱品牌的贴纸。\n3. Byer of Maine 行军床搭配 Mountain Research 靠垫与 Horse Blanket Research 毛毯。\n4. Kermit Chair 换上当年 Mountain Research 的定制椅布。\n5. Caiman 焊接用皮手套用于焚火作业；Hultafors 砍刀是短柄型号，坐着也能劈柴。\n6. 木柄折叠刀叉等餐具也经过精心挑选，使用后的质感很有韵味。",
+   "image_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/a5/a56c19901083efed6e627685918c02b9e4b4fc9028f57bd67e62b97a3ba30d3f.jpg",
+   "page_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/58/58b5b226dc5de5009e8ec5250ceb8655b0092f985b2e5bf0713090e00e036bcb.jpg",
+   "bbox_pt": [
+    108.0,
+    1162.0,
+    1062.0,
+    1841.0
+   ],
+   "page_size": [
+    1535,
+    1967
+   ],
+   "products": [
+    {
+     "brand": "Wanderlust Equipment",
+     "name": "Picogrill 760",
+     "price_jpy": null,
+     "specs": "轻量焚火台；KEN-1 最喜欢的焚火装备。",
+     "tax_included": null
+    },
+    {
+     "brand": "Snow Peak",
+     "name": "Shelf Container",
+     "price_jpy": null,
+     "specs": "金属收纳箱，外侧贴有多个喜爱品牌的贴纸。",
+     "tax_included": null
+    },
+    {
+     "brand": "Byer of Maine",
+     "name": "Cot",
+     "price_jpy": null,
+     "specs": "行军床，搭配 Mountain Research 靠垫和 Horse Blanket Research 毛毯使用。",
+     "tax_included": null
+    },
+    {
+     "brand": "Mountain Research",
+     "name": "Cushion",
+     "price_jpy": null,
+     "specs": "放置在 Byer of Maine 行军床上的靠垫。",
+     "tax_included": null
+    },
+    {
+     "brand": "Horse Blanket Research",
+     "name": "Blanket",
+     "price_jpy": null,
+     "specs": "搭配行军床使用的条纹毛毯。",
+     "tax_included": null
+    },
+    {
+     "brand": "Kermit Chair",
+     "name": "Kermit Chair",
+     "price_jpy": null,
+     "specs": "采用当年 Mountain Research 替换椅布定制。",
+     "tax_included": null
+    },
+    {
+     "brand": "Caiman",
+     "name": "焊接用皮手套",
+     "price_jpy": null,
+     "specs": "用于焚火作业，因外观设计而购入。",
+     "tax_included": null
+    },
+    {
+     "brand": "Hultafors",
+     "name": "砍刀",
+     "price_jpy": null,
+     "specs": "手柄最短的型号，坐着也可以劈柴。",
+     "tax_included": null
+    },
+    {
+     "brand": "",
+     "name": "木柄折叠刀叉",
+     "price_jpy": null,
+     "specs": "折叠式刀叉，木质手柄已呈现出使用后的独特质感。",
+     "tax_included": null
+    }
+   ],
+   "issue": "2016.08",
+   "magazine": "GO OUT",
+   "issue_date": "2016-08-01",
+   "book_key": "goout-16-08日本"
+  },
+  {
+   "image_id": "01M1S5KB17NRZPB59GVRSPSPWT:76:0",
+   "pdf_index": 76,
+   "printed_page": 77,
+   "section_title_zh": "THE CAMP STYLE 2016 春夏露营风格",
+   "category": "product",
+   "description": "六幅细节照片展示白色迷彩 Hexalite 帐篷、内部寝具、木桶、行军床、收纳架及木桌等营地装备。",
+   "md_zh": "1. **Hexalite 内部：** 蓝色防水布上铺设地毯，搭配 Snow Peak 睡垫与睡袋。\n2. **特别款帐篷：** 采用 70D PU 尼龙与 MultiCam Alpine 白色迷彩图案；受力处经过加固，支柱也比旧款更粗。\n3. **木桶：** 购自横滨 Tokyu Hands，可收纳容易遗失的装备袋，也能在搬运湿帐篷时使用。\n4. **行军床：** 天幕下放置 Helinox Tactical Cot。\n5. **收纳架：** Kohnan 架与 IR Base 架通过涂蜡进行定制。\n6. **木桌：** 为营造低位露营风格而购入。",
+   "image_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/62/62470523c5b2c07bfb57f0b929223b135cccbaf2f318e8e623b131e9f8c0b4c6.jpg",
+   "page_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/80/80ea75e11ee1142e6f6c23b4bbfea750622bffb44abe6847c668e28cd20f4a37.jpg",
+   "bbox_pt": [
+    95.0,
+    98.0,
+    1048.0,
+    780.0
+   ],
+   "page_size": [
+    1535,
+    1967
+   ],
+   "products": [
+    {
+     "brand": "Mike's × NEMO Equipment",
+     "name": "Hexalite",
+     "price_jpy": null,
+     "specs": "特别定制帐篷；70D PU 尼龙面料，采用 MultiCam Alpine 图案，受力部位加固并使用较粗支柱。",
+     "tax_included": null
+    },
+    {
+     "brand": "Snow Peak",
+     "name": "Mat & Sleeping Bag",
+     "price_jpy": null,
+     "specs": "铺设于 Hexalite 内部的睡垫与睡袋。",
+     "tax_included": null
+    },
+    {
+     "brand": "Helinox",
+     "name": "Tactical Cot",
+     "price_jpy": null,
+     "specs": "设置在天幕下方的战术行军床。",
+     "tax_included": null
+    },
+    {
+     "brand": "Kohnan",
+     "name": "Rack",
+     "price_jpy": null,
+     "specs": "表面涂蜡定制的收纳架。",
+     "tax_included": null
+    },
+    {
+     "brand": "IR Base",
+     "name": "Rack",
+     "price_jpy": null,
+     "specs": "表面涂蜡定制的收纳架。",
+     "tax_included": null
+    }
+   ],
+   "issue": "2016.08",
+   "magazine": "GO OUT",
+   "issue_date": "2016-08-01",
+   "book_key": "goout-16-08日本"
+  },
+  {
+   "image_id": "01M1S5KB17NRZPB59GVRSPSPWT:137:7",
+   "pdf_index": 137,
+   "printed_page": 138,
+   "section_title_zh": "夏季音乐节 STYLE STREAMING",
+   "category": "product",
+   "description": "Amezo 穿着多口袋围裙式背心、短裤和凉鞋，展示重视收纳的实用穿搭。",
+   "md_zh": "Snow Peak 围裙式背心是整套造型的核心。多口袋设计可容纳手机、毛巾和钱包，兼具时尚感与实用性。",
+   "image_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/6d/6d72c5cac156a0b3cc79e8a38887011c0fa87f6fec87e337837cbcb6d5d8ade5.jpg",
+   "page_url": "https://cws-file.oss-cn-guangzhou.aliyuncs.com/kb/magazine/3e/3ec67c4b58697d9fe4836fd96fb5d53b7ead438c23bdd77eeac2c339c4476462.jpg",
+   "bbox_pt": [
+    1157.0,
+    1048.0,
+    1449.0,
+    1555.0
+   ],
+   "page_size": [
+    1535,
+    1967
+   ],
+   "products": [
+    {
+     "brand": "Snow Peak",
+     "name": "围裙式背心",
+     "price_jpy": null,
+     "specs": "深色多口袋设计，可收纳手机、毛巾和钱包等物品。",
+     "tax_included": null
+    },
+    {
+     "brand": "无印良品",
+     "name": "衬衫",
+     "price_jpy": null,
+     "specs": "白色长袖衬衫。",
+     "tax_included": null
+    },
+    {
+     "brand": "Used",
+     "name": "短裤",
+     "price_jpy": null,
+     "specs": "二手深色短裤。",
+     "tax_included": null
+    },
+    {
+     "brand": "Teva",
+     "name": "凉鞋",
+     "price_jpy": null,
+     "specs": "黑白配色户外凉鞋。",
+     "tax_included": null
+    },
+    {
+     "brand": "DECHO",
+     "name": "帽子",
+     "price_jpy": null,
+     "specs": "帽类配饰。",
+     "tax_included": null
+    },
+    {
+     "brand": "Garrett Leight California Optical",
+     "name": "太阳镜",
+     "price_jpy": null,
+     "specs": "太阳镜配饰。",
+     "tax_included": null
+    }
+   ],
+   "issue": "2016.08",
+   "magazine": "GO OUT",
+   "issue_date": "2016-08-01",
+   "book_key": "goout-16-08日本"
+  }
+ ]
+}
