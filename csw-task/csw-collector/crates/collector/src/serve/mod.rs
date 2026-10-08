@@ -826,9 +826,10 @@ async fn start_round(
         .unwrap_or(0)
             == 0
     });
-    // 派工单明确说「不用工作台」：让开，不做、不报失败（主编要人工直传时，工作台抢做会盖掉状态）
-    if t.task.stage_code == STAGE_INTAKE && designated::hands_off_note(&detail.editor_note) {
-        tracing::info!(任务 = t.task.id, "派工单写明不用工作台：不做，等人工交付");
+    // 主编最新的指示（派工单，或比派工更新的退回意见）写了【工作台不接】：让开，不做、不报失败。
+    // 01 / 05 / 11 都认（10-08 r65 #751 是 05）
+    if designated::hands_off(&detail) {
+        tracing::info!(任务 = t.task.id, 阶段 = %t.task.stage_code, "主编最新指示写明工作台不接：不做，等人工交付");
         return Ok(());
     }
     // 主编重开 01 要求重新采集（10-07 r64：Van 全部退回，主编要滚动 24 小时重采）：开新轮次按新窗口采，
@@ -1198,7 +1199,15 @@ async fn start_round(
                     csw_collector_core::types::Tier::PendingCheck => 2,
                     csw_collector_core::types::Tier::NotRecommend => 3,
                 };
-                let mut v: Vec<&calibration::Calibration> = calib.iter().collect();
+                // 主编要从池里另选来补首批时（10-08 r66：「现池另选实质使用/结构/工艺事件补首批」），
+                // 定为停止的不再占卡位，空出来的按全池排序补；没这么说就照旧八键不换（09-30 r58）
+                let replace = calibration::asks_replacement(&review_text);
+                let mut v: Vec<&calibration::Calibration> = calib
+                    .iter()
+                    .filter(|c| {
+                        !(replace && c.tier == csw_collector_core::types::Tier::NotRecommend)
+                    })
+                    .collect();
                 v.sort_by_key(|c| rank(c.tier));
                 v.into_iter().map(|c| c.key.clone()).collect()
             };
@@ -1213,6 +1222,7 @@ async fn start_round(
                 .collect();
             // 返工补采可能改了窗口止点：页头时间、台账窗口按库里的最新值（09-30 r58 v2 还写着 06:00:12）
             let r = rounds::get(conn, r.id)?.unwrap_or(r);
+            let five = five_columns(engine, t.task.run_id, &judgements, &calib).await;
             let built = finish::build_deliverable(
                 conn,
                 &r,
@@ -1226,6 +1236,7 @@ async fn start_round(
                 Some((&reconciled, &lines)),
                 &pinned,
                 &calib_labels,
+                Some(five),
             )?;
             // 这一版的内容指纹：判断与选题（不含版本号）。返工算完与已交的一样就不重交——
             // 主编明说「修复前不重复整包重交相同缺陷」（09-28 r56 v4 退回后 30 秒交了一样的 v5）
@@ -1329,6 +1340,79 @@ async fn start_round(
 /// 水位是**上一轮派单轮的窗口终点**：上一轮晚开了两小时，这一轮就该多覆盖
 /// 两小时，不然中间那段没人看过。没有水位时退回一天（周一退回三天）。
 /// 判据全在 [`csw_collector_core::window`]，这里只负责把水位查出来。
+/// 五栏与目标缺口的数。成熟只认主编在引擎里亲手定的（最近一次状态变化是中枢改的 shortlisted）。
+async fn five_columns(
+    engine: &EngineClient,
+    run_id: i64,
+    judgements: &[csw_collector_core::types::Judgement],
+    calib: &[calibration::Calibration],
+) -> finish::FiveColumns {
+    use csw_collector_core::types::Tier;
+    let calibrated: std::collections::HashSet<&str> =
+        calib.iter().map(|c| c.key.as_str()).collect();
+    let mut f = finish::FiveColumns {
+        leads: judgements
+            .iter()
+            .filter(|j| matches!(j.tier, Tier::Recommend | Tier::Alternate))
+            .filter(|j| !calibrated.contains(j.candidate_key.as_str()))
+            .count(),
+        pending: judgements
+            .iter()
+            .filter(|j| j.tier == Tier::PendingCheck)
+            .count(),
+        calib_stop: calib
+            .iter()
+            .filter(|c| c.tier == Tier::NotRecommend)
+            .count(),
+        calib_pending: calib
+            .iter()
+            .filter(|c| c.tier == Tier::PendingCheck)
+            .count(),
+        calib_continue: calib
+            .iter()
+            .filter(|c| matches!(c.tier, Tier::Recommend | Tier::Alternate))
+            .count(),
+        target: engine.run_target(run_id).await.ok().flatten(),
+        ..Default::default()
+    };
+    if let Ok(tr) = engine.intake_trace(run_id).await {
+        let mut last: HashMap<String, String> = HashMap::new();
+        for t in tr
+            .get("traces")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            if let (Some(k), Some(r)) = (
+                t.get("item_key").and_then(|v| v.as_str()),
+                t.get("actor_role").and_then(|v| v.as_str()),
+            ) {
+                last.insert(k.to_string(), r.to_string());
+            }
+        }
+        for it in tr
+            .get("items")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let key = it.get("item_key").and_then(|v| v.as_str()).unwrap_or("");
+            match it.get("status").and_then(|v| v.as_str()).unwrap_or("") {
+                "approved_write" | "written" => f.van_approved += 1,
+                "shortlisted" if last.get(key).is_some_and(|r| r == "editor") => {
+                    if it.get("rank").and_then(|v| v.as_str()) == Some("alt") {
+                        f.mature_alt += 1;
+                    } else {
+                        f.mature_primary += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    f
+}
+
 fn window_for(
     conn: &rusqlite::Connection,
     engine: Option<&(String, String)>,

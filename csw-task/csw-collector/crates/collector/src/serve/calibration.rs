@@ -63,6 +63,9 @@ static FORMS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
         // key=待核 / key：备选 / key → 继续 / key 不推荐 / ……四继续（列举后带数量）
         r"^\s*[=＝:：→]?\s*[一二三四五六七八九十两0-9]*\s*(W)",
+        // key：隔离待核 / key：暂备选 / key：降为不推荐——冒号后、去向词前只认这几个修饰词，
+        // 不放任意前缀（「不是推荐」不能认成推荐）（10-08 r66 v1 退回：两条「隔离待核」没认出来）
+        r"^\s*[=＝:：→]\s*(?:隔离|暂|先|仍|转为?|列为?|降为?|升为?|改列)\s*(W)",
         // key 的 tier=not_recommend / 档位：待核
         r"^[^，,。；;]{0,24}?(?:tier|status|档位|档)\s*[=＝:：]\s*(W)",
         // key 改为 / 改成 / 改回 / 恢复 / 定为 / 落 / 保持 待核
@@ -103,6 +106,13 @@ pub fn parse_review(text: &str) -> Vec<(String, Tier)> {
         }
     }
     out
+}
+
+/// 退回意见是不是要从池里另选条目补首批（停止的条目让出卡位）。
+pub fn asks_replacement(review: &str) -> bool {
+    static R: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"另选|另挑|补首批|补足首批|替换|换下|换上").expect("正则"));
+    R.is_match(review)
 }
 
 /// 主编常只写条目键末尾的 6 位（「e1cd9d.tier 由待核改推荐」）。在本轮条目里**唯一**对得上的，
@@ -276,6 +286,50 @@ mod tests {
     }
 
     /// 10-01 r60 主编的真实写法：去向在键后才认；「停止针对 xx 再深核」不是校准
+    #[test]
+    fn 要另选补首批才让出停止的卡位() {
+        assert!(asks_replacement(
+            "现池另选实质使用/结构/工艺事件，不换措辞包装弱题"
+        ));
+        assert!(asks_replacement(
+            "原全池中可另挑有明确使用变化的现成独立事件补首批"
+        ));
+        assert!(!asks_replacement("首页恢复四继续，另加上述四条"));
+    }
+
+    #[test]
+    fn r66主编首批八卡全部认出() {
+        // 10-08 r66 #1128 退回意见原文节选（八卡方向）
+        let t = "1. 38explore-537a0b：停止本期追加。自选色组装和门店服务有事实。\n\
+2. asimocrafts-628da9：保留继续评估。烤网、架锅与烤鱼有图文依据。\n\
+3. bambooshootsshop-3f8b8f：停止本期追加。正文明确每年热门款到货。\n\
+4. beamsmenscasual-41eb33：隔离待核，不直接回主选。透明杂志口袋具具体价值。\n\
+5. bluelug-2a9c39：保留继续评估。缩小包体改善弯把空间。\n\
+6. bluelug-c0e972：停止本期追加。卡面核心明确是采访与图案解释。\n\
+7. bprbeams-dcba41：停止本期追加。头盔包缩成挂饰。\n\
+8. brennholzkr-4bc4d9：隔离待核。本帖只有Comeback、铝铸、原装配件兼容。";
+        let got = parse_review(t);
+        let want = [
+            ("38explore-537a0b", Tier::NotRecommend),
+            ("asimocrafts-628da9", Tier::Recommend),
+            ("bambooshootsshop-3f8b8f", Tier::NotRecommend),
+            ("beamsmenscasual-41eb33", Tier::PendingCheck),
+            ("bluelug-2a9c39", Tier::Recommend),
+            ("bluelug-c0e972", Tier::NotRecommend),
+            ("bprbeams-dcba41", Tier::NotRecommend),
+            ("brennholzkr-4bc4d9", Tier::PendingCheck),
+        ];
+        for (k, tier) in want {
+            assert!(
+                got.contains(&(k.to_string(), tier)),
+                "{k} 应为 {tier:?}，实得 {got:?}"
+            );
+        }
+        assert_eq!(got.len(), 8);
+        // 修饰词只认白名单：「不是推荐」不能认成推荐
+        assert!(parse_review("abc-123456：不是推荐").is_empty());
+    }
+
     #[test]
     fn 去向词在条目键前面的不认() {
         let t = "停止针对andwanderofficial-3bbddb再深核/重写/改档后整包升版的自动路径；\

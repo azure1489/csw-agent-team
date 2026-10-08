@@ -69,6 +69,60 @@ pub fn first_batch<'a>(
     picked
 }
 
+/// 五栏与目标缺口用到的数。成熟只认主编在引擎里亲手定的，工作台不自定。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FiveColumns {
+    /// 工作台初判推荐 / 备选、尚未经主编校准
+    pub leads: usize,
+    pub pending: usize,
+    /// 主编在引擎里定为成熟主选 / 备选的
+    pub mature_primary: usize,
+    pub mature_alt: usize,
+    /// Van 批准可写（含已写成）
+    pub van_approved: usize,
+    /// 主编校准：停止 / 待核 / 继续评估 各几条
+    pub calib_stop: usize,
+    pub calib_pending: usize,
+    pub calib_continue: usize,
+    /// 首批里不是主编点名、按全池排序补上来的
+    pub new_cards: usize,
+    /// 本期目标（主选，备选）；引擎没给就 None
+    pub target: Option<(usize, usize)>,
+}
+
+/// 「五栏与目标缺口」一节（10-08 r66 v1 退回：要五栏真实数量、目标差多少 / 为何 / 现池如何补 / 补不齐取舍）。
+pub fn five_columns_section(f: &FiveColumns) -> String {
+    let mut s = String::from(
+        "## 五栏与目标缺口\n\n| 线索 | 待核 | 成熟主选 | 成熟备选 | Van 批准 |\n|---|---|---|---|---|\n",
+    );
+    s.push_str(&format!(
+        "| {} | {} | {} | {} | {} |\n\n",
+        f.leads, f.pending, f.mature_primary, f.mature_alt, f.van_approved
+    ));
+    s.push_str("- 线索是工作台初判的推荐 / 备选，未经主编校准，不算成熟；成熟只认主编在引擎里定的，工作台不自定。\n");
+    match f.target {
+        Some((p, a)) => {
+            let (gp, ga) = (
+                p.saturating_sub(f.mature_primary),
+                a.saturating_sub(f.mature_alt),
+            );
+            s.push_str(&format!("- 目标 {p} 主 {a} 备，现差 {gp} 主 {ga} 备。\n"));
+            s.push_str(&format!(
+                "- 为何：主编校准停止 {} 条、隔离待核 {} 条、继续评估 {} 条（继续评估不等于成熟）。\n",
+                f.calib_stop, f.calib_pending, f.calib_continue
+            ));
+            s.push_str(&format!(
+                "- 现池如何补：首批另补 {} 张卡，来自本期全池排序（不重采、不 top K 替代全池），待主编校准。\n",
+                f.new_cards
+            ));
+            s.push_str("- 补不齐的取舍：校准后仍不足就如实报缺口，不把未校准的工作台推荐算成成熟，不换措辞包装弱题。\n");
+        }
+        None => s.push_str("- 本期派工没给目标数，缺口无法计算。\n"),
+    }
+    s.push('\n');
+    s
+}
+
 /// 深核条目卡拼成一段，给重判用。
 pub fn card_text(c: &deep::Card) -> String {
     let mut s = String::new();
@@ -530,6 +584,7 @@ pub fn build_deliverable(
     reconciled: Option<(&serde_json::Value, &[String])>,
     pinned: &[String],
     calib_labels: &HashMap<String, String>,
+    five: Option<FiveColumns>,
 ) -> Result<pack::Built> {
     let step = rounds::begin_step(conn, round.id, StepCode::Build, &round.instructions_hash)?;
     let lookup = |k: &str| by_key.get(k).cloned();
@@ -582,7 +637,14 @@ pub fn build_deliverable(
     // 首页先放 4–8 张独立首批卡（点名的优先），其余清单在后（09-30 r58 退回）
     let (cards, card_keys) =
         first_cards(conn, cfg, judgements, topics, by_key, pinned, calib_labels);
-    body = format!("{cards}{body}");
+    // 五栏与目标缺口紧跟首批卡：「首批另补几张」按实际挑出来的卡算
+    let five = five
+        .map(|mut f| {
+            f.new_cards = card_keys.iter().filter(|k| !pinned.contains(k)).count();
+            five_columns_section(&f)
+        })
+        .unwrap_or_default();
+    body = format!("{cards}{five}{body}");
     // 口径冲突单独说明，不混进红灯
     if let Some((_, lines)) = reconciled
         && let Some(c) = lines.iter().find(|l| l.starts_with("规则口径冲突"))
@@ -1823,5 +1885,32 @@ mod tests {
         assert!(c[2].contains("未读到实图 1 条"));
         // 红灯也进自检那一栏，写成「全部通过」而实际没有会让主编误判
         assert!(c[3].contains("自查未过"));
+    }
+}
+
+#[cfg(test)]
+mod five_columns_tests {
+    use super::*;
+
+    #[test]
+    fn 五栏与缺口如实写() {
+        let f = FiveColumns {
+            leads: 253,
+            pending: 342,
+            mature_primary: 0,
+            mature_alt: 0,
+            van_approved: 0,
+            calib_stop: 4,
+            calib_pending: 2,
+            calib_continue: 2,
+            new_cards: 4,
+            target: Some((6, 2)),
+        };
+        let s = five_columns_section(&f);
+        assert!(s.contains("| 253 | 342 | 0 | 0 | 0 |"));
+        assert!(s.contains("现差 6 主 2 备"));
+        assert!(s.contains("停止 4 条、隔离待核 2 条、继续评估 2 条"));
+        assert!(s.contains("首批另补 4 张卡"));
+        assert!(five_columns_section(&FiveColumns::default()).contains("没给目标数"));
     }
 }

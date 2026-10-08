@@ -100,6 +100,12 @@ impl EngineClient {
 
     /// 这一期派下来的窗口 `(起, 止)`：取时间线里 `run_created` 那条事件的输入 `窗口`。
     /// 期次详情接口不带输入，只有时间线里有。取不到返回 `None`（调用方退回按水位算）。
+    /// 这一期的目标数（主选，备选）。取不到返回 `None`。
+    pub async fn run_target(&self, run_id: i64) -> Result<Option<(usize, usize)>, EngineError> {
+        let v: serde_json::Value = self.get(&format!("/runs/{run_id}/timeline")).await?;
+        Ok(run_target_of(&v))
+    }
+
     pub async fn run_window(&self, run_id: i64) -> Result<Option<(String, String)>, EngineError> {
         let v: serde_json::Value = self.get(&format!("/runs/{run_id}/timeline")).await?;
         Ok(run_window_of(&v))
@@ -528,6 +534,22 @@ pub fn submit_idem_key(task_id: i64, zip_sha256: &str) -> String {
 }
 
 /// 从时间线里挑出 `run_created` 的 `窗口.起 / 窗口.止`。事件详情可能是字符串化的 JSON，也可能已是对象。
+/// 这一期的目标数（主选，备选）：时间线里 `run_created` 输入的 `目标`。
+pub fn run_target_of(timeline: &serde_json::Value) -> Option<(usize, usize)> {
+    let ev = timeline
+        .get("events")?
+        .as_array()?
+        .iter()
+        .find(|e| e.get("type").and_then(|t| t.as_str()) == Some("run_created"))?;
+    let detail = match ev.get("detail")? {
+        serde_json::Value::String(s) => serde_json::from_str::<serde_json::Value>(s).ok()?,
+        other => other.clone(),
+    };
+    let t = detail.get("目标")?;
+    let n = |k: &str| t.get(k).and_then(|v| v.as_u64()).map(|v| v as usize);
+    Some((n("主选")?, n("备选").unwrap_or(0)))
+}
+
 pub fn run_window_of(timeline: &serde_json::Value) -> Option<(String, String)> {
     let ev = timeline
         .get("events")?
@@ -547,6 +569,14 @@ pub fn run_window_of(timeline: &serde_json::Value) -> Option<(String, String)> {
 #[cfg(test)]
 mod run_window_tests {
     use super::*;
+
+    #[test]
+    fn 从时间线取目标数() {
+        let v = serde_json::json!({"events": [{"type": "run_created", "detail":
+            "{\"目标\":{\"主选\":6,\"备选\":2},\"窗口\":{\"起\":\"a\",\"止\":\"b\"}}"}]});
+        assert_eq!(run_target_of(&v), Some((6, 2)));
+        assert_eq!(run_target_of(&serde_json::json!({"events": []})), None);
+    }
 
     #[test]
     fn 大包上传给够时间() {

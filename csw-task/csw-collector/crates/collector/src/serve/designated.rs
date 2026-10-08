@@ -59,6 +59,32 @@ pub fn hands_off_note(note: &str) -> bool {
     note.contains(MARK_HANDS_OFF)
 }
 
+/// 主编**最新的**指示里有没有【工作台不接】：派工单写了，或比当前派工更新的那次退回意见写了。
+/// 主编重开会生成更新的派工，盖过之前退回意见里的标记（10-07 r65 #731：标记写在退回意见里，
+/// 工作台只看派工单，半分钟内原样返工重交三次）。
+pub fn hands_off(detail: &TaskDetail) -> bool {
+    if hands_off_note(&detail.editor_note) {
+        return true;
+    }
+    let dispatch_id = detail
+        .dispatch
+        .as_ref()
+        .and_then(|d| d.get("id"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    detail
+        .deliverables
+        .iter()
+        .filter(|d| d.get("id").and_then(|v| v.as_i64()).unwrap_or(0) > dispatch_id)
+        .filter_map(|d| d.get("latest_review"))
+        .any(|r| {
+            ["comment", "return_direction", "return_location"]
+                .iter()
+                .filter_map(|k| r.get(*k).and_then(|v| v.as_str()))
+                .any(hands_off_note)
+        })
+}
+
 /// 派工单里**原轮次没有**的短码。主编在退回意见里引用池内帖子的链接很常见，那些不算指定。
 pub fn new_codes(conn: &Connection, round_id: Option<i64>, note: &str) -> Vec<String> {
     let codes = shortcodes_in(note);
@@ -570,6 +596,33 @@ mod tests {
         assert!(!is_designation(
             "卡5 对照 https://www.instagram.com/p/AAAAA1/ 的写法"
         ));
+    }
+
+    #[test]
+    fn 最新指示里的不接标记才算() {
+        let mk = |dispatch: i64, ver_id: i64, dir: &str| -> TaskDetail {
+            serde_json::from_value(serde_json::json!({
+                "task": {"id": 752, "run_id": 66, "stage_code": "intake", "dispatched_at": "x", "cur_version": 1, "status": "returned"},
+                "editor_note": "派工单正文",
+                "dispatch": {"id": dispatch},
+                "deliverables": [{"id": ver_id, "version": 1, "latest_review": {"return_direction": dir}}]
+            }))
+            .unwrap()
+        };
+        // 退回意见比派工新，写了标记：让开
+        assert!(hands_off(&mk(
+            1123,
+            1128,
+            "【工作台不接】运营方沿原#752定点校准"
+        )));
+        // 之后主编重开（派工更新），旧退回意见里的标记不再算
+        assert!(!hands_off(&mk(
+            1130,
+            1128,
+            "【工作台不接】运营方沿原#752定点校准"
+        )));
+        // 退回意见没写标记：照常返工
+        assert!(!hands_off(&mk(1123, 1128, "按以上八键改档")));
     }
 
     #[test]
