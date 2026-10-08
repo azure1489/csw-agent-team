@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""csw-daily-trigger：每天 05:30 由 systemd 定时器调用，为当天（北京时间）触发 daily_news。
+"""csw-daily-trigger：每天 06:00（北京时间）由 systemd 定时器调用，为当天触发 daily_news。
 
-- 05:30 触发与引擎现有时限对齐：01 情报 05:30–06:10 → 02 初筛 06:10–06:50 → 03 主编 06:50–07:15 送审。
-- 没带 --date 且已过 09:00（例如服务器宕机后补跑）不自动触发，由主编人工处理。
+- **每天都触发**，周末、节假日照跑（2026-10-09 起；此前只在工作日 05:30，按 trigger-days.txt 跳过节假日）。
+- 窗口固定为过去 24 小时：前一天 06:00 到当天 06:00。不再按上一个日更日往回推，假期后不会拉出多天的长窗口。
+- 01 自动派给情报收集员工作台，做完交付即由引擎在编辑部群 @主编待审（不再等主编手动开期）。
+- 服务器宕机后补跑（timer Persistent=true）照常触发：窗口固定、幂等键按日期，晚触发内容不变。
 - 触发、录授权或取消失败时，经 notifier 机器人在编辑部群 @主编，请他手动触发（凭证取自 server.env）。
-- 当天不是日更日（周末，或 trigger-days.txt 里标 off 的日期）就跳过；标 on 的日期（调休补班）照常触发。
 - 触发用调度器 token（daily_news 的 trigger_roles 含 scheduler）；录授权、取消小红书两个阶段用主编 token（中枢动作）。
 - 幂等：Idempotency-Key = trigger-daily_news-<日期>，同一天重跑返回同一期；授权与取消同样带幂等键。
-- 输入按《资讯日更 · 生产约定》§9：窗口从上一个日更日 07:00 到当天 07:00（周一即覆盖周五以来 72 小时）。
 
-环境变量：CSW_TASK_BASE_URL（缺省 http://127.0.0.1:8080）、CSW_SCHEDULER_TOKEN、CSW_EDITOR_TOKEN、
-CSW_TRIGGER_DAYS_FILE（缺省 /opt/csw-task/trigger-days.txt）；告警用 CSW_LARK_APP_ID / CSW_LARK_APP_SECRET、CSW_DB_PATH。
+环境变量：CSW_TASK_BASE_URL（缺省 http://127.0.0.1:8080）、CSW_SCHEDULER_TOKEN、CSW_EDITOR_TOKEN；
+告警用 CSW_LARK_APP_ID / CSW_LARK_APP_SECRET、CSW_DB_PATH。
 用法：csw-daily-trigger [--date YYYY-MM-DD] [--dry-run] [--alert-check]
 兼容 Python 3.6（生产服务器）。
 """
@@ -28,47 +28,23 @@ AUTHS = [
     ("wx_draft", "Van 9/15：允许保存 CAMPsomeWHERE 公众号草稿，全文终审获批后保存并回读"),
 ]
 NO_XHS = ("xhs_text", "xhs_pick")
-LATEST_HOUR = 9  # 没带 --date 时，过了这个钟点不再自动触发
+WINDOW_HOUR = 6  # 窗口起止的钟点（北京时间），与定时器的触发时刻一致
 
 
 def parse_date(s):
     return dt.datetime.strptime(s, "%Y-%m-%d").date()  # date.fromisoformat 要 3.7+
 
 
-def load_days(path):
-    """读 trigger-days.txt：每行「off YYYY-MM-DD」（休）或「on YYYY-MM-DD」（调休补班），# 后为注释。"""
-    off, on = set(), set()
-    if path and os.path.exists(path):
-        for line in open(path, encoding="utf-8"):
-            parts = line.split("#", 1)[0].split()
-            if len(parts) == 2 and parts[0] in ("off", "on"):
-                (off if parts[0] == "off" else on).add(parse_date(parts[1]))
-    return off, on
-
-
-def is_workday(d, off, on):
-    return d in on or (d.weekday() < 5 and d not in off)
-
-
-def prev_workday(d, off, on):
-    p = d - dt.timedelta(days=1)
-    for _ in range(40):
-        if is_workday(p, off, on):
-            return p
-        p -= dt.timedelta(days=1)
-    return d - dt.timedelta(days=1)
-
-
-def build(d, off, on):
-    start = prev_workday(d, off, on)
+def build(d):
+    start = d - dt.timedelta(days=1)
+    hh = "T%02d:00+08:00" % WINDOW_HOUR
     return {
         "subject": d.isoformat(),
         "title": "资讯日更 " + d.isoformat(),
         "inputs": {
             "约定版本": "v1.0",
-            "窗口": {"起": start.isoformat() + "T07:00+08:00", "止": d.isoformat() + "T07:00+08:00"},
+            "窗口": {"起": start.isoformat() + hh, "止": d.isoformat() + hh},
             "目标": {"主选": 6, "备选": 2},
-            "人审窗口": {"选题": "07:15-07:30", "全文": "09:00-09:15"},
             "授权": [s for s, _ in AUTHS],
             "小红书": False,
         },
@@ -138,7 +114,7 @@ def alert(text):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="为当天触发 daily_news（每天 05:30）")
+    ap = argparse.ArgumentParser(description="为当天触发 daily_news（每天 06:00，窗口过去 24 小时）")
     ap.add_argument("--date", help="日更日期 YYYY-MM-DD，缺省为北京时间今天")
     ap.add_argument("--dry-run", action="store_true", help="只打印将要提交的触发内容")
     ap.add_argument("--alert-check", action="store_true", help="只检查告警通道（群、@主编、飞书凭证），不发消息")
@@ -150,16 +126,8 @@ def main():
             target, why = None, str(e)
         print("告警通道可用：群 %s…，%s" % (target[0][:12], "会 @主编" if target[1] else "花名册里没有主编，不会 @") if target else "告警通道不可用：%s" % why)
         return 0 if target else 1
-    off, on = load_days(os.environ.get("CSW_TRIGGER_DAYS_FILE", "/opt/csw-task/trigger-days.txt"))
-    now = dt.datetime.now(CST)
-    d = parse_date(a.date) if a.date else now.date()
-    if not a.date and not a.dry_run and now.hour >= LATEST_HOUR:
-        print("已过 %02d:00，不再自动触发 %s；需要时由主编人工触发" % (LATEST_HOUR, d))
-        return 0
-    if not is_workday(d, off, on):
-        print("%s 不是日更日（周末或节假日），跳过" % d)
-        return 0
-    body = build(d, off, on)
+    d = parse_date(a.date) if a.date else dt.datetime.now(CST).date()
+    body = build(d)
     if a.dry_run:
         print(json.dumps(body, ensure_ascii=False, indent=2))
         return 0

@@ -1,8 +1,8 @@
 [Unit]
-Description=每天 05:30（北京时间）检查当天是否日更日并触发
+Description=每天 06:00（北京时间）触发当天的日更（周末、节假日照跑，窗口过去 24 小时）
 
 [Timer]
-OnCalendar=*-*-* 05:30:00
+OnCalendar=*-*-* 06:00:00
 Persistent=true
 
 [Install]
