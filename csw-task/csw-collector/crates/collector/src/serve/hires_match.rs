@@ -24,6 +24,7 @@ pub enum Match {
     /// 两种比法都不过：很可能帖子被编辑过、顺序变了
     Different { full: u32, cropped: u32 },
     /// 有一张解不出来，无法校验
+    #[cfg_attr(not(test), allow(dead_code))]
     Undecodable(String),
 }
 
@@ -47,7 +48,54 @@ impl Match {
     }
 }
 
-/// 高清图（`hi`）与来源库图（`lo`）是不是同一张。
+/// 一张高清图的指纹：整图与中央正方形各一个 dHash。解一次码，配对时反复用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Prints {
+    pub full: u64,
+    pub center: u64,
+}
+
+/// 高清图的指纹。
+pub fn prints(hi: &[u8]) -> Result<Prints, String> {
+    let img = image::load_from_memory(hi).map_err(|e| format!("高清图解码失败：{e}"))?;
+    Ok(Prints {
+        full: dhash(&img),
+        center: dhash(&center_square(&img)),
+    })
+}
+
+/// 来源库图的指纹（只要整图）。
+pub fn lo_print(lo: &[u8]) -> Result<u64, String> {
+    image::load_from_memory(lo)
+        .map(|i| dhash(&i))
+        .map_err(|e| format!("来源库图解码失败：{e}"))
+}
+
+/// 用指纹比：规则与 [`verify`] 相同（整图过即同，不过再比中央正方形）。
+pub fn compare(hi: &Prints, lo: u64) -> Match {
+    let full = distance(hi.full, lo);
+    if full <= MAX_DISTANCE {
+        return Match::Same { distance: full };
+    }
+    let cropped = distance(hi.center, lo);
+    if cropped <= MAX_DISTANCE {
+        return Match::SameCropped { distance: cropped };
+    }
+    Match::Different { full, cropped }
+}
+
+impl Match {
+    /// 配对时比远近用：通过的取它的差，不通过的排最后
+    pub fn rank(&self) -> u32 {
+        match self {
+            Match::Same { distance } | Match::SameCropped { distance } => *distance,
+            _ => u32::MAX,
+        }
+    }
+}
+
+/// 高清图（`hi`）与来源库图（`lo`）是不是同一张。生产走 [`prints`] + [`compare`]，这里留作测试对照。
+#[cfg(test)]
 pub fn verify(hi: &[u8], lo: &[u8]) -> Match {
     let hi_img = match image::load_from_memory(hi) {
         Ok(i) => i,
@@ -160,6 +208,20 @@ mod tests {
         let b = a.fliph().resize_exact(512, 640, FilterType::Triangle);
         let m = verify(&jpeg(&a), &jpeg(&b));
         assert!(!m.ok(), "{m:?}");
+    }
+
+    #[test]
+    fn 指纹比与直接比结论一致() {
+        let hi = picture(1440, 1800, 0);
+        let lo = hi.resize_exact(512, 640, FilterType::Triangle);
+        let other = hi.fliph().resize_exact(512, 640, FilterType::Triangle);
+        let p = prints(&jpeg(&hi)).unwrap();
+        assert_eq!(
+            compare(&p, lo_print(&jpeg(&lo)).unwrap()),
+            verify(&jpeg(&hi), &jpeg(&lo))
+        );
+        assert!(!compare(&p, lo_print(&jpeg(&other)).unwrap()).ok());
+        assert!(compare(&p, lo_print(&jpeg(&other)).unwrap()).rank() == u32::MAX);
     }
 
     #[test]

@@ -456,16 +456,10 @@ async fn attach_hires(
     let by_url = report.by_url();
 
     let mut problems = Vec::new();
+
+    // 一、每张高清图读出来、算指纹（只解一次码）
+    let mut his: Vec<Option<(Vec<u8>, hires_match::Prints)>> = Vec::with_capacity(ph.len());
     for (i, p) in ph.iter().enumerate() {
-        let ordinal = source_ordinals[i];
-        let Some(shot) = item.shots.iter_mut().find(|s| s.ordinal == ordinal) else {
-            problems.push(format!(
-                "第 {} 张（{}）：来源库那张没下载成功，无法做画面校验，未换",
-                i + 1,
-                p.file_key
-            ));
-            continue;
-        };
         let Some(oss) = p.oss.as_ref() else {
             problems.push(format!(
                 "第 {} 张（{}）：hires-service 没转存成 OSS：{}",
@@ -473,6 +467,7 @@ async fn attach_hires(
                 p.file_key,
                 p.error.clone().unwrap_or_else(|| "未说明原因".into())
             ));
+            his.push(None);
             continue;
         };
         let Some(d) = by_url.get(oss.url.as_str()) else {
@@ -487,20 +482,107 @@ async fn attach_hires(
                 i + 1,
                 p.file_key
             ));
+            his.push(None);
             continue;
         };
         let bytes = match std::fs::read(&d.path) {
             Ok(b) => b,
             Err(e) => {
                 problems.push(format!("第 {} 张（{}）：读盘失败 {e}", i + 1, p.file_key));
+                his.push(None);
                 continue;
             }
         };
-        let m = hires_match::verify(&bytes, &shot.bytes);
-        if !m.ok() {
-            problems.push(format!("第 {} 张（{}）：{}", i + 1, p.file_key, m.cn()));
-            continue;
+        match hires_match::prints(&bytes) {
+            Ok(pr) => his.push(Some((bytes, pr))),
+            Err(e) => {
+                problems.push(format!("第 {} 张（{}）：{e}", i + 1, p.file_key));
+                his.push(None);
+            }
         }
+    }
+    // 二、来源库每张的指纹
+    let los: Vec<Option<u64>> = item
+        .shots
+        .iter()
+        .map(|s| hires_match::lo_print(&s.bytes).ok())
+        .collect();
+
+    // 三、按画面配对，不按列表位置。来源库返回的图片顺序可能与原帖轮播不同
+    //（10-07 r65 circles_jp 16 张：来源库单条接口把原帖第 1 张排在第 5 位，按位置配 16 张全错）。
+    // 同位置那张先试，不过再在没配上的里找最近的；都不过才算这张对不上
+    let mut taken = vec![false; item.shots.len()];
+    let mut pairs: Vec<(usize, usize, hires_match::Match)> = Vec::new();
+    for (i, p) in ph.iter().enumerate() {
+        let Some((_, pr)) = his[i].as_ref() else {
+            continue;
+        };
+        let want = source_ordinals[i];
+        let mut best: Option<(usize, hires_match::Match)> = None;
+        for (j, s) in item.shots.iter().enumerate() {
+            let (false, Some(lo)) = (taken[j], los[j]) else {
+                continue;
+            };
+            let m = hires_match::compare(pr, lo);
+            if !m.ok() {
+                continue;
+            }
+            let better = match &best {
+                None => true,
+                Some((bj, bm)) => {
+                    m.rank() < bm.rank()
+                        || (m.rank() == bm.rank()
+                            && s.ordinal == want
+                            && item.shots[*bj].ordinal != want)
+                }
+            };
+            if better {
+                best = Some((j, m));
+            }
+        }
+        match best {
+            Some((j, m)) => {
+                taken[j] = true;
+                pairs.push((i, j, m));
+            }
+            None => {
+                let same = item
+                    .shots
+                    .iter()
+                    .position(|s| s.ordinal == want)
+                    .and_then(|j| los[j].map(|lo| hires_match::compare(pr, lo).cn()))
+                    .unwrap_or_else(|| "来源库同位置那张没下载成功或解不出".into());
+                problems.push(format!(
+                    "第 {} 张（{}）：来源库 {} 张里没有画面对得上的（同位置那张：{same}）",
+                    i + 1,
+                    p.file_key,
+                    item.shots.len()
+                ));
+            }
+        }
+    }
+
+    // 四、换进去，并把序号改成原帖轮播顺序（包里的图序以 Instagram 为准）
+    let mut reordered = 0usize;
+    for (i, j, m) in pairs {
+        let p = ph[i];
+        let Some((bytes, _)) = his[i].take() else {
+            continue;
+        };
+        let Some(oss) = p.oss.as_ref() else { continue };
+        let shot = &mut item.shots[j];
+        let want = source_ordinals[i];
+        let note = if shot.ordinal == want {
+            m.cn()
+        } else {
+            reordered += 1;
+            format!(
+                "{}；来源库里排第 {} 张，与原帖顺序不同，按画面对上后改按原帖第 {} 张排",
+                m.cn(),
+                shot.ordinal + 1,
+                i + 1
+            )
+        };
         let (w, h) = hires_match::dimensions(&bytes).unwrap_or((p.width, p.height));
         let (sw, sh) = hires_match::dimensions(&shot.bytes).unwrap_or((0, 0));
         let sha256: String = Sha256::digest(&bytes)
@@ -519,13 +601,18 @@ async fn attach_hires(
             source_width: sw,
             source_height: sh,
             source_bytes: shot.bytes.len() as u64,
-            matched: m.cn(),
+            matched: note,
         });
         if let Some(ext) = ext_of_mime(&oss.mime_type) {
             shot.ext = ext.to_string();
         }
+        shot.ordinal = want;
         shot.bytes = bytes;
         summary.replaced += 1;
+    }
+    item.shots.sort_by_key(|s| s.ordinal);
+    if reordered > 0 {
+        tracing::info!(条目 = %item.item_key, 张数 = reordered, "来源库图片顺序与原帖不同，已按画面对上并改按原帖顺序");
     }
     if summary.replaced < total {
         let why = format!(
@@ -801,6 +888,128 @@ fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 三张画面截然不同的图：横向渐变、纵向渐变、棋盘
+    fn pic(kind: u8, w: u32, h: u32) -> Vec<u8> {
+        let img = image::ImageBuffer::from_fn(w, h, |x, y| {
+            let v = match kind {
+                0 => (x * 255 / w) as u8,
+                1 => (y * 255 / h) as u8,
+                _ => {
+                    if (x * 8 / w + y * 8 / h).is_multiple_of(2) {
+                        230
+                    } else {
+                        20
+                    }
+                }
+            };
+            image::Rgb([v, v, v])
+        });
+        let mut b = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Jpeg)
+            .unwrap();
+        b
+    }
+
+    // r65 circles_jp：来源库给的顺序与原帖不同，按位置配会全错；按画面配应全部换上并改按原帖顺序
+    #[tokio::test]
+    async fn 来源库顺序乱了按画面对上() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let srv = MockServer::start().await;
+        let base = srv.uri();
+        // 原帖顺序 A(0) B(1) C(2)，高清 1080×1350
+        for (i, k) in [(0u8, "a"), (1, "b"), (2, "c")] {
+            Mock::given(method("GET"))
+                .and(path(format!("/oss/{k}.jpg")))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(pic(i, 1080, 1350)))
+                .mount(&srv)
+                .await;
+        }
+        let items: Vec<_> = ["a", "b", "c"]
+            .iter()
+            .enumerate()
+            .map(|(i, k)| {
+                serde_json::json!({"index": i, "type": "Photo", "width": 1080, "height": 1350,
+                    "file_key": format!("{k}.jpg"), "source_url": format!("https://cdn/{k}.jpg"),
+                    "oss": {"url": format!("{base}/oss/{k}.jpg"), "size": 1, "mime_type": "image/jpeg", "file_hash": "x"}})
+            })
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/v1/media/CODE1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "shortcode": "CODE1", "pk": "1", "cached": false, "items": items})))
+            .mount(&srv)
+            .await;
+        let hires = HiresClient::new(csw_collector_harvest::hires::HiresConfig {
+            base_url: base.clone(),
+            token: "t".into(),
+            timeout: std::time::Duration::from_secs(10),
+        })
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!("hires-order-{}", std::process::id()));
+        let dl = Downloader::new(DownloadConfig {
+            dir: dir.clone(),
+            width: 0,
+            concurrency: 2,
+            timeout: std::time::Duration::from_secs(10),
+            max_attempts: 1,
+            max_bytes: 10 << 20,
+        })
+        .unwrap()
+        .allow_private_for_tests()
+        .unwrap();
+        // 来源库顺序 C(0) A(1) B(2)，640 档
+        let shot = |ord: u16, kind: u8| Shot {
+            blake3: format!("b{kind}"),
+            ordinal: ord,
+            url: format!("https://lib/{kind}.jpg"),
+            bytes: pic(kind, 512, 640),
+            ext: "jpg".into(),
+            desc: None,
+            hires: None,
+        };
+        let mut item = ItemShots {
+            item_key: "circlesjp-x".into(),
+            title: "t".into(),
+            source_url: "https://www.instagram.com/p/CODE1/".into(),
+            account: "a".into(),
+            posted_at: String::new(),
+            ingested_at: String::new(),
+            shots: vec![shot(0, 2), shot(1, 0), shot(2, 1)],
+            gaps: vec![],
+            hires: None,
+        };
+        let cfg = Config::default();
+        attach_hires(&cfg, &hires, &dl, "CODE1", &[0, 1, 2], &mut item)
+            .await
+            .unwrap();
+        assert_eq!(item.hires.as_ref().unwrap().replaced, 3);
+        let keys: Vec<_> = item
+            .shots
+            .iter()
+            .map(|s| (s.ordinal, s.hires.as_ref().unwrap().file_key.clone()))
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                (0, "a.jpg".into()),
+                (1, "b.jpg".into()),
+                (2, "c.jpg".into())
+            ]
+        );
+        assert!(
+            item.shots[0]
+                .hires
+                .as_ref()
+                .unwrap()
+                .matched
+                .contains("与原帖顺序不同")
+        );
+        assert!(item.shots.iter().all(|s| s.bytes.len() > 1000));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn 从链接里切短码() {
