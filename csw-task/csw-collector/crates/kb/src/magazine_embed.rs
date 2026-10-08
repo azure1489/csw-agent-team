@@ -181,10 +181,14 @@ fn left(conn: &Connection, model: &str) -> Result<(i64, i64)> {
 
 /// 读图、缩到 `side` 宽、转 JPEG base64。
 pub fn load_b64(path: &Path, side: u32) -> Result<String> {
-    use image::ImageEncoder;
     let bytes = std::fs::read(path).with_context(|| format!("读 {}", path.display()))?;
-    let img =
-        image::load_from_memory(&bytes).with_context(|| format!("解码 {}", path.display()))?;
+    encode_b64(&bytes, side).with_context(|| format!("处理 {}", path.display()))
+}
+
+/// 图片字节 → 缩到 `side` 宽 → JPEG base64。以图搜图的查询图也走这里，与入库同一套处理。
+pub fn encode_b64(bytes: &[u8], side: u32) -> Result<String> {
+    use image::ImageEncoder;
+    let img = image::load_from_memory(bytes).context("解码图片")?;
     let rgb = shrink(img, side).to_rgb8();
     let mut out = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85)

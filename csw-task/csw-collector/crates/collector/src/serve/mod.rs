@@ -19,6 +19,7 @@ pub mod finish;
 pub mod hires_match;
 pub mod http;
 pub mod item;
+pub mod kb_magazine;
 pub mod outbox_sender;
 pub mod register;
 pub mod round;

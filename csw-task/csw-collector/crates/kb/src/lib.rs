@@ -18,6 +18,7 @@ pub mod docs;
 pub mod fts;
 pub mod magazine;
 pub mod magazine_embed;
+pub mod magazine_search;
 pub mod search;
 pub mod sync;
 pub mod vectors;

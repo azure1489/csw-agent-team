@@ -19,7 +19,7 @@ Rust 工作区。接管资讯日更流程的 **01 情报逐条**、**05 配图�
 | `judge` | 合并、对照、逐条判断（结论档 + 六维 + 三句话，不打分） |
 | `deepcheck` | codex app-server 薄 stdio 客户端 + 深核编排 |
 | `deliver` | 交付物生成与提交（zip 只构建一次，确定性生成） |
-| `mcpsrv` | 本地 MCP 只读服务（kb_search / kb_similar_selected / memory_lookup） |
+| `mcpsrv` | 本地 MCP 只读服务（kb_search / kb_similar_selected / memory_lookup；杂志背景 kb_magazine_search / kb_image_search） |
 | `collector` | 可执行文件：HTTP 工作台 + 编排 + CLI |
 
 数据放置：**结构化数据全在 SQLite，LanceDB 只放向量。**

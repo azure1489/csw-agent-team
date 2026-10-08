@@ -91,9 +91,12 @@ Jev 初评的概率只在服务端决定「先判哪条」，不出现在任何�
 |---|---|---|---|
 | GET | `/api/kb/search` | viewer | `?q=&limit=`。向量 top-K ∪ 品牌命中 ∪ 全文 → 合并 → 截断。**这条路上不重排**——重排占 GPU，而 GPU 是全进程串行的；有人在页面上连搜几下，正式轮的向量化就堵住了 |
 | GET | `/api/kb/similar-selected` | viewer | `?q=<candidate_key>`。用候选正文现算一次查询向量（候选的融合向量是一次性的，没存），把它自己排除掉 |
-| GET | `/api/kb/brands/:brand` | viewer | 某品牌的历史覆盖。**纯查库，不碰 GPU**——这一页是拿来翻的 |
+| GET | `/api/kb/brands/:brand` | viewer | 某品牌的历史覆盖。**纯查库，不碰 GPU**——这一页是拿来翻的。`magazine` 一节是「杂志里出现过」（品牌键比较，刊期新的在前），与 CSW 历史覆盖 `docs` 分开 |
 | GET | `/api/kb/backfill` | viewer | 待补录清单：进过选题（决定 / 已发 / 范例）却对不上 csw 在册别名的品牌，按被选中次数排，每行附最近 5 条依据（标题、日期、链接、结论码）。**不带决定正文**（里面有 Van 的原话）。别名表每次现读 |
-| GET | `/api/kb/status` | viewer | 各来源**同步到哪天了**与条数。不是「库里有多少」：前者好看，后者才回答「今天的判断有没有拿到昨天的已发条目」 |
+| GET | `/api/kb/status` | viewer | 各来源**同步到哪天了**与条数。不是「库里有多少」：前者好看，后者才回答「今天的判断有没有拿到昨天的已发条目」。`magazine` 一节：本数、条数、应算向量数、融合已算、纯图应算 / 已算（纯图按不同的图计）、最近入库的书 |
+| GET | `/api/kb/magazine/search` | viewer | 杂志背景文字检索。`?q=&book=&limit=`（limit ≤100，默认 20）。全文（只看 `magazine_item`）∪ 向量（`docs` 表 `kind = magazine_item` 前置过滤），名次倒数融合；不重排；同一本书可以返回多条。每条带 `routes`（fts / vector）、`similarity`、刊期、页码、裁图与整页 OSS 地址、`bbox`、`page_size`、`fused_ready` / `pure_ready`。**与判断路径完全分开** |
+| GET | `/api/kb/magazine/:id` | viewer | 杂志条目详情（字段同上）。不是杂志条目回 404 |
+| POST | `/api/kb/image-search` | operator | 以图搜图。请求体就是图片字节（jpg / png / webp，≤20MB），`?limit=`。缩到 `[magazine].image_side` 宽后算纯图向量（占一次向量服务），在 `images` 表找最近的图，经 `kb_doc_images` 回到杂志条目；同一张图出现在几期就返回几条；`images` 表里的候选图不返回。回 `items`、`embed_ms`、`total_ms` |
 
 知识库那三个检索接口在客户端还没建起来时回 **503**，不回空结果——
 「还没起来」与「库里什么都没有」是两件完全不同的事。

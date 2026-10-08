@@ -22,6 +22,7 @@ use csw_collector_core::vector::{VectorClient, VectorConfig};
 use csw_collector_kb::brands::BrandIndex;
 use csw_collector_kb::fts::Tokenizer;
 use csw_collector_kb::vectors::VectorStore;
+use csw_collector_mcpsrv::magazine::{KbImageSearch, KbMagazineSearch};
 use csw_collector_mcpsrv::server::Server;
 use csw_collector_mcpsrv::tools::{KbContext, KbSearch, KbSimilarSelected, MemoryLookup};
 
@@ -74,7 +75,9 @@ pub async fn run(cfg: &Config) -> Result<()> {
     let server = Server::new("csw-kb", env!("CARGO_PKG_VERSION"))
         .with(Box::new(KbSearch(ctx.clone())))
         .with(Box::new(KbSimilarSelected(ctx.clone())))
-        .with(Box::new(MemoryLookup(ctx)))
+        .with(Box::new(MemoryLookup(ctx.clone())))
+        .with(Box::new(KbMagazineSearch(ctx.clone())))
+        .with(Box::new(KbImageSearch(ctx)))
         .with(Box::new(FetchPage(web.clone())))
         .with(Box::new(WebSearch(web)));
     tracing::info!(工具 = ?server.tool_names(), "本地 MCP 起来了（stdio）");

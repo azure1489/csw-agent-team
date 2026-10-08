@@ -86,6 +86,14 @@ pub fn api_router(state: Arc<AppState>, auth: Arc<AuthState>) -> Router {
         .route("/api/kb/similar-selected", get(kb_similar))
         .route("/api/kb/brands/{brand}", get(kb_brand))
         .route("/api/kb/backfill", get(kb_backfill))
+        .route("/api/kb/magazine/search", get(super::kb_magazine::search))
+        .route("/api/kb/magazine/{id}", get(super::kb_magazine::item))
+        .route(
+            "/api/kb/image-search",
+            axum::routing::post(super::kb_magazine::image_search).layer(
+                axum::extract::DefaultBodyLimit::max(super::kb_magazine::MAX_IMAGE_BYTES),
+            ),
+        )
         .route("/api/pending-check", get(pending_check))
         .route("/api/work", get(work_queue))
         .route("/api/audit", get(audit_log))
@@ -104,7 +112,7 @@ pub fn api_router(state: Arc<AppState>, auth: Arc<AuthState>) -> Router {
 /// 运维面的两个接口（`/api/settings`、`/api/audit`）要主编那一档。
 ///
 /// `API.md` 的表里它们标的就是 operator，这里把那句话变成代码。
-fn need_operator(s: &Session, what: &str) -> Result<(), ApiError> {
+pub(super) fn need_operator(s: &Session, what: &str) -> Result<(), ApiError> {
     if matches!(s.role.as_str(), "superadmin" | "operator") {
         Ok(())
     } else {
@@ -1674,6 +1682,9 @@ async fn kb_status(State(st): State<Arc<AppState>>) -> Result<Json<serde_json::V
         "品牌": one("SELECT COUNT(*) FROM brands"),
         "别名": one("SELECT COUNT(*) FROM brand_aliases"),
         "embed_model": st.cfg.vector.embed_model,
+        // 杂志背景：本数、条数、两遍向量进度、最近入库的书（同步时间在 cursors 的 magazine 行）
+        "magazine": csw_collector_kb::magazine_search::status(&conn, &st.cfg.vector.embed_model)
+            .map_err(ApiError::any)?,
     })))
 }
 
@@ -1786,9 +1797,18 @@ async fn kb_brand(
     let conn = st.conn.lock().await;
     let docs = csw_collector_kb::docs::by_brand(&conn, &brand, q.limit.clamp(1, 200))
         .map_err(ApiError::any)?;
+    // 「杂志里出现过」单独一节，刊期新的在前；与上面的 CSW 历史覆盖分开，不混排
+    let magazine = csw_collector_kb::magazine_search::by_brand(
+        &conn,
+        &brand,
+        q.limit.clamp(1, 200),
+        &st.cfg.vector.embed_model,
+    )
+    .map_err(ApiError::any)?;
     Ok(Json(serde_json::json!({
         "brand": brand,
         "docs": docs.iter().map(doc_json).collect::<Vec<_>>(),
+        "magazine": magazine,
     })))
 }
 
@@ -2639,6 +2659,78 @@ mod tests {
             "{}",
             snippet.chars().count()
         );
+    }
+
+    /// 杂志背景：详情、品牌页一节、状态一节都是纯查库；检索没起来回 503；以图搜图只给 operator
+    #[tokio::test]
+    async fn 杂志背景接口() {
+        let (app, st) = app();
+        let id = {
+            let conn = st.conn.lock().await;
+            let line: csw_collector_kb::magazine::Line = serde_json::from_value(serde_json::json!({
+                "manifest_version": 1, "generated_at": "2026-10-08T12:00:00Z",
+                "book_key": "b1", "magazine": "GO OUT", "issue": "2026.01",
+                "issue_date": "2026-01-01", "image_id": "T:3:0", "pdf_index": 3,
+                "printed_page": 10, "category": "product", "has_content": true, "skipped": false,
+                "md_zh": "帐篷", "products": [{"brand": "and wander", "name": "Tent"}],
+                "image_blake3": "ab", "image_url": "https://x/ab.jpg", "local_path": "",
+                "page_blake3": "", "page_url": "", "page_local_path": ""
+            }))
+            .unwrap();
+            csw_collector_kb::magazine::ingest_lines(
+                &conn,
+                &csw_collector_kb::fts::Tokenizer::new(),
+                "b1",
+                &[line],
+            )
+            .unwrap();
+            conn.query_row("SELECT doc_id FROM kb_doc_images", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+        };
+        let (code, v) = get(&app, &format!("/api/kb/magazine/{id}")).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["book_key"], "b1");
+        assert_eq!(v["image_url"], "https://x/ab.jpg");
+        let (code, _) = get(&app, "/api/kb/magazine/99999").await;
+        assert_eq!(code, StatusCode::NOT_FOUND);
+
+        let (_, v) = get(&app, "/api/kb/brands/andwander").await;
+        assert_eq!(v["magazine"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            v["docs"].as_array().unwrap().len(),
+            0,
+            "杂志不混进 CSW 历史覆盖"
+        );
+
+        let (_, v) = get(&app, "/api/kb/status").await;
+        assert_eq!(v["magazine"]["books"], 1);
+        assert_eq!(v["magazine"]["docs"], 1);
+
+        let (code, _) = get(&app, "/api/kb/magazine/search?q=%E5%B8%90%E7%AF%B7").await;
+        assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
+
+        let post = |app: Router, body: &'static [u8]| async move {
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/kb/image-search")
+                    .header(
+                        axum::http::header::COOKIE,
+                        format!("{}={SID}", crate::bff::SESSION_COOKIE),
+                    )
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+        };
+        let as_viewer = api_router(st.clone(), auth_with("viewer"));
+        assert_eq!(post(as_viewer, b"x").await, StatusCode::FORBIDDEN);
+        assert_eq!(post(app.clone(), b"").await, StatusCode::BAD_REQUEST);
+        assert_eq!(post(app, b"x").await, StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
