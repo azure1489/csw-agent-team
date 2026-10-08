@@ -307,7 +307,7 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
 </tr>
 <tr>
 <td>云端实测（10-08，1 页）</td>
-<td><code>file-urls/batch</code> → <code>PUT</code> 预签名地址 200 → 约 15 秒 done → 下载 zip。zip 内：<code>layout.json</code>（<code>pdf_info[].page_size / para_blocks</code>，与自建 <code>*_middle.json</code> 同结构）、<code>*_content_list.json</code>、<code>*_content_list_v2.json</code>、<code>*_model.json</code>、<code>full.md</code>、<code>images/</code>、原 PDF；元数据 <code>_backend=hybrid</code>、<code>_effort=medium</code>、<code>_version_name=3.4.4</code>。当日上限错误码 <code>-60018</code>、任务不存在 <code>-60012</code>。<strong>同一封面页云端只切出 2 块（1 文字 + 1 整页图），自建切出 14 块</strong>——两路版面结果有差异，2a 验收要用整本（GO OUT 2016.06）对比裁图数与商品覆盖，差异大则 auto 策略需重新评估</td>
+<td><code>file-urls/batch</code> → <code>PUT</code> 预签名地址 200 → 约 15 秒 done → 下载 zip。zip 内：<code>layout.json</code>（<code>pdf_info[].page_size / para_blocks</code>，与自建 <code>*_middle.json</code> 同结构）、<code>*_content_list.json</code>、<code>*_content_list_v2.json</code>、<code>*_model.json</code>、<code>full.md</code>、<code>images/</code>、原 PDF；元数据 <code>_backend=hybrid</code>、<code>_effort=medium</code>、<code>_version_name=3.4.4</code>。当日上限错误码 <code>-60018</code>、任务不存在 <code>-60012</code>。<strong>同一封面页云端只切出 2 块（1 文字 + 1 整页图），自建切出 14 块</strong>——两路版面结果有差异。<strong>10-08 整本对比（2a 验收，goout-16-08，174 页 / 100.6 MB）</strong>：云端上传 42 s、解析约 2 min、zip 204 MB；切图 930 vs 自建 811，商品条目 978 vs 943，带价格 519 vs 522，有商品的页 137 vs 130——覆盖持平略好，auto 策略可行</td>
 </tr>
 <tr>
 <td>解析路由（决策 21、22）</td>
@@ -570,8 +570,8 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
 <td>路由规则、云端今日额度、自建实例状态与关机按钮、每本通道与判定原因、切换记录</td>
 </tr>
 <tr>
-<td>设计稿待改一处</td>
-<td>「任务 · 解析通道」板上写的是「每本入队时判一次」，按决策 21 应为「每本开始解析时判一次」</td>
+<td>设计稿改正（10-08 已改）</td>
+<td>「任务 · 解析通道」板原写「每本入队时判一次」，已按决策 21 改为「每本开始解析时判一次」并重新发布</td>
 </tr>
 <tr>
 <td>设置 · 解析服务</td>
@@ -677,7 +677,7 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
 </tr>
 <tr>
 <td>2a</td>
-<td>刊译台：解析通道（云端后端、路由、额度记账、自建空闲判断、解包兼容）+ 页面内开关机 + 解析通道页与设置页（<strong>待确认后开工</strong>；10-08 写过的草稿代码在 csw-kb <code>git stash</code> 里）</td>
+<td>刊译台：解析通道（云端后端、路由、额度记账、自建空闲判断、解包兼容）+ 页面内开关机 + 解析通道页与设置页（<strong>10-08 完成并本机验收</strong>，csw-kb <code>4ac7176</code>、<code>6078c2f</code>、<code>8fd4cb2</code>，未部署）</td>
 <td>整本 GO OUT 2016.06 走云端，与自建的裁图数 / 商品覆盖对比；把额度临时设成 1，第 2 本自动切自建并自动开机、空闲后自动关机；页面按钮开关机；<code>make check</code></td>
 </tr>
 <tr>
