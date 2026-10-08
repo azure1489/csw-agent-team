@@ -40,7 +40,7 @@ footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule);
   <div class="eyebrow"><span>营事编集室 · 情报收集员工作台</span><span>子方案 · 2026-10-07</span><span class="chip">未动工</span></div>
   <h1>杂志背景库<span>刊译台图文 → OSS → 工作台知识库</span></h1>
   <p class="lede">把刊译台加工好的日文杂志图文（扫描 PDF → 中文译文 + 商品表 + 裁图）导入工作台知识库，作为<strong>杂志背景</strong>一类材料，支持文字检索与以图搜图。刊译台不再导入 llm_wiki。</p>
-  <p class="meta">日期：2026-10-07（10-07 晚按 review 改第 2 版）｜状态：方案已定，未动工（动工时间由用户决定）｜涉及：<code>~/project/csw-kb</code>（刊译台）、<code>csw-task/csw-collector</code>（工作台后端）、<code>csw-task/csw-collector-web</code>（工作台前端）</p>
+  <p class="meta">日期：2026-10-07（10-07 晚按 review 改第 2 版）｜状态：方案已定，未动工（动工时间由用户决定；进度见 <code>docs/情报收集员工作台_杂志背景库_实施进度.md</code>）｜涉及：<code>~/project/csw-kb</code>（刊译台）、<code>csw-task/csw-collector</code>（工作台后端）、<code>csw-task/csw-collector-web</code>（工作台前端）</p>
 </header>
 <nav aria-label="目录"><ol><li><a href="#1-已定决策">1. 已定决策</a></li><li><a href="#2-数据源与规模">2. 数据源与规模</a></li><li><a href="#3-架构">3. 架构</a></li><li><a href="#4-清单格式-manifest-jsonl">4. 清单格式 <code>manifest.jsonl</code></a></li><li><a href="#5-刊译台改动-project-csw-kb">5. 刊译台改动（<code>~/project/csw-kb</code>）</a></li><li><a href="#6-工作台后端改动-csw-task-csw-collector">6. 工作台后端改动（<code>csw-task/csw-collector</code>）</a></li><li><a href="#7-前端改动">7. 前端改动</a></li><li><a href="#8-设计稿-第-0-步-先于前端">8. 设计稿（第 0 步，先于前端）</a></li><li><a href="#9-护栏-必须有单测">9. 护栏（必须有单测）</a></li><li><a href="#10-实施步骤">10. 实施步骤</a></li><li><a href="#11-范围外">11. 范围外</a></li></ol></nav>
 <article><h2 id="1-已定决策">1. 已定决策</h2>
