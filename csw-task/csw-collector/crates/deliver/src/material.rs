@@ -51,6 +51,27 @@ pub struct Shot {
     pub desc: Option<MediaDescription>,
     /// 换进包里的高清原图的来历。`None` 时 `bytes` 是来源库的 640 图
     pub hires: Option<HiresShot>,
+    /// 不在原帖里、按已通过的 04 图位说明取的图（如店页产品图）的来历
+    pub external: Option<ExternalShot>,
+}
+
+/// 04 指定、原帖里没有的图：取自 04 附件，再回 04 依据的页面核最高原图。
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct ExternalShot {
+    /// 04 附件里的文件名
+    pub write_file: String,
+    /// 04 manifest 写的上游路径
+    pub upstream_path: String,
+    /// 核到的原图所在页面与原图地址；没核到时为空
+    pub page_url: String,
+    pub original_url: String,
+    pub width: u32,
+    pub height: u32,
+    pub bytes: u64,
+    pub sha256: String,
+    /// 原图是否在页面上核到（核到才用页面原图；没核到用 04 附件原字节）
+    pub verified: bool,
+    pub note: String,
 }
 
 /// 一张高清原图的来历，**逐项可核**：原帖序号 → Instagram 文件名 → 取得地址 →
@@ -207,6 +228,33 @@ pub fn material_body(item: &ItemShots, picked: &[&Shot]) -> String {
             let _ = writeln!(s, "- 正文提到但画面没有：{missing}");
         }
         let _ = writeln!(s, "- 类型：{}", kind_cn(d.map(|d| d.kind)));
+        if let Some(x) = &shot.external {
+            if x.verified {
+                let _ = writeln!(
+                    s,
+                    "- 原图（04 指定，原帖里没有）：{}（{}×{}，{} B，sha256 {}；页面 {}）",
+                    x.original_url,
+                    x.width,
+                    x.height,
+                    x.bytes,
+                    short_sha(&x.sha256),
+                    x.page_url
+                );
+            } else {
+                let _ = writeln!(
+                    s,
+                    "- 原图（04 指定，原帖里没有）：取自 04 附件 `{}`（{}×{}，{} B，sha256 {}），**页面最高原图未核到**：{}",
+                    x.write_file,
+                    x.width,
+                    x.height,
+                    x.bytes,
+                    short_sha(&x.sha256),
+                    x.note
+                );
+            }
+            let _ = writeln!(s);
+            continue;
+        }
         match &shot.hires {
             Some(h) => {
                 let _ = writeln!(
@@ -519,6 +567,7 @@ mod tests {
 
     fn shot(ordinal: u16, d: Option<MediaDescription>) -> Shot {
         Shot {
+            external: None,
             blake3: format!("b{ordinal}"),
             ordinal,
             url: format!("https://img/{ordinal}.jpg"),

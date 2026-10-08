@@ -24,6 +24,7 @@ pub mod register;
 pub mod round;
 pub mod schedule;
 pub mod services;
+pub mod slots;
 pub mod tasks;
 pub mod write;
 
@@ -1011,7 +1012,7 @@ async fn start_round(
     if t.task.stage_code != STAGE_INTAKE {
         let r2 = r.clone();
         let out = if t.task.stage_code == item::STAGE_MATERIAL {
-            item::run_material(conn, &r2, &detail, cfg, svc).await
+            item::run_material(conn, &r2, &detail, cfg, svc, engine).await
         } else {
             item::run_xhs_pick(conn, &r2, &detail, cfg, svc, engine).await
         };

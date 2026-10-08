@@ -88,6 +88,11 @@ impl EngineClient {
         self.get("/me/tasks").await
     }
 
+    /// 期次详情：`{run, tasks:[…]}`。05 用它找同条目已通过的 04。
+    pub async fn run_detail(&self, run_id: i64) -> Result<serde_json::Value, EngineError> {
+        self.get(&format!("/runs/{run_id}")).await
+    }
+
     pub async fn task_detail(&self, task_id: i64) -> Result<TaskDetail, EngineError> {
         let d: TaskDetail = self.get(&format!("/tasks/{task_id}")).await?;
         Ok(d.normalize())

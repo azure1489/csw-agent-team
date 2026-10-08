@@ -60,6 +60,7 @@ pub async fn run_material(
     detail: &TaskDetail,
     cfg: &Config,
     svc: &super::services::Services,
+    engine: &csw_collector_engineapi::client::EngineClient,
 ) -> Result<pack::Built> {
     let item_key = detail.task.item_key.trim();
     anyhow::ensure!(
@@ -86,14 +87,39 @@ pub async fn run_material(
     //（10-02 r60 Van 退修：LFE 要翻转后侧视、MINIMAL WORKS 要整顶全貌，v2 却写「缺口 0 条」直通）
     let note = dispatch_note(detail);
     let redo = round.target_version > 1 && !note.trim().is_empty();
-    if redo {
+    // 同条目已通过的 04 有图位说明，就按它配（10-07 r65 #751）；没有才自选
+    let plan = match super::slots::approved_write_plan(
+        engine,
+        &csw_collector_harvest::netguard::guarded_client(
+            std::time::Duration::from_secs(60),
+            false,
+        )?,
+        detail.task.run_id,
+        item_key,
+    )
+    .await
+    {
+        Ok(p) => p.filter(|p| !p.slots.is_empty()),
+        Err(e) => {
+            tracing::warn!(条目 = %item_key, 原因 = %format!("{e:#}"), "读同条目 04 失败，按识图自选图位");
+            None
+        }
+    };
+    let planned = match plan.as_ref() {
+        Some(p) => Some(apply_write_plan(&mut item, p).await?),
+        None => None,
+    };
+    if redo && planned.is_none() {
         item.gaps.push(format!(
             "本次派工的修订要求工作台没有自动核对：只在原帖已有的 {} 张图里重排图位，没有新增图源。\
              要求里的功能图若不在下面「素材核对」的逐张说明里，就是原帖没有，需人工补采或换图源（不重绘、不拼图）",
             item.shots.len()
         ));
     }
-    let picked = material::pick_figures(&item.shots, material::FIGURE_SLOTS);
+    let picked: Vec<&Shot> = match planned.as_ref() {
+        Some(idx) => idx.iter().map(|&i| &item.shots[i]).collect(),
+        None => material::pick_figures(&item.shots, material::FIGURE_SLOTS),
+    };
     rounds::end_step(
         conn,
         step.id,
@@ -107,6 +133,16 @@ pub async fn run_material(
     )?;
 
     let mut body = material::material_body(&item, &picked);
+    if let Some(p) = plan.as_ref() {
+        body.push_str(&format!(
+            "\n## 图位依据\n\n图位按已通过的 04（任务 #{} 交付 #{} v{}）「图位说明」配：原帖里的图按画面在高清图里找同一张；\
+             原帖里没有的图取 04 附件，再回 04 依据的页面核最高原图（{}）。\n",
+            p.write_task_id,
+            p.deliverable_id,
+            p.version,
+            if p.evidence_urls.is_empty() { "04 没写依据页面".to_string() } else { p.evidence_urls.join("、") }
+        ));
+    }
     if redo {
         body.push_str("\n## 本次派工要求（原文）\n\n");
         for l in note.trim().lines() {
@@ -317,6 +353,7 @@ async fn shots_for(
                 });
                 bytes_by_b3.insert(d.blake3.clone(), bytes);
                 shots.push(Shot {
+                    external: None,
                     blake3: d.blake3.clone(),
                     ordinal: m.ordinal,
                     url: m.url.clone(),
@@ -388,6 +425,150 @@ async fn shots_for(
         }
     }
     Ok(item)
+}
+
+/// 按 04 图位说明配图，返回各图位在 `item.shots` 里的下标（按 04 的序号）。
+async fn apply_write_plan(
+    item: &mut ItemShots,
+    plan: &super::slots::WritePlan,
+) -> Result<Vec<usize>> {
+    use csw_collector_core::types::{ImageKind, MediaDescription};
+    use material::ExternalShot;
+    let http =
+        csw_collector_harvest::netguard::guarded_client(std::time::Duration::from_secs(60), false)?;
+    let prints: Vec<Option<hires_match::Prints>> = item
+        .shots
+        .iter()
+        .map(|s| hires_match::prints(&s.bytes).ok())
+        .collect();
+    let mut picked = Vec::new();
+    for slot in &plan.slots {
+        let tag = format!("按 04 图位 {}：{}", slot.n, slot.purpose);
+        // 一、原帖里的图：按画面找
+        let lo = hires_match::lo_print(&slot.bytes).ok();
+        let hit = lo.and_then(|lo| {
+            prints
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !picked.contains(i))
+                .filter_map(|(i, p)| p.map(|p| (i, hires_match::compare(&p, lo))))
+                .filter(|(_, m)| m.ok())
+                .min_by_key(|(_, m)| m.rank())
+                .map(|(i, _)| i)
+        });
+        if let Some(i) = hit {
+            let s = &mut item.shots[i];
+            match s.desc.as_mut() {
+                Some(d) => d.matches_text = format!("{tag}；{}", d.matches_text),
+                None => {
+                    s.desc = Some(MediaDescription {
+                        blake3: s.blake3.clone(),
+                        ordinal: s.ordinal,
+                        matches_text: tag.clone(),
+                        content: [slot.label.as_str(), slot.supports.as_str()]
+                            .iter()
+                            .filter(|x| !x.is_empty())
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join("；"),
+                        missing_from_text: slot.cannot.clone(),
+                        kind: ImageKind::Scene,
+                        usable_as_figure: true,
+                        model: "04 manifest".into(),
+                        prompt_version: String::new(),
+                    })
+                }
+            }
+            picked.push(i);
+            continue;
+        }
+        // 二、原帖里没有：04 附件 → 回依据页面核最高原图
+        let original = super::slots::find_original(&http, &plan.evidence_urls, &slot.bytes)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(条目 = %item.item_key, 原因 = %format!("{e:#}"), "回页面核原图失败");
+                None
+            });
+        let (bytes, ext, x) = match original {
+            Some(o) => {
+                let ext = ext_of(&o.url);
+                let x = ExternalShot {
+                    write_file: slot.file.clone(),
+                    upstream_path: slot.upstream_path.clone(),
+                    page_url: o.page_url.clone(),
+                    original_url: o.url.clone(),
+                    width: o.width,
+                    height: o.height,
+                    bytes: o.data.len() as u64,
+                    sha256: super::slots::sha256_hex(&o.data),
+                    verified: true,
+                    note: if o.data == slot.bytes {
+                        "与 04 附件逐字节相同".into()
+                    } else {
+                        "页面原图与 04 附件同画面、尺寸更大或重编码不同，用页面原图".into()
+                    },
+                };
+                (o.data, ext, x)
+            }
+            None => {
+                let (w, h) = hires_match::dimensions(&slot.bytes).unwrap_or((0, 0));
+                item.gaps.push(format!(
+                    "图位 {} 用 04 附件 `{}`（原帖里没有这张），回依据页面没核到同画面的原图，最高原图待人工核",
+                    slot.n, slot.file
+                ));
+                let x = ExternalShot {
+                    write_file: slot.file.clone(),
+                    upstream_path: slot.upstream_path.clone(),
+                    width: w,
+                    height: h,
+                    bytes: slot.bytes.len() as u64,
+                    sha256: super::slots::sha256_hex(&slot.bytes),
+                    verified: false,
+                    note: if plan.evidence_urls.is_empty() {
+                        "04 没写依据页面".into()
+                    } else {
+                        format!("已查 {}", plan.evidence_urls.join("、"))
+                    },
+                    ..Default::default()
+                };
+                (slot.bytes.clone(), ext_of(&slot.file), x)
+            }
+        };
+        let b3 = blake3::hash(&bytes).to_hex().to_string();
+        let ordinal = 900 + slot.n as u16;
+        item.shots.push(Shot {
+            blake3: b3.clone(),
+            ordinal,
+            url: if x.verified {
+                x.original_url.clone()
+            } else {
+                format!("04 附件 {}", slot.file)
+            },
+            bytes,
+            ext,
+            desc: Some(MediaDescription {
+                blake3: b3,
+                ordinal,
+                matches_text: tag,
+                content: [slot.label.as_str(), slot.supports.as_str()]
+                    .iter()
+                    .filter(|x| !x.is_empty())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("；"),
+                missing_from_text: slot.cannot.clone(),
+                kind: ImageKind::Detail,
+                usable_as_figure: true,
+                model: "04 manifest".into(),
+                prompt_version: String::new(),
+            }),
+            hires: None,
+            external: Some(x),
+        });
+        picked.push(item.shots.len() - 1);
+    }
+    tracing::info!(条目 = %item.item_key, 图位 = picked.len(), 交付 = plan.deliverable_id, "按 04 图位说明配图");
+    Ok(picked)
 }
 
 /// 贴文的 Instagram 短码（`/p/<code>/`），给 hires-service 用。**不是** csw 的数字贴文 id。
@@ -892,14 +1073,21 @@ mod tests {
     /// 三张画面截然不同的图：横向渐变、纵向渐变、棋盘
     fn pic(kind: u8, w: u32, h: u32) -> Vec<u8> {
         let img = image::ImageBuffer::from_fn(w, h, |x, y| {
-            let v = match kind {
-                0 => (x * 255 / w) as u8,
-                1 => (y * 255 / h) as u8,
-                _ => {
+            // dHash 只看每行相邻像素的大小：纯横向 / 纵向渐变会得到同一个哈希，测试图要各有结构
+            let v: u8 = match kind {
+                0 => (255 - x * 255 / w) as u8,
+                1 => {
                     if (x * 8 / w + y * 8 / h).is_multiple_of(2) {
                         230
                     } else {
                         20
+                    }
+                }
+                _ => {
+                    if (x * 9 / w).is_multiple_of(3) {
+                        240
+                    } else {
+                        30
                     }
                 }
             };
@@ -910,6 +1098,81 @@ mod tests {
             .write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Jpeg)
             .unwrap();
         b
+    }
+
+    // r65 #751：按 04 图位说明配图。原帖里的图按画面找；原帖没有的取 04 附件，核不到页面原图就记缺口
+    #[tokio::test]
+    async fn 按04图位说明配图() {
+        let shot = |ord: u16, kind: u8| Shot {
+            external: None,
+            blake3: format!("b{kind}"),
+            ordinal: ord,
+            url: format!("https://lib/{kind}.jpg"),
+            bytes: pic(kind, 1080, 1350),
+            ext: "jpg".into(),
+            desc: None,
+            hires: None,
+        };
+        let mut item = ItemShots {
+            item_key: "moonlightgearofficial-695545".into(),
+            title: "t".into(),
+            source_url: "https://www.instagram.com/p/X/".into(),
+            account: "a".into(),
+            posted_at: String::new(),
+            ingested_at: String::new(),
+            shots: vec![shot(0, 0), shot(1, 1)],
+            gaps: vec![],
+            hires: None,
+        };
+        let plan = super::super::slots::WritePlan {
+            write_task_id: 750,
+            deliverable_id: 1108,
+            version: 1,
+            slots: vec![
+                super::super::slots::PlannedSlot {
+                    n: 1,
+                    purpose: "标题下：原帖系列背负场景".into(),
+                    file: "images/x_2.jpg".into(),
+                    bytes: pic(1, 512, 640),
+                    ..Default::default()
+                },
+                super::super::slots::PlannedSlot {
+                    n: 2,
+                    purpose: "第二段前：V2 店页肩带局部".into(),
+                    file: "images/palante-v2-img_001.jpg".into(),
+                    bytes: pic(2, 1000, 1250),
+                    label: "明确绑定V2店页的肩带图".into(),
+                    ..Default::default()
+                },
+            ],
+            evidence_urls: vec![],
+        };
+        let idx = apply_write_plan(&mut item, &plan).await.unwrap();
+        assert_eq!(idx.len(), 2);
+        // 图位 1：原帖第 2 张（画面对上），不是第 1 张
+        assert_eq!(item.shots[idx[0]].ordinal, 1);
+        assert!(
+            item.shots[idx[0]]
+                .desc
+                .as_ref()
+                .unwrap()
+                .matches_text
+                .starts_with("按 04 图位 1")
+        );
+        // 图位 2：原帖里没有，取 04 附件，未核到页面原图
+        let x = item.shots[idx[1]].external.as_ref().unwrap();
+        assert!(!x.verified);
+        assert_eq!(x.write_file, "images/palante-v2-img_001.jpg");
+        assert!(
+            item.gaps
+                .iter()
+                .any(|g| g.contains("图位 2") && g.contains("最高原图待人工核"))
+        );
+        let body = material::material_body(
+            &item,
+            &idx.iter().map(|&i| &item.shots[i]).collect::<Vec<_>>(),
+        );
+        assert!(body.contains("页面最高原图未核到"));
     }
 
     // r65 circles_jp：来源库给的顺序与原帖不同，按位置配会全错；按画面配应全部换上并改按原帖顺序
@@ -962,6 +1225,7 @@ mod tests {
         .unwrap();
         // 来源库顺序 C(0) A(1) B(2)，640 档
         let shot = |ord: u16, kind: u8| Shot {
+            external: None,
             blake3: format!("b{kind}"),
             ordinal: ord,
             url: format!("https://lib/{kind}.jpg"),
