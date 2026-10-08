@@ -248,6 +248,27 @@ async fn 对真引擎跑通接单登记与自查() {
     .await
     .unwrap();
 
+    // 归属清空：先挂到 a-000001，再以空 item_key 重报，回读必须没有归属（r66 v4 两键）
+    let mut owned = live_judgement("b-000002", "not_recommend", true);
+    owned.item_key = "a-000001".into();
+    c.put_judgements(run_id, &[owned]).await.unwrap();
+    c.put_judgements(run_id, &[live_judgement("b-000002", "not_recommend", true)])
+        .await
+        .unwrap();
+    let all = c.intake_judgements(run_id).await.unwrap();
+    let b = all
+        .as_array()
+        .or_else(|| all.get("judgements").and_then(|v| v.as_array()))
+        .expect("判断列表")
+        .iter()
+        .find(|j| j["candidate_key"] == "b-000002")
+        .expect("b-000002 应当在台账里")
+        .clone();
+    assert!(
+        b["item_key"].as_str().unwrap_or("").is_empty(),
+        "空 item_key 重报后旧归属应被清掉：{b}"
+    );
+
     // 没读到实图却落非待核档 —— 引擎必须拒
     let err = c
         .put_judgements(
