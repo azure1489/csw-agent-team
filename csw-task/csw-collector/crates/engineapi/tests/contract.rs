@@ -231,6 +231,39 @@ fn 没归属的判断也明确发空item_key让引擎清掉旧归属() {
 }
 
 #[tokio::test]
+async fn 交付摘要作self_check发出引擎不读note() {
+    use csw_collector_engineapi::{DeliverableKind, SubmitInput};
+    use wiremock::matchers::body_string_contains;
+
+    let srv = MockServer::start().await;
+    // 10-09：工作台的说明一直写在 note 里，引擎只读 self_check，「待审」群消息从没带上过
+    Mock::given(method("POST"))
+        .and(path("/tasks/9/deliverables"))
+        .and(body_string_contains("name=\"self_check\""))
+        .and(body_string_contains("推荐 3"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": 1})))
+        .mount(&srv)
+        .await;
+    let zip = std::env::temp_dir().join(format!("csw-selfcheck-{}.zip", std::process::id()));
+    std::fs::write(&zip, b"PK\x05\x06\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0").unwrap();
+    let r = client(&srv.uri())
+        .submit(&SubmitInput {
+            task_id: 9,
+            kind: DeliverableKind::Output,
+            zip_path: zip.clone(),
+            file_name: "x.zip".into(),
+            idem_key: "submit-9-y".into(),
+            note: String::new(),
+            self_check: "判了 10 条：推荐 3".into(),
+            affects_deliverable_id: None,
+            item_key: String::new(),
+        })
+        .await;
+    let _ = std::fs::remove_file(&zip);
+    assert!(r.is_ok(), "没带 self_check 就匹配不上 mock：{r:?}");
+}
+
+#[tokio::test]
 async fn 提交的kind用引擎认的英文值() {
     use csw_collector_engineapi::{DeliverableKind, SubmitInput};
     use wiremock::matchers::body_string_contains;
@@ -261,6 +294,7 @@ async fn 提交的kind用引擎认的英文值() {
             file_name: "x.zip".into(),
             idem_key: "submit-9-x".into(),
             note: String::new(),
+            self_check: String::new(),
             affects_deliverable_id: None,
             item_key: String::new(),
         })

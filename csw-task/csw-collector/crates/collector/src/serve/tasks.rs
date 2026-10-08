@@ -142,12 +142,23 @@ pub fn start_heartbeat(engine: EngineClient, task_id: i64, every: Duration) -> B
 /// 轮询接口偶尔会把同一条读到两次。
 pub fn plan(tasks: &[MyTask]) -> Vec<(&MyTask, Action)> {
     let mut seen = HashSet::new();
-    tasks
+    let mut out: Vec<_> = tasks
         .iter()
         .filter(|t| seen.insert(t.task.id))
         .map(|t| (t, decide(t)))
         .filter(|(_, a)| *a != Action::Ignore)
-        .collect()
+        .collect();
+    // 一个个串行做：新的一期先做，同一期 01 在前。旧期的返工排在后面，
+    // 不让它挡住当天定时开出来的 01（10-09 起每天 06:00 自动开期，上一期没收尾也开）
+    out.sort_by_key(|(t, _)| {
+        let stage = match t.task.stage_code.as_str() {
+            "intake" => 0,
+            "material" => 1,
+            _ => 2,
+        };
+        (std::cmp::Reverse(t.task.run_id), stage)
+    });
+    out
 }
 
 #[cfg(test)]
@@ -174,6 +185,19 @@ mod tests {
             },
             run_subject: String::new(),
         }
+    }
+
+    #[test]
+    fn 新的一期先做同一期01在前() {
+        let mut old = task(1, "intake", TaskStatus::Returned);
+        old.task.run_id = 66;
+        let mut mat = task(2, "material", TaskStatus::Dispatched);
+        mat.task.run_id = 67;
+        let mut new = task(3, "intake", TaskStatus::Dispatched);
+        new.task.run_id = 67;
+        let all = [old, mat, new];
+        let order: Vec<i64> = plan(&all).iter().map(|(t, _)| t.task.id).collect();
+        assert_eq!(order, [3, 2, 1]);
     }
 
     #[test]

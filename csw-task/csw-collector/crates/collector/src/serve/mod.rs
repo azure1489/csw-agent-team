@@ -141,7 +141,6 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
     let mut prev_min = schedule::now_minute();
     // 接下来但还没轮到做的任务，心跳要一直发着，否则引擎判「接单后无活动」
     let mut beats: std::collections::HashMap<i64, tasks::Beat> = Default::default();
-    let mut magazine = crate::kb::MagazineBackfill::default();
     loop {
         if let Err(e) = tick(&conn, &engine, cfg, &svc, &mut beats).await {
             tracing::warn!(原因 = %format!("{e:#}"), "这一轮轮询没跑完");
@@ -155,16 +154,6 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
         if let Err(e) = run_queued(cfg, &conn, &svc).await {
             tracing::warn!(原因 = %format!("{e:#}"), "排队的活没做成");
         }
-        // 都没在跑时做一片杂志向量回填；接了单没做完（beats 非空）就不做
-        crate::kb::magazine_backfill_tick(
-            cfg,
-            &conn,
-            &svc.store,
-            &svc.vector,
-            &mut magazine,
-            !beats.is_empty(),
-        )
-        .await;
         prev_min = now_min;
         tokio::time::sleep(every).await;
     }
@@ -604,6 +593,15 @@ async fn tick(
             continue;
         }
         if beats.contains_key(&t.task.id) {
+            continue;
+        }
+        // 01 的窗口还没到截止就不接：定时器提前开了一期（10-09 r67 03:08 开出、窗口止于 06:00），
+        // 现在开工会把止点截成「此刻」，主编凌晨被 @、当期少一段。到点再接
+        if t.task.stage_code == "intake"
+            && let Ok(Some((_, to))) = engine.run_window(t.task.run_id).await
+            && !window_closed(&to, jiff::Timestamp::now())
+        {
+            tracing::debug!(任务 = t.task.id, 窗口止 = %to, "窗口还没截止，到点再接");
             continue;
         }
         match engine.ack(t.task.id).await {
@@ -1514,6 +1512,11 @@ const UNCHANGED: &str = "内容与上一版相同，未重交";
 /// 否则返工后内容指纹一样，修好的导出不会重交
 const EXPORT_REV: &str = "2026-10-01a";
 
+/// 引擎派的窗口止点是否已经过了。读不出来的当已过：不能因为格式问题永远不开工。
+fn window_closed(to: &str, now: jiff::Timestamp) -> bool {
+    parse_engine_ts(to).is_none_or(|end| end <= now)
+}
+
 /// 引擎窗口的时刻写法是 `2026-09-25T07:00+08:00`（没有秒），先按 RFC 3339 读，读不了补上秒再读。
 fn parse_engine_ts(s: &str) -> Option<jiff::Timestamp> {
     s.parse::<jiff::Timestamp>().ok().or_else(|| {
@@ -1623,6 +1626,14 @@ fn export_sources(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn 窗口止点没到不开工() {
+        let now: jiff::Timestamp = "2026-10-08T19:08:31Z".parse().unwrap(); // 北京 03:08
+        assert!(!window_closed("2026-10-09T06:00+08:00", now));
+        assert!(window_closed("2026-10-09T03:00+08:00", now));
+        assert!(window_closed("看不懂", now), "读不出来的不能永远不开工");
+    }
+
     #[test]
     fn 引擎窗口的时刻没有秒也读得出来() {
         let t = super::parse_engine_ts("2026-09-25T07:00+08:00").unwrap();

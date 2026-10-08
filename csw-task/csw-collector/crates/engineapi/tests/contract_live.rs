@@ -300,6 +300,7 @@ async fn 对真引擎跑通接单登记与自查() {
             file_name: "情报逐条_情报收集员_test_v1.zip".into(),
             idem_key: format!("submit-{task_id}-live"),
             note: String::new(),
+            self_check: "判了 2 条：推荐 1".into(),
             affects_deliverable_id: None,
             item_key: String::new(),
         })

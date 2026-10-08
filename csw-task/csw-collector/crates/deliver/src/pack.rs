@@ -59,6 +59,8 @@ pub struct Built {
     pub path: std::path::PathBuf,
     pub sha256: String,
     pub bytes: u64,
+    /// 交给审核人的一段摘要（提交时作 `self_check` 发出，引擎的「待审」群消息原样带上）。空 = 不带
+    pub summary: String,
 }
 
 impl Built {
@@ -125,6 +127,7 @@ pub fn build(root: &str, entries: &[Entry], out: &Path) -> Result<Built> {
         path: out.to_path_buf(),
         sha256: sha,
         bytes: size,
+        summary: String::new(),
     })
 }
 
@@ -266,6 +269,7 @@ mod tests {
             path: "x".into(),
             sha256: "0123456789abcdef0123456789abcdef".into(),
             bytes: 1,
+            summary: String::new(),
         };
         assert_eq!(b.idem_key(42), "submit-42-0123456789abcdef");
     }

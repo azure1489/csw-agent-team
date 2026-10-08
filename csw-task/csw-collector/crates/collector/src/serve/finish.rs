@@ -876,7 +876,8 @@ pub fn build_deliverable(
         .data_dir
         .join("deliverables")
         .join(format!("{name}.zip"));
-    let built = pack::build(&name, &entries, &out)?;
+    let mut built = pack::build(&name, &entries, &out)?;
+    built.summary = review_summary(round, cfg, judgements, &card_keys, extra_gaps);
 
     conn.execute(
         "INSERT INTO deliverables_local(round_id, deliv_kind, item_key, zip_path, zip_sha256,
@@ -1083,6 +1084,64 @@ pub async fn reconcile(
     (report, lines, consistent)
 }
 
+/// 交给主编的摘要：各档条数、首批卡标题、自查没过的判据、台账链接。
+/// 随提交作 `self_check` 发出，引擎「待审」那条群消息里 @主编时原样带上——
+/// 每天 06:00 自动开期后，主编在群里就能看到这一期采到了什么（10-09 用户）
+fn review_summary(
+    round: &Round,
+    cfg: &Config,
+    judgements: &[Judgement],
+    card_keys: &[String],
+    extra_gaps: &[String],
+) -> String {
+    let n = |t: Tier| judgements.iter().filter(|j| j.tier == t).count();
+    // 北京时间，读不出来就原样
+    let bj = |s: &str| {
+        s.parse::<jiff::Timestamp>().map_or_else(
+            |_| s.to_string(),
+            |t| {
+                t.to_zoned(jiff::tz::Offset::constant(8).to_time_zone())
+                    .strftime("%m-%d %H:%M")
+                    .to_string()
+            },
+        )
+    };
+    let mut out = format!(
+        "窗口 {} ~ {}（北京时间），判了 {} 条：推荐 {} · 备选 {} · 待核 {} · 不推荐 {}",
+        bj(&round.window_start),
+        bj(&round.window_end),
+        judgements.len(),
+        n(Tier::Recommend),
+        n(Tier::Alternate),
+        n(Tier::PendingCheck),
+        n(Tier::NotRecommend)
+    );
+    if !card_keys.is_empty() {
+        out.push_str(&format!("\n首批 {} 张：", card_keys.len()));
+        for (i, k) in card_keys.iter().enumerate() {
+            let title = judgements
+                .iter()
+                .find(|j| &j.candidate_key == k)
+                .map(|j| j.headline.trim())
+                .filter(|h| !h.is_empty())
+                .unwrap_or(k);
+            out.push_str(&format!("\n{}. {title}", i + 1));
+        }
+    }
+    if !extra_gaps.is_empty() {
+        out.push_str(&format!("\n自查没过 {} 项：", extra_gaps.len()));
+        for g in extra_gaps.iter().take(3) {
+            out.push_str(&format!("\n- {}", g.chars().take(80).collect::<String>()));
+        }
+    }
+    let base = cfg.web.public_url.trim_end_matches('/');
+    if !base.is_empty() {
+        out.push_str(&format!("\n台账：{base}/ledger?round={}", round.id));
+    }
+    out.push_str("\n交付物：");
+    out
+}
+
 /// 第 10 步：提交。**只发已落盘的那一份 zip**。
 pub async fn submit(
     conn: &Connection,
@@ -1103,6 +1162,7 @@ pub async fn submit(
             .unwrap_or_else(|| "deliverable.zip".into()),
         idem_key: built.idem_key(task_id),
         note: String::new(),
+        self_check: built.summary.clone(),
         affects_deliverable_id: None,
         item_key: String::new(),
     };
@@ -1767,6 +1827,62 @@ mod tests {
         j.image_seen = tier != Tier::PendingCheck;
         j.inputs_hash = "ih".into();
         j
+    }
+
+    #[test]
+    fn 交付摘要带各档条数首批标题缺口和台账链接() {
+        let conn = csw_collector_core::store::open_in_memory().unwrap();
+        let (r, _) = rounds::open_round(
+            &conn,
+            &rounds::NewRound {
+                kind: csw_collector_core::types::RoundKind::Task,
+                trigger: csw_collector_core::types::RoundTrigger::Dispatch,
+                run_id: Some(67),
+                task_id: Some(763),
+                stage_code: Some("intake".into()),
+                target_version: 1,
+                parent_round_id: None,
+                window_start: "2026-10-08T22:00:00Z".into(),
+                window_end: "2026-10-09T22:00:00Z".into(),
+                plan_version: 1,
+                rubric_version: "v".into(),
+                kb_snapshot: "k".into(),
+                instructions_hash: String::new(),
+            },
+        )
+        .unwrap();
+        let mut a = j("a-111111", Tier::Recommend);
+        a.headline = "品牌A 背包｜侧袋结构值得讲".into();
+        let js = [
+            a,
+            j("b-222222", Tier::PendingCheck),
+            j("c-333333", Tier::NotRecommend),
+        ];
+        let s = review_summary(
+            &r,
+            &Config::default(),
+            &js,
+            &["a-111111".into(), "b-222222".into()],
+            &["每条都判：缺 2 条".into()],
+        );
+        assert!(
+            s.starts_with("窗口 10-09 06:00 ~ 10-10 06:00（北京时间）"),
+            "{s}"
+        );
+        assert!(
+            s.contains("判了 3 条：推荐 1 · 备选 0 · 待核 1 · 不推荐 1"),
+            "{s}"
+        );
+        assert!(s.contains("1. 品牌A 背包｜侧袋结构值得讲"), "{s}");
+        assert!(s.contains("2. b-222222"), "没写标题的用条目键：{s}");
+        assert!(s.contains("自查没过 1 项"), "{s}");
+        assert!(
+            s.contains(&format!(
+                "https://collector.aworld.ltd/ledger?round={}",
+                r.id
+            )),
+            "{s}"
+        );
     }
 
     #[test]

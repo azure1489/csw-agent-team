@@ -318,6 +318,9 @@ impl EngineClient {
             if !input.note.is_empty() {
                 form = form.text("note", input.note.clone());
             }
+            if !input.self_check.is_empty() {
+                form = form.text("self_check", input.self_check.clone());
+            }
             if !input.item_key.is_empty() {
                 form = form.text("item_key", input.item_key.clone());
             }

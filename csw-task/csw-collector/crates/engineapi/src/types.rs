@@ -432,6 +432,8 @@ pub struct SubmitInput {
     /// 请求中途崩溃则同键永久 409，换键会造成重复提交。
     pub idem_key: String,
     pub note: String,
+    /// 交给审核人的摘要。引擎读的是 `self_check`（`note` 引擎不读），「待审」群消息原样带上
+    pub self_check: String,
     /// 补件必须带
     pub affects_deliverable_id: Option<i64>,
     pub item_key: String,

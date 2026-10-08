@@ -628,17 +628,20 @@ pub async fn deliver(
         .join("deliverables")
         .join(format!("{root}.zip"));
     let built = pack::build(&root, &entries, &out)?;
+    // 引擎不读 note，读的是 self_check（「待审」群消息原样带上）：两处都写
+    let note = format!(
+        "指定帖限定交付：{} 条读成、{} 条没读成；原文原图取自 Instagram（hires-service），不给档位，资格核查由主编做",
+        posts.iter().filter(|p| p.error.is_empty()).count(),
+        posts.iter().filter(|p| !p.error.is_empty()).count()
+    );
     let input = SubmitInput {
         task_id: t.task.id,
         kind: DeliverableKind::Output,
         zip_path: built.path.clone(),
         file_name: format!("{root}.zip"),
         idem_key: built.idem_key(t.task.id),
-        note: format!(
-            "指定帖限定交付：{} 条读成、{} 条没读成；原文原图取自 Instagram（hires-service），不给档位，资格核查由主编做",
-            posts.iter().filter(|p| p.error.is_empty()).count(),
-            posts.iter().filter(|p| !p.error.is_empty()).count()
-        ),
+        self_check: note.clone(),
+        note,
         affects_deliverable_id: None,
         item_key: String::new(),
     };

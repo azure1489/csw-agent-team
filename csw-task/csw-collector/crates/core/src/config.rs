@@ -276,6 +276,8 @@ pub struct Web {
     /// **不配就没有 Van 模式**：引擎里没有 van 这个角色，她登录进来是个普通 viewer，
     /// 看到的是总览页而不是她那一页。
     pub van_usernames: Vec<String>,
+    /// 工作台的公网地址，交付摘要里给台账链接用
+    pub public_url: String,
 }
 
 /// 密钥。只从 env 读，`Debug` 里只露长度。
@@ -418,14 +420,14 @@ impl Default for Config {
                 budget_secs: 600,
             },
             schedule: Schedule {
-                prefetch_at_utc: "17:40".into(), // 北京时间次日 01:40
+                prefetch_at_utc: "19:30".into(), // 北京时间次日 03:30：10-09 起 06:00 开期，离开工越近，开工时要补判的越少；一轮从零跑约 100 分钟，05:10 前跑完
                 // 北京 21:00（接住当天发的）与 11:00（接住早上刚发的）。
                 // **不能排在 05:30 那一轮前后**：实测紧跟 kb sync 的那次 csw 取数
                 // 用了 1044 秒，前三次都是 7 秒。原先第二次排在 21:00 UTC
                 // （北京 05:00），离正式轮只有半小时——那正是踩过的坑。
                 kb_sync_at_utc: vec!["13:00".into(), "03:00".into()],
-                gpu_quiet_from_utc: "21:25".into(), // 北京 05:25
-                gpu_quiet_to_utc: "22:30".into(),   // 北京 06:30
+                gpu_quiet_from_utc: "21:55".into(), // 北京 05:55（06:00 开期）
+                gpu_quiet_to_utc: "23:00".into(),   // 北京 07:00
                 media_retention_days: 120,
                 backup_at_utc: "03:30".into(),
                 backup_every_days: 7,
@@ -454,6 +456,7 @@ impl Default for Config {
             web: Web {
                 secure_cookie: true,
                 van_usernames: vec![],
+                public_url: "https://collector.aworld.ltd".into(),
             },
         }
     }
