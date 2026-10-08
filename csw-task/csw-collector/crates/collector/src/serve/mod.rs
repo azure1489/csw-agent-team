@@ -834,9 +834,7 @@ async fn start_round(
     }
     // 主编重开 01 要求重新采集（10-07 r64：Van 全部退回，主编要滚动 24 小时重采）：开新轮次按新窗口采，
     // 不在原轮次上返工。窗口 = 派工时刻往前 24 小时
-    let recollect = rework
-        && t.task.stage_code == STAGE_INTAKE
-        && designated::wants_recollect(&detail.editor_note);
+    let recollect = rework && t.task.stage_code == STAGE_INTAKE && designated::recollect(&detail);
     let (window_start, window_end) = if recollect {
         match parse_engine_ts(&t.task.dispatched_at) {
             Some(end) => {

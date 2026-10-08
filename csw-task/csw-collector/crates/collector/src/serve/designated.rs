@@ -49,14 +49,31 @@ pub const MARK_RECOLLECT: &str = "【重新采集】";
 /// 派工单叫工作台让开、由人工直传的标记。
 pub const MARK_HANDS_OFF: &str = "【工作台不接】";
 
-/// 派工单要求重新采集（开新轮次，窗口 = 派工时刻往前 24 小时），不是在原轮次上改。
-pub fn wants_recollect(note: &str) -> bool {
-    note.contains(MARK_RECOLLECT)
+/// 文本里有没有**肯定**地写这个标记。前面几个字里有否定词的不算：主编常在派工单里写
+/// 「不授权【重新采集】扩大池」「派工单不写【工作台不接】」（10-08 r66 #752：前一句被认成要重采，误开新轮次）。
+pub fn affirms(text: &str, mark: &str) -> bool {
+    const NEG: [&str; 6] = ["不", "无需", "勿", "别", "禁止", "非"];
+    text.match_indices(mark).any(|(at, _)| {
+        let before: String = text[..at]
+            .chars()
+            .rev()
+            .take(6)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        !NEG.iter().any(|n| before.contains(n))
+    })
 }
 
-/// 派工单叫工作台让开（主编要人工直传）。
+/// 文本要求重新采集（开新轮次，窗口 = 派工时刻往前 24 小时），不是在原轮次上改。
+pub fn wants_recollect(note: &str) -> bool {
+    affirms(note, MARK_RECOLLECT)
+}
+
+/// 文本叫工作台让开（主编要人工直传）。
 pub fn hands_off_note(note: &str) -> bool {
-    note.contains(MARK_HANDS_OFF)
+    affirms(note, MARK_HANDS_OFF)
 }
 
 /// 主编**最新的**指示里有没有【工作台不接】。指示有三处：派工单、各版的退回意见、与本任务相关的主编备忘；
@@ -68,6 +85,22 @@ pub fn hands_off_note(note: &str) -> bool {
 ///
 /// 引擎没给时间（旧版）时退回按编号比：比当前派工更新的退回意见写了标记就让开。
 pub fn hands_off(detail: &TaskDetail) -> bool {
+    match latest_instruction(detail) {
+        Some(text) => hands_off_note(&text),
+        None => legacy_hands_off(detail),
+    }
+}
+
+/// 主编最新指示要求重新采集（见 [`hands_off`] 的取法）。引擎没给时间时只看派工单。
+pub fn recollect(detail: &TaskDetail) -> bool {
+    match latest_instruction(detail) {
+        Some(text) => wants_recollect(&text),
+        None => wants_recollect(&detail.editor_note),
+    }
+}
+
+/// 主编最新一处指示的文字：派工单、各版退回意见、本任务备忘里按 created_at 取最新。任何一处没有时间就是 `None`。
+pub fn latest_instruction(detail: &TaskDetail) -> Option<String> {
     let task_ref = format!("task:{}", detail.task.id);
     let ts = |v: &serde_json::Value| -> Option<String> {
         v.get("created_at")
@@ -75,20 +108,10 @@ pub fn hands_off(detail: &TaskDetail) -> bool {
             .filter(|s| !s.is_empty())
             .map(|s| s.chars().take(19).collect())
     };
-    let review_text = |r: &serde_json::Value| -> String {
-        ["comment", "return_direction", "return_location"]
-            .iter()
-            .filter_map(|k| r.get(*k).and_then(|v| v.as_str()))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    // (时间, 内容)
-    let mut said: Vec<(Option<String>, String)> = Vec::new();
-    if let Some(d) = detail.dispatch.as_ref() {
-        said.push((ts(d), detail.editor_note.clone()));
-    } else {
-        said.push((None, detail.editor_note.clone()));
-    }
+    let mut said: Vec<(Option<String>, String)> = vec![(
+        detail.dispatch.as_ref().and_then(ts),
+        detail.editor_note.clone(),
+    )];
     for d in &detail.deliverables {
         if let Some(r) = d.get("latest_review") {
             said.push((ts(r), review_text(r)));
@@ -105,13 +128,24 @@ pub fn hands_off(detail: &TaskDetail) -> bool {
             ));
         }
     }
-    if said.iter().all(|(t, _)| t.is_some()) {
-        return said
-            .iter()
-            .max_by(|a, b| a.0.cmp(&b.0))
-            .is_some_and(|(_, text)| hands_off_note(text));
+    if !said.iter().all(|(t, _)| t.is_some()) {
+        return None;
     }
-    // 旧引擎没有时间：按编号比
+    said.into_iter()
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, t)| t)
+}
+
+fn review_text(r: &serde_json::Value) -> String {
+    ["comment", "return_direction", "return_location"]
+        .iter()
+        .filter_map(|k| r.get(*k).and_then(|v| v.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 旧引擎没有时间：派工单写了，或比当前派工更新的退回意见写了。
+fn legacy_hands_off(detail: &TaskDetail) -> bool {
     if hands_off_note(&detail.editor_note) {
         return true;
     }
@@ -699,6 +733,17 @@ mod tests {
         )));
         // 退回意见没写标记：照常返工
         assert!(!hands_off(&mk(1123, 1128, "按以上八键改档")));
+    }
+
+    #[test]
+    fn 否定语境里的标记不算() {
+        assert!(!wants_recollect(
+            "本次为恢复提交通路，不授权【重新采集】扩大池或移动窗口"
+        ));
+        assert!(!wants_recollect("新期无需【重新采集】标记"));
+        assert!(!hands_off_note("请重开 #752，派工单不写【工作台不接】"));
+        assert!(wants_recollect("Van 全部退回。【重新采集】按滚动 24 小时"));
+        assert!(hands_off_note("【工作台不接】运营方沿原#752定点校准"));
     }
 
     #[test]
