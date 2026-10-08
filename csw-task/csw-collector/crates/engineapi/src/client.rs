@@ -323,6 +323,9 @@ impl EngineClient {
                 .post(&url)
                 .bearer_auth(&self.token)
                 .header("Idempotency-Key", &input.idem_key)
+                // 上传按包大小给时限：整个客户端的 120 秒管不住大包（10-08 r66：41 MB 传了 129 秒，
+                // 客户端先断、引擎 context canceled，同键重试撞 409「结果未知」，整轮报失败）
+                .timeout(upload_timeout(bytes.len()))
                 .multipart(form);
             match self.send(req, Some(&input.idem_key)).await {
                 Ok(v) => return Ok(v),
@@ -512,6 +515,11 @@ fn urlencode(s: &str) -> String {
 ///
 /// 从**内容**派生而不是随机生成：重试时必然算出同一个键，
 /// 而内容变了（真的改了交付物）就必然是新键。
+/// 上传时限：120 秒起，每 64 KiB 加 1 秒，最多 30 分钟。实测 agent 主机到引擎约 320 KB/s，留四倍余量。
+pub fn upload_timeout(bytes: usize) -> Duration {
+    Duration::from_secs((120 + bytes as u64 / 65_536).min(1800))
+}
+
 pub fn submit_idem_key(task_id: i64, zip_sha256: &str) -> String {
     format!(
         "submit-{task_id}-{}",
@@ -539,6 +547,14 @@ pub fn run_window_of(timeline: &serde_json::Value) -> Option<(String, String)> {
 #[cfg(test)]
 mod run_window_tests {
     use super::*;
+
+    #[test]
+    fn 大包上传给够时间() {
+        assert_eq!(upload_timeout(0), Duration::from_secs(120));
+        // r66 的 41 MB：120 + 625 秒，远大于实测的 129 秒
+        assert!(upload_timeout(40_963_384) >= Duration::from_secs(700));
+        assert_eq!(upload_timeout(usize::MAX / 2), Duration::from_secs(1800));
+    }
 
     #[test]
     fn 从时间线取期次窗口() {
