@@ -2008,6 +2008,9 @@ pub async fn rework_in_place(
     ))
 }
 
+/// 主编校准在 check_flags 里的留痕开头。
+const CALIB_FLAG: &str = "【主编校准】";
+
 /// 套用主编校准：改档、待核补一条交主编的决定级缺口、单独成一个选题（登记的条目键就是它自己），
 /// 留痕写明来源。返回套用了的条目键。
 fn apply_calibrations(
@@ -2050,11 +2053,31 @@ fn apply_calibrations(
             j.readiness.material_complete = false;
             j.readiness.note = what;
         }
-        let flags = vec![format!(
-            "【主编校准】{}（{}；工作台原判 {before:?}，不交模型重判）",
+        // 在原有留痕上合并、只换掉旧的那条校准：整体替换会丢口径和支持度留痕；
+        // 原判沿用第一次校准记下的，不然再套一次就成了「原判=上次校准的结果」（10-08 r66 v6）
+        let prior: Vec<String> = conn
+            .query_row(
+                "SELECT check_flags_json FROM judgements WHERE round_id = ?1 AND candidate_key = ?2",
+                rusqlite::params![round_id, c.key],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        let original = prior
+            .iter()
+            .filter(|f| f.starts_with(CALIB_FLAG))
+            .find_map(|f| f.split("工作台原判 ").nth(1)?.split('，').next())
+            .map_or_else(|| format!("{before:?}"), str::to_string);
+        let mut flags: Vec<String> = prior
+            .into_iter()
+            .filter(|f| !f.starts_with(CALIB_FLAG))
+            .collect();
+        flags.push(format!(
+            "{CALIB_FLAG}{}（{}；工作台原判 {original}，不交模型重判）",
             c.label(),
             c.source
-        )];
+        ));
         if let Err(e) =
             ledger::put_judgement(conn, round_id, j, &flags, &cfg.model.model, RUBRIC_VERSION)
         {
@@ -3459,8 +3482,33 @@ mod tests {
             },
         ];
         let cfg = Config::default();
+        ledger::put_judgement(
+            &conn,
+            r.id,
+            &js[2],
+            &["【口径】查重改否".to_string()],
+            "m",
+            "v",
+        )
+        .unwrap();
         let done = apply_calibrations(&conn, r.id, &cfg, &cal, &mut js, &mut topics);
         assert_eq!(done.len(), 2);
+        // 再返工一次又套同一条校准：口径留痕还在，原判仍是最初的推荐（10-08 r66 v6 记成了不推荐）
+        apply_calibrations(&conn, r.id, &cfg, &cal, &mut js, &mut topics);
+        let flags: Vec<String> = serde_json::from_str(
+            &conn
+                .query_row(
+                    "SELECT check_flags_json FROM judgements WHERE round_id=?1 AND candidate_key='drlv-cf21b4'",
+                    [r.id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(flags.contains(&"【口径】查重改否".to_string()), "{flags:?}");
+        let calib: Vec<_> = flags.iter().filter(|f| f.starts_with(CALIB_FLAG)).collect();
+        assert_eq!(calib.len(), 1, "{flags:?}");
+        assert!(calib[0].contains("工作台原判 Recommend"), "{flags:?}");
         assert_eq!(js[0].tier, Tier::Recommend, "主编说继续，模型的不推荐不算");
         assert_eq!(js[2].tier, Tier::PendingCheck);
         assert!(js[2].has_decision_gap(), "待核要有交主编的决定级缺口");

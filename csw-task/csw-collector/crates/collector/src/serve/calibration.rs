@@ -55,6 +55,18 @@ fn tier_of(w: &str) -> Option<Tier> {
     })
 }
 
+/// 条目键前面是归属标签的，它是被引用的对象、不是这句的主语：
+/// 「asimocrafts-e1a771：item_key=asimocrafts-628da9、tier=not_recommend」说的是 e1a771 挂在哪，
+/// 不是把 628da9 改成不推荐（10-08 r66 v5：两个产品就这样被误降了档）
+static REF: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:item_key|所属|归属|仍归|归到|归入|归|属于|并入|挂到|挂在|映射到?|指向)\s*[=＝:：]?\s*$")
+        .expect("正则")
+});
+
+fn is_reference(before: &str) -> bool {
+    REF.is_match(before)
+}
+
 static LIST: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:\s*[、,，]\s*[a-z0-9_.]+-[0-9a-f]{6})+").expect("正则"));
 
@@ -155,7 +167,11 @@ pub fn parse_review_notes(text: &str) -> Vec<(String, Tier, String)> {
             .split('\n')
             .find(|l| !l.trim().is_empty())
             .unwrap_or("");
-        let keys: Vec<&str> = KEY.find_iter(item).map(|m| m.as_str()).collect();
+        let keys: Vec<&str> = KEY
+            .find_iter(item)
+            .filter(|m| !is_reference(&item[..m.start()]))
+            .map(|m| m.as_str())
+            .collect();
         let [key] = keys.as_slice() else { continue };
         if out.iter().any(|(k, _, _)| k == key) {
             continue;
@@ -172,6 +188,9 @@ fn parse_review_clauses(text: &str) -> Vec<(String, Tier)> {
     let mut out: Vec<(String, Tier)> = Vec::new();
     for clause in text.split(['；', ';', '。', '\n']) {
         for m in KEY.find_iter(clause) {
+            if is_reference(&clause[..m.start()]) {
+                continue;
+            }
             // 列举的几个键共用后面的去向：「drlv-cf21b4、colemanjapan-3ca8da=待核」
             let tail = LIST
                 .find(&clause[m.end()..])
@@ -424,6 +443,40 @@ mod tests {
         assert!(note.contains("r62写成"), "{note}");
         // 否定语境不认
         assert!(parse_review_notes("1. abc-123456：不继续评估，另议").is_empty());
+    }
+
+    #[test]
+    fn 归属标签后的条目键是被引用的对象不是改档() {
+        // 10-08 r66 #1132 v4、#1133 v5 退回意见原文节选：v4 那两行让 v5 把两个产品误降成不推荐
+        let v4 = "- asimocrafts-e1a771：item_key=asimocrafts-628da9、tier=not_recommend；包内预期item_key空。\n\
+- bushdebrunt-3cd9a3：item_key=bushdebrunt-1b7eeb、tier=not_recommend；包内预期item_key空。";
+        let v5 = "主编独立GET intake-judgements1172条确认asimocrafts-e1a771仍归asimocrafts-628da9、bushdebrunt-3cd9a3仍归bushdebrunt-1b7eeb，两清单tier均not_recommend。\n\
+新增误改：与1132 v4的1172判断逐candidate_key比较，只有两个产品判断的tier改变：asimocrafts-628da9和bushdebrunt-1b7eeb由recommend变为not_recommend，其他判断字段未变。\n\
+- 清单candidate_key=asimocrafts-e1a771：无所属；维持not_recommend和低价值理由。\n\
+- 清单candidate_key=bushdebrunt-3cd9a3：无所属；维持not_recommend和低价值理由。\n\
+- 产品candidate_key/item_key=asimocrafts-628da9：恢复v4原recommend判断与非淘汰登记，主编方向继续评估、不代表成熟或Van批准。\n\
+- 产品candidate_key/item_key=bushdebrunt-1b7eeb：恢复v4原recommend判断与非淘汰登记，主编方向继续评估、不代表成熟或Van批准。\n\
+trace/judgements/items与引擎两产品键asimocrafts-628da9、bushdebrunt-1b7eeb；实际请求/响应/服务端日志和写后回读。";
+        assert!(
+            parse_review_notes(v4).is_empty(),
+            "{:?}",
+            parse_review_notes(v4)
+        );
+        assert!(
+            parse_review_notes(v5).is_empty(),
+            "{:?}",
+            parse_review_notes(v5)
+        );
+        // 不是归属标签的照常认
+        let mut got = parse_review("asimocrafts-628da9=不推荐；bushdebrunt-1b7eeb：隔离待核");
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            got,
+            vec![
+                ("asimocrafts-628da9".to_string(), Tier::NotRecommend),
+                ("bushdebrunt-1b7eeb".to_string(), Tier::PendingCheck),
+            ]
+        );
     }
 
     #[test]
