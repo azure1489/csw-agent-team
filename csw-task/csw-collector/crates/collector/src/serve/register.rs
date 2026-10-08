@@ -362,26 +362,75 @@ pub fn enqueue_registration(
             serde_json::json!({ "judgements": chunk }),
         ));
     }
+    // 每类在这一趟排队前最近发过的那份：幂等键挂在它后面（见 [`enqueue_body`]）
+    let bases: Vec<Option<String>> = bodies
+        .iter()
+        .map(|(k, _)| latest_sha(conn, round_id, *k))
+        .collect();
     let mut prev: Option<i64> = None;
-    for (kind, body) in bodies {
-        let json = body.to_string();
-        // 幂等键从内容派生：同样的内容重排队不会写重，内容变了就是新的一条
-        let sha = blake3::hash(json.as_bytes()).to_hex().to_string();
-        let e = outbox::enqueue(
-            conn,
-            &NewEntry {
-                round_id,
-                kind,
-                idem_key: format!("r{run_id}-{}-{}", kind_slug(kind), &sha[..16]),
-                body_path: String::new(),
-                body_json: json,
-                body_sha: sha,
-                depends_on: prev,
-            },
-        )?;
+    for ((kind, body), base) in bodies.into_iter().zip(bases) {
+        let e = enqueue_body(conn, round_id, run_id, kind, body.to_string(), prev, base)?;
         prev = Some(e.seq);
     }
     prev.ok_or_else(|| anyhow::anyhow!("一条都没排进去"))
+}
+
+/// 这一轮某类登记最近排进队的那份内容的哈希。
+fn latest_sha(conn: &Connection, round_id: i64, kind: OutboxKind) -> Option<String> {
+    conn.query_row(
+        "SELECT body_sha FROM engine_outbox WHERE round_id = ?1 AND kind = ?2
+         ORDER BY seq DESC LIMIT 1",
+        rusqlite::params![round_id, kind_slug(kind)],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+}
+
+/// 排一份登记。**和这类最近发过的那份一样才算重复**：只按内容派生幂等键的话，
+/// 状态 A → B → A 的第三次和第一次同键，被当成「发过了」不再发，引擎停在 B
+///（10-09 r66 v6：两个产品 v4 shortlisted、v5 误撤 dropped、v6 改回 shortlisted，
+/// v6 的条目体与 v4 逐字相同，没发出去，引擎一直是 dropped）。
+/// 所以幂等键 = 内容哈希 + 前一份的哈希：内容回到更早的样子也是新的一条。
+fn enqueue_body(
+    conn: &Connection,
+    round_id: i64,
+    run_id: i64,
+    kind: OutboxKind,
+    json: String,
+    depends_on: Option<i64>,
+    base: Option<String>,
+) -> Result<outbox::Entry> {
+    let sha = blake3::hash(json.as_bytes()).to_hex().to_string();
+    let idem_key = match base.as_deref() {
+        // 与最近一份相同（同一趟崩溃后重排，或返工后没变）：沿用那一条
+        Some(b) if b == sha => conn
+            .query_row(
+                "SELECT idem_key FROM engine_outbox WHERE round_id = ?1 AND kind = ?2 AND body_sha = ?3
+                 ORDER BY seq DESC LIMIT 1",
+                rusqlite::params![round_id, kind_slug(kind), sha],
+                |r| r.get::<_, String>(0),
+            )
+            .map_err(anyhow::Error::from)?,
+        Some(b) => format!(
+            "r{run_id}-{}-{}-{}",
+            kind_slug(kind),
+            &sha[..16],
+            &b[..8.min(b.len())]
+        ),
+        None => format!("r{run_id}-{}-{}", kind_slug(kind), &sha[..16]),
+    };
+    outbox::enqueue(
+        conn,
+        &NewEntry {
+            round_id,
+            kind,
+            idem_key,
+            body_path: String::new(),
+            body_json: json,
+            body_sha: sha,
+            depends_on,
+        },
+    )
 }
 
 /// 这一轮上次发给引擎的某类登记体（最新一份）。返工时要拿它对账。
@@ -425,19 +474,8 @@ pub fn enqueue_items(
     items: &[ItemInput],
 ) -> Result<i64> {
     let json = serde_json::json!({ "items": items }).to_string();
-    let sha = blake3::hash(json.as_bytes()).to_hex().to_string();
-    let e = outbox::enqueue(
-        conn,
-        &NewEntry {
-            round_id,
-            kind: OutboxKind::Items,
-            idem_key: format!("r{run_id}-{}-{}", kind_slug(OutboxKind::Items), &sha[..16]),
-            body_path: String::new(),
-            body_json: json,
-            body_sha: sha,
-            depends_on: None,
-        },
-    )?;
+    let base = latest_sha(conn, round_id, OutboxKind::Items);
+    let e = enqueue_body(conn, round_id, run_id, OutboxKind::Items, json, None, base)?;
     Ok(e.seq)
 }
 
@@ -806,6 +844,25 @@ mod tests {
         // 撤过之后再登记，就不再撤第二次
         put(&[it("b", "shortlisted"), it("a", "dropped")]);
         assert!(dropped_since(&c, r.id, &[it("b", "shortlisted")]).is_empty());
+
+        // A → B → A：改回去的那一份和更早的一份逐字相同，也要再发一次（10-09 r66 v6：
+        // 两个产品 v4 采用、v5 误撤、v6 改回采用，v6 没发出去，引擎停在 dropped）
+        let n = |c: &Connection| -> i64 {
+            c.query_row(
+                "SELECT COUNT(*) FROM engine_outbox WHERE kind='items'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let before = n(&c);
+        put(&[it("b", "dropped")]);
+        put(&[it("b", "shortlisted"), it("a", "dropped")]);
+        assert_eq!(n(&c), before + 2, "改回更早的样子要排一条新的");
+        assert_eq!(registered_items(&c, r.id)["b"].0, "shortlisted");
+        // 和最近一份一样才算重复
+        put(&[it("b", "shortlisted"), it("a", "dropped")]);
+        assert_eq!(n(&c), before + 2);
 
         // 撤掉的条目名下的判断仍挂着它：a 这个选题现在不推荐，成员 a、a2 仍归 a
         let topic = |k: &str, members: &[&str], tier| Topic {
