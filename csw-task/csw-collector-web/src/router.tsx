@@ -7,6 +7,7 @@ import { atLeast } from '@/lib/auth'
 import { Coverage } from '@/pages/Coverage'
 import { Item } from '@/pages/Item'
 import { Kb } from '@/pages/Kb'
+import { MagazineItem } from '@/pages/MagazineItem'
 import { Ledger } from '@/pages/Ledger'
 import { Login } from '@/pages/Login'
 import { Memory } from '@/pages/Memory'
@@ -57,6 +58,7 @@ export const router = createBrowserRouter([
       { path: 'coverage', element: <Coverage /> },
       { path: 'pending', element: <Pending /> },
       { path: 'kb', element: <Kb /> },
+      { path: 'kb/magazine/:id', element: <MagazineItem /> },
       { path: 'memory', element: <Memory /> },
       { path: 'rubric', element: <Rubric /> },
       { path: 'metrics', element: <Metrics /> },

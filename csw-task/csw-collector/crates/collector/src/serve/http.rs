@@ -1657,7 +1657,8 @@ async fn kb_status(State(st): State<Arc<AppState>>) -> Result<Json<serde_json::V
     };
     Ok(Json(serde_json::json!({
         "cursors": cursors,
-        "docs": one("SELECT COUNT(*) FROM kb_docs"),
+        // 参考库四类的条数；杂志在下面 `magazine` 一节单独数
+        "docs": one("SELECT COUNT(*) FROM kb_docs WHERE kind <> 'magazine_item'"),
         "docs_by_kind": {
             "published_item": one("SELECT COUNT(*) FROM kb_docs WHERE kind='published_item'"),
             "example": one("SELECT COUNT(*) FROM kb_docs WHERE kind='example'"),
@@ -2709,6 +2710,7 @@ mod tests {
         assert_eq!(v["magazine"]["books"], 1);
         assert_eq!(v["magazine"]["docs"], 1);
         assert_eq!(v["待算向量"], 0, "杂志不算进参考库的待算向量");
+        assert_eq!(v["docs"], 0, "参考库条目不含杂志");
 
         let (code, _) = get(&app, "/api/kb/magazine/search?q=%E5%B8%90%E7%AF%B7").await;
         assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);

@@ -429,6 +429,57 @@ export interface KbStatus {
   examples_expected: number
   /** 标成范例、却没有整篇入库的 post_id */
   examples_missing: string[]
+  /** 杂志背景（不进判断）：本数、条数、两遍向量进度 */
+  magazine?: MagazineStatus
+}
+
+export interface MagazineStatus {
+  books: number
+  docs: number
+  /** 应算向量的条数（有内容、没跳过、不是装饰图） */
+  eligible: number
+  fused_done: number
+  /** 纯图向量按不同的图计 */
+  pure_target: number
+  pure_done: number
+  last_book: string | null
+}
+
+/** 一条杂志条目（刊译台清单里一张有译文的裁图） */
+export interface MagazineItem {
+  id: number
+  ref_id: string
+  title: string
+  brand: string
+  body: string
+  issue_date: string | null
+  book_key: string
+  image_url: string
+  image_blake3: string
+  page_url: string
+  pdf_index: number
+  printed_page: number | null
+  /** [x0, y0, x1, y1]，PDF 点 */
+  bbox: number[] | null
+  /** [w, h]，PDF 点 */
+  page_size: number[] | null
+  category: string
+  fused_ready: boolean
+  pure_ready: boolean
+}
+
+export interface MagazineHit extends MagazineItem {
+  /** fts / vector / image */
+  routes: string[]
+  similarity: number | null
+}
+
+export interface MagazineSearchResult {
+  count: number
+  items: MagazineHit[]
+  /** 以图搜图才有 */
+  embed_ms?: number
+  total_ms?: number
 }
 
 /**

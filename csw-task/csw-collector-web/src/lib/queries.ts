@@ -22,6 +22,8 @@ import type {
   JudgementRow,
   KbSearchResult,
   KbStatus,
+  MagazineItem,
+  MagazineSearchResult,
   MemoryCase,
   MemoryRule,
   PendingRow,
@@ -199,11 +201,45 @@ export const useKbSearch = (q: string) =>
 export const useKbBrand = (brand: string) =>
   useQuery({
     queryKey: ['kb-brand', brand],
-    queryFn: () => get<{ brand: string; docs: KbSearchResult['docs'] }>(
+    queryFn: () => get<{ brand: string; docs: KbSearchResult['docs']; magazine?: MagazineItem[] }>(
       `/kb/brands/${encodeURIComponent(brand)}`,
       { limit: 50 },
     ),
     enabled: brand.trim().length > 0,
+  })
+
+/** 杂志背景文字检索：全文 ∪ 向量，不重排。和判断参考库那条检索完全分开 */
+export const useKbMagazineSearch = (q: string, book = '') =>
+  useQuery({
+    queryKey: ['kb-magazine-search', q, book],
+    queryFn: () =>
+      get<MagazineSearchResult>('/kb/magazine/search', { q, book: book || undefined, limit: 30 }),
+    enabled: q.trim().length > 0,
+    staleTime: 60_000,
+  })
+
+export const useKbMagazineItem = (id: number) =>
+  useQuery({
+    queryKey: ['kb-magazine', id],
+    queryFn: () => get<MagazineItem>(`/kb/magazine/${id}`),
+    enabled: Number.isFinite(id) && id > 0,
+  })
+
+/**
+ * 以图搜图：请求体就是图片字节。占一次 GPU，只给主编那一档。
+ * 不进缓存——同一张图很少搜第二次，结果也不该跟着页面重渲染重算。
+ */
+export const useKbImageSearch = () =>
+  useMutation({
+    mutationFn: async (file: Blob) =>
+      (
+        await api.post<MagazineSearchResult>('/kb/image-search', file, {
+          params: { limit: 30 },
+          headers: { 'Content-Type': file.type || 'application/octet-stream' },
+          // 正式轮在跑时向量服务要排队
+          timeout: 120_000,
+        })
+      ).data,
   })
 
 export const useMemoryRules = () =>
