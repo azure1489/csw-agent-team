@@ -1172,6 +1172,7 @@ dependencies = [
  "csw-collector-engineapi",
  "csw-collector-harvest",
  "futures",
+ "image",
  "jieba-rs",
  "jiff",
  "lancedb",

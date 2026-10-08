@@ -141,6 +141,7 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
     let mut prev_min = schedule::now_minute();
     // 接下来但还没轮到做的任务，心跳要一直发着，否则引擎判「接单后无活动」
     let mut beats: std::collections::HashMap<i64, tasks::Beat> = Default::default();
+    let mut magazine = crate::kb::MagazineBackfill::default();
     loop {
         if let Err(e) = tick(&conn, &engine, cfg, &svc, &mut beats).await {
             tracing::warn!(原因 = %format!("{e:#}"), "这一轮轮询没跑完");
@@ -154,6 +155,16 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
         if let Err(e) = run_queued(cfg, &conn, &svc).await {
             tracing::warn!(原因 = %format!("{e:#}"), "排队的活没做成");
         }
+        // 都没在跑时做一片杂志向量回填；接了单没做完（beats 非空）就不做
+        crate::kb::magazine_backfill_tick(
+            cfg,
+            &conn,
+            &svc.store,
+            &svc.vector,
+            &mut magazine,
+            !beats.is_empty(),
+        )
+        .await;
         prev_min = now_min;
         tokio::time::sleep(every).await;
     }

@@ -488,7 +488,7 @@ pub fn sync_dir(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn conn() -> Connection {
@@ -499,7 +499,7 @@ mod tests {
         format!("{:064x}", n)
     }
 
-    fn line(
+    pub(crate) fn line(
         book: &str,
         task: &str,
         idx: i64,

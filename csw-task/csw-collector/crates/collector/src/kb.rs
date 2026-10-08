@@ -350,3 +350,93 @@ pub async fn purge_book(cfg: &Config, book: &str) -> Result<()> {
     );
     Ok(())
 }
+
+// ─────────────────────── 杂志向量回填（主循环调度） ───────────────────────
+
+/// 一片最多做多久。主循环是单线程的：这一片做着，派单轮询就等着。
+/// 90 秒 + 轮询间隔远小于引擎「派工后未接单」的 5 分钟提醒线。
+const MAGAZINE_SLICE: Duration = Duration::from_secs(90);
+/// 没活、全是坏图或向量服务失败时，隔多久再来
+const MAGAZINE_IDLE: Duration = Duration::from_secs(600);
+
+/// 回填的进程内状态，主循环持有。
+#[derive(Default)]
+pub struct MagazineBackfill {
+    state: csw_collector_kb::magazine_embed::Backfill,
+    idle_until: Option<std::time::Instant>,
+}
+
+/// 主循环每圈末尾调一次：做一片杂志向量回填（方案 §6「回填任务」、护栏 5）。
+///
+/// 让路：主循环是顺序的，走到这里时正式轮、预取轮、知识库同步、排队的活都没在跑；
+/// `busy`（接了单还没做完）为真就不做。片内每批开始前再问一次：超时、进了 GPU 安静窗口、
+/// 工作台排进了活，就在当前批结束后停，把循环还给轮询。
+pub async fn magazine_backfill_tick(
+    cfg: &Config,
+    conn: &rusqlite::Connection,
+    store: &VectorStore,
+    vector: &VectorClient,
+    bf: &mut MagazineBackfill,
+    busy: bool,
+) {
+    use crate::serve::schedule;
+    use csw_collector_kb::magazine_embed::{EmbedOpts, embed_magazine, touch_vector_progress};
+    let quiet = || {
+        schedule::in_quiet_window(
+            &cfg.schedule.gpu_quiet_from_utc,
+            &cfg.schedule.gpu_quiet_to_utc,
+            schedule::now_minute(),
+        )
+    };
+    if busy || quiet() || bf.idle_until.is_some_and(|t| std::time::Instant::now() < t) {
+        return;
+    }
+    let started = std::time::Instant::now();
+    let queued = || {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM work_queue WHERE status = 'queued')",
+            [],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap_or(false)
+    };
+    let stop = || started.elapsed() >= MAGAZINE_SLICE || quiet() || queued();
+    let o = EmbedOpts {
+        model: cfg.vector.embed_model.clone(),
+        fused_batch: cfg.magazine.fused_batch,
+        image_batch: cfg.magazine.image_batch,
+        image_side: cfg.magazine.image_side,
+    };
+    let rep = match embed_magazine(conn, store, vector, &o, &mut bf.state, &stop).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(原因 = %format!("{e:#}"), "杂志向量回填出错，十分钟后再来");
+            bf.idle_until = Some(std::time::Instant::now() + MAGAZINE_IDLE);
+            return;
+        }
+    };
+    if !cfg.magazine.dir.as_os_str().is_empty() {
+        for b in &rep.books {
+            if let Err(e) = touch_vector_progress(conn, &cfg.magazine.dir.join(b), b) {
+                tracing::warn!(书 = %b, 原因 = %format!("{e:#}"), "更新 ingested.json 向量进度失败");
+            }
+        }
+    }
+    if rep.done() == 0 || rep.error.is_some() {
+        bf.idle_until = Some(std::time::Instant::now() + MAGAZINE_IDLE);
+    }
+    if rep.done() > 0 || rep.error.is_some() || rep.unreadable > 0 {
+        tracing::info!(
+            融合 = rep.fused,
+            纯图 = rep.pure,
+            每图毫秒 = ?rep.ms_per_image(),
+            坏图 = rep.unreadable,
+            融合剩 = rep.fused_left,
+            纯图剩 = rep.pure_left,
+            让路 = rep.stopped,
+            失败 = ?rep.error,
+            耗时秒 = started.elapsed().as_secs(),
+            "杂志向量回填一片"
+        );
+    }
+}

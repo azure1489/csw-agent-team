@@ -56,7 +56,7 @@ pub const EMBED_BATCH: usize = 32;
 pub const EMBED_MAX_CHARS: usize = 2000;
 
 /// 截到 [`EMBED_MAX_CHARS`]。按字符截，不按字节——按字节会把汉字劈成半个。
-fn for_embedding(text: &str) -> String {
+pub(crate) fn for_embedding(text: &str) -> String {
     if text.chars().count() <= EMBED_MAX_CHARS {
         return text.to_string();
     }
