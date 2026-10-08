@@ -780,8 +780,10 @@ const maxJudgementsPerReport = 200
 
 // JudgementInput 一条判断的上报入参。
 type JudgementInput struct {
-	CandidateKey   string
-	ItemKey        string
+	CandidateKey string
+	ItemKey      string
+	// 请求里带了 item_key（哪怕是空串）：以它为准，空串就清掉旧归属（10-08 r66：销售清单帖的旧归属清不掉）
+	ItemKeySet     bool
 	Platform       string
 	PostRef        string
 	SourceURL      string
@@ -856,7 +858,7 @@ func (e *Engine) ReportJudgements(ctx context.Context, actor domain.Agent, role 
 				platform = "instagram"
 			}
 			if err := q.UpsertJudgement(ctx, domain.IntakeJudgement{
-				RunID: runID, CandidateKey: j.CandidateKey, ItemKey: j.ItemKey, Platform: platform,
+				RunID: runID, CandidateKey: j.CandidateKey, ItemKey: j.ItemKey, ItemKeySet: j.ItemKeySet, Platform: platform,
 				PostRef: j.PostRef, SourceURL: j.SourceURL, Tier: j.Tier,
 				DimsJSON: defaultJSON(j.DimsJSON, "{}"), ThreeJSON: defaultJSON(j.ThreeJSON, "{}"),
 				ComparisonJSON: defaultJSON(j.ComparisonJSON, "{}"), HeatNote: j.HeatNote,

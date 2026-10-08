@@ -368,3 +368,51 @@ func TestJudgedAllIgnoresOtherRolesSweeps(t *testing.T) {
 		t.Fatalf("只算 collector 的采集轮应通过：%+v", c)
 	}
 }
+
+// r66：销售清单帖早先登记在某条目名下，之后明确不属于任何条目——带空 item_key 要能清掉旧归属；没带的不动。
+func TestJudgementItemKeyCanBeCleared(t *testing.T) {
+	e, st := setup(t)
+	ctx := context.Background()
+	editor, editorRole := who(t, st, "editor")
+	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-09-22", "v6", "")
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	runID := res.Run.ID
+	collector, collectorRole := who(t, st, "collector")
+	mk := func(item string, set bool) JudgementInput {
+		return JudgementInput{CandidateKey: "shop-e1a771", ItemKey: item, ItemKeySet: set, Tier: "not_recommend", ImageSeen: true, DimsJSON: judgeDims("no")}
+	}
+	itemOf := func() string {
+		t.Helper()
+		js, err := st.Q().ListJudgementsByRun(ctx, runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, j := range js {
+			if j.CandidateKey == "shop-e1a771" {
+				return j.ItemKey
+			}
+		}
+		t.Fatal("没找到")
+		return ""
+	}
+	report := func(j JudgementInput) {
+		t.Helper()
+		if _, err := e.ReportJudgements(ctx, collector, collectorRole, runID, []JudgementInput{j}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report(mk("asimocrafts-628da9", true))
+	if got := itemOf(); got != "asimocrafts-628da9" {
+		t.Fatalf("登记归属：%q", got)
+	}
+	report(mk("", false)) // 没带字段：不动
+	if got := itemOf(); got != "asimocrafts-628da9" {
+		t.Fatalf("没带 item_key 不该改归属：%q", got)
+	}
+	report(mk("", true)) // 带了空串：清掉
+	if got := itemOf(); got != "" {
+		t.Fatalf("带空 item_key 应清掉旧归属：%q", got)
+	}
+}

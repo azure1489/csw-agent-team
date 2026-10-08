@@ -263,6 +263,15 @@ func (q *Queries) UpsertJudgement(ctx context.Context, j domain.IntakeJudgement)
 		j.RunID, j.CandidateKey, nullIfEmpty(j.ItemKey), j.Platform, j.PostRef, nullIfEmpty(j.SourceURL), j.Tier,
 		j.DimsJSON, j.ThreeJSON, j.ComparisonJSON, j.HeatNote, j.GapsJSON, boolToInt(j.ImageSeen),
 		j.HitsJSON, j.JevJSON, j.RubricVersion, boolToInt(j.Carried), nullI64(j.ActorID), j.RoleCode)
+	if err != nil {
+		return err
+	}
+	// 上报方明确说它不属于任何条目：清掉旧归属（COALESCE 会把空串当「没给」而保留旧值）
+	if j.ItemKeySet && j.ItemKey == "" {
+		_, err = q.ex.ExecContext(ctx,
+			`UPDATE intake_judgements SET item_key = NULL WHERE run_id = ? AND candidate_key = ?`,
+			j.RunID, j.CandidateKey)
+	}
 	return err
 }
 

@@ -164,8 +164,9 @@ func intakeSources(ctx context.Context, s *Server) []gin.H {
 
 type reportJudgementsReq struct {
 	Judgements []struct {
-		CandidateKey   string          `json:"candidate_key"`
-		ItemKey        string          `json:"item_key"`
+		CandidateKey string `json:"candidate_key"`
+		// 指针：没带这个字段 = 不动原归属；带了空串 = 明确不属于任何条目（清掉旧归属）
+		ItemKey        *string         `json:"item_key"`
 		Platform       string          `json:"platform"`
 		PostRef        string          `json:"post_ref"`
 		SourceURL      string          `json:"source_url"`
@@ -229,6 +230,13 @@ func rawOrEmpty(r json.RawMessage, fallback string) string {
 	return string(r)
 }
 
+func deref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
 // PUT /runs/:id/intake-judgements —— 批量上报逐条判断（参与角色或中枢；按 candidate_key 幂等）
 func (s *Server) handleReportJudgements(c *gin.Context) {
 	id, err := pathID(c, "id")
@@ -244,7 +252,7 @@ func (s *Server) handleReportJudgements(c *gin.Context) {
 	in := make([]engine.JudgementInput, 0, len(req.Judgements))
 	for _, j := range req.Judgements {
 		in = append(in, engine.JudgementInput{
-			CandidateKey: j.CandidateKey, ItemKey: j.ItemKey, Platform: j.Platform, PostRef: j.PostRef,
+			CandidateKey: j.CandidateKey, ItemKey: deref(j.ItemKey), ItemKeySet: j.ItemKey != nil, Platform: j.Platform, PostRef: j.PostRef,
 			SourceURL: j.SourceURL, Tier: j.Tier,
 			DimsJSON: rawOrEmpty(j.Dims, ""), ThreeJSON: rawOrEmpty(j.ThreeSentences, "{}"),
 			ComparisonJSON: rawOrEmpty(j.Comparison, "{}"), HeatNote: j.HeatNote,

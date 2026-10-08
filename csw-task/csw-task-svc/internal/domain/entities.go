@@ -333,6 +333,7 @@ type IntakeSweep struct {
 type IntakeJudgement struct {
 	CandidateKey   string // 品牌小写 + '-' + 链接 sha256 前 6 位；与交付物里的条目键同一个
 	ItemKey        string // 进了 run_items 的才有
+	ItemKeySet     bool   // 上报时明确带了 item_key：空串表示清掉旧归属；不落库
 	Platform       string
 	PostRef        string // 平台侧 id（Instagram 短码）
 	SourceURL      string
