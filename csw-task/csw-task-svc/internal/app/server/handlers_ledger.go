@@ -109,6 +109,7 @@ type feedbackDTO struct {
 	ExpiresAt string   `json:"expires_at,omitempty"`
 	Tags      []string `json:"tags"`
 	Images    []string `json:"images,omitempty"`
+	CreatedAt string   `json:"created_at,omitempty"`
 	ID        int64    `json:"id"`
 }
 
@@ -116,7 +117,7 @@ func feedbackDTOs(rs []domain.FeedbackRecord) []feedbackDTO {
 	out := make([]feedbackDTO, 0, len(rs))
 	for _, r := range rs {
 		d := feedbackDTO{ID: r.ID, Quote: r.Quote, SaidAt: r.SaidAt, SourceRef: r.SourceRef, ObjectRef: r.ObjectRef,
-			Kind: r.Kind, Stance: r.Stance, ExpiresAt: r.ExpiresAt, Tags: r.Tags}
+			Kind: r.Kind, Stance: r.Stance, ExpiresAt: r.ExpiresAt, Tags: r.Tags, CreatedAt: r.CreatedAt}
 		if r.ImageRefsJSON != "" {
 			_ = json.Unmarshal([]byte(r.ImageRefsJSON), &d.Images)
 		}

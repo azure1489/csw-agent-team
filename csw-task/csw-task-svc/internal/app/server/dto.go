@@ -91,12 +91,15 @@ type reviewDTO struct {
 	DecisionType    string   `json:"decision_type,omitempty"`
 	SourceQuote     string   `json:"source_quote,omitempty"`
 	Items           []string `json:"items,omitempty"`
-	GateOrder       int      `json:"gate_order"`
+	// 审核时刻：执行方据此判断主编「最新一次指示」是派工、退回意见还是备忘（10-08 r66）
+	CreatedAt string `json:"created_at,omitempty"`
+	GateOrder int    `json:"gate_order"`
 }
 
 func toReviewDTO(r domain.Review) reviewDTO {
 	rd := reviewDTO{
-		Verdict: string(r.Verdict), Comment: r.Comment,
+		CreatedAt: r.CreatedAt,
+		Verdict:   string(r.Verdict), Comment: r.Comment,
 		ReturnDirection: r.ReturnDirection, ReturnLocation: r.ReturnLocation,
 		DecisionType: r.DecisionType, SourceQuote: r.SourceQuote,
 	}
@@ -134,6 +137,7 @@ type deliverableDTO struct {
 	CurGate        int           `json:"cur_gate"`
 	IsDispatch     bool          `json:"is_dispatch"`
 	Collab         bool          `json:"collab"`
+	CreatedAt      string        `json:"created_at,omitempty"`
 }
 
 func toDeliverableDTO(d domain.Deliverable, ups []domain.Upstream) deliverableDTO {
@@ -143,6 +147,7 @@ func toDeliverableDTO(d domain.Deliverable, ups []domain.Upstream) deliverableDT
 		Summary: d.Summary, SelfCheck: d.SelfCheck, EditorNote: d.EditorNote,
 		CurGate: d.CurGate, ReturnedAtGate: d.ReturnedAtGate, Status: string(d.Status),
 		Kind: string(d.Kind), DiffSummary: d.DiffSummary, EditOf: d.EditOf, AffectsID: d.AffectsID, Collab: d.Collab,
+		CreatedAt: d.CreatedAt,
 	}
 	for _, u := range ups {
 		dto.Upstreams = append(dto.Upstreams, upstreamDTO{Label: u.Label, URL: u.UpstreamURL, UpstreamID: u.UpstreamID})

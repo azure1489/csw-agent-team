@@ -33,7 +33,7 @@ func TestLedgerAndFeedbackEndpoints(t *testing.T) {
 	id, _, _ := q.UpsertLedgerPost(ctx, domain.LedgerPost{Platform: "wechat", Account: "营事编集室", PostID: "p1", Title: "营事编集室 vol.10",
 		PublishedAt: "2026-09-08T00:00:00Z", State: "published"})
 	_ = q.ReplacePostItems(ctx, id, []domain.LedgerPostItem{{Brand: "NANGA", Title: "羽绒进城"}}, "auto", "")
-	out = get(researcherTok, "/api/v1/ledger/posts?brand=nanga&since=30d")
+	out = get(researcherTok, "/api/v1/ledger/posts?brand=nanga&since=90d")
 	posts := out["posts"].([]any)
 	if out["verdict"] != "found" || len(posts) != 1 || len(posts[0].(map[string]any)["items"].([]any)) != 1 {
 		t.Fatalf("found: %v", out)
