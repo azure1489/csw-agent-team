@@ -613,9 +613,10 @@ async fn tick(
                 tracing::info!(任务 = t.task.id, "被退回：按退回意见返工后重交");
                 drive(conn, engine, cfg, svc, t, action, beats).await;
             }
-            Action::Continue
-                if !tasks::should_fail_early(&t.task.due_at, jiff::Timestamp::now()) =>
-            {
+            // 不再按时限主动报失败（10-08 r66 #752）：01 的派工时限 40 分钟，整池判断要几个小时；
+            // 时限一过，旧逻辑每次轮询都走「报失败」分支（同幂等键回放，引擎不变），重启后的轮次永远续不上。
+            // 主编 13:22 原话：Van 已取消限时，不再以临近 due_at 报失败
+            Action::Continue => {
                 let local = rounds::latest_for_task(conn, t.task.id)?;
                 let decision = tasks::on_continue(
                     local
@@ -648,23 +649,6 @@ async fn tick(
                         )
                     });
                     drive(conn, engine, cfg, svc, t, act, beats).await;
-                }
-            }
-            Action::Continue => {
-                // 时限快到了就主动报失败，不挂着等超时——
-                // 挂着的话主编在群里看到的是「还在做」，而实际上已经做不完了
-                if tasks::should_fail_early(&t.task.due_at, jiff::Timestamp::now()) {
-                    let why = format!(
-                        "距时限不足 {} 分钟仍未完成，主动报失败，条目与台账留在本地可重开",
-                        tasks::FAIL_BEFORE_DUE_SECS / 60
-                    );
-                    tracing::warn!(任务 = t.task.id, 时限 = %t.task.due_at, "{why}");
-                    let idem = format!("fail-{}-due", t.task.id);
-                    if let Err(e) = engine.fail(t.task.id, &why, &idem).await {
-                        tracing::error!(任务 = t.task.id, 原因 = %format!("{e:#}"), "连失败都没报出去");
-                    }
-                } else {
-                    tracing::debug!(任务 = t.task.id, "还在跑，继续");
                 }
             }
             Action::Wait => tracing::debug!(任务 = t.task.id, "等闸，只轮询"),

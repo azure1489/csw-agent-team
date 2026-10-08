@@ -150,18 +150,6 @@ pub fn plan(tasks: &[MyTask]) -> Vec<(&MyTask, Action)> {
         .collect()
 }
 
-/// 时限前多久就主动报失败。**不要挂着等超时**——
-/// 挂着的话主编在群里看到的是「还在做」，而实际上已经做不完了。
-pub const FAIL_BEFORE_DUE_SECS: i64 = 5 * 60;
-
-/// 现在该不该主动报失败。`due_at` 是引擎给的 RFC3339。
-pub fn should_fail_early(due_at: &str, now: jiff::Timestamp) -> bool {
-    let Ok(due) = due_at.parse::<jiff::Timestamp>() else {
-        return false;
-    };
-    (due.as_second() - now.as_second()) <= FAIL_BEFORE_DUE_SECS
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,21 +237,6 @@ mod tests {
     fn 不是我们的活不进计划() {
         let ts = [task(1, "write", TaskStatus::Dispatched)];
         assert!(plan(&ts).is_empty());
-    }
-
-    #[test]
-    fn 时限前五分钟就主动报失败() {
-        let now: jiff::Timestamp = "2026-09-18T06:00:00Z".parse().unwrap();
-        // 挂着的话主编看到的是「还在做」，而实际上已经做不完了
-        assert!(should_fail_early("2026-09-18T06:04:00Z", now));
-        assert!(
-            should_fail_early("2026-09-18T05:59:00Z", now),
-            "已经过了更要报"
-        );
-        assert!(!should_fail_early("2026-09-18T06:30:00Z", now));
-        // 引擎没给时限就不猜
-        assert!(!should_fail_early("", now));
-        assert!(!should_fail_early("不是时间", now));
     }
 
     #[tokio::test]
