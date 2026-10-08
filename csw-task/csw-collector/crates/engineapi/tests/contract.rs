@@ -223,6 +223,13 @@ fn judgement(key: &str) -> csw_collector_engineapi::JudgementInput {
     }
 }
 
+#[test]
+fn 没归属的判断也明确发空item_key让引擎清掉旧归属() {
+    // r66 v4：空串被 skip 掉，引擎当「没带」保留了旧归属，两键一直对不上
+    let v = serde_json::to_value(judgement("asimocrafts-e1a771")).unwrap();
+    assert_eq!(v["item_key"], serde_json::json!(""));
+}
+
 #[tokio::test]
 async fn 提交的kind用引擎认的英文值() {
     use csw_collector_engineapi::{DeliverableKind, SubmitInput};

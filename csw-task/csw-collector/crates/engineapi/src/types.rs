@@ -212,7 +212,7 @@ pub struct SweepInput {
 #[derive(Debug, Clone, Serialize)]
 pub struct JudgementInput {
     pub candidate_key: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
+    /// 始终发：空串 = 明确不属于任何条目，引擎据此清掉旧归属；不发则引擎保留旧值。
     pub item_key: String,
     pub platform: String,
     #[serde(skip_serializing_if = "String::is_empty")]
