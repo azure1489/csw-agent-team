@@ -1579,13 +1579,27 @@ pub async fn rework_in_place(
     // 中间那一段入库的没扫到。**只补采、补判缺的那一段**，原来判过的一条不动
     //（09-30 r58：06:00:12 开工、止点 07:00，主编退回「先解释 07:00 截止与 06:00:12 快照差异」）
     let mut win_end = prev.window_end.clone();
-    if let Some(e) = end
-        && let Ok(w) = prev.window_end.parse::<Timestamp>()
-        && w < e
+    // 补采的那一段：派工止点晚于本轮止点就补；之前补过、但没留逐键留痕的（10-08 r66 v2 之前的版本），
+    // 按记下的时段再补一次（主编 v2 退回：1418 条无逐键 first_seen 留痕、无独立 sweep，不能确认零候选）
+    let has_patch_trace = csw_collector_core::window_trace::of_round(conn, prev.id)
+        .unwrap_or_default()
+        .iter()
+        .any(|t| t.sweep_key == PATCH_SWEEP);
+    let slice_range: Option<(String, String)> = match (end, prev.window_end.parse::<Timestamp>()) {
+        (Some(e), Ok(w)) if w < e => Some((prev.window_end.clone(), e.to_string())),
+        _ if !has_patch_trace => csw_collector_core::window_trace::patches_of(conn, prev.id)
+            .unwrap_or_default()
+            .last()
+            .map(|p| (p.window_from.clone(), p.window_to.clone())),
+        _ => None,
+    };
+    let mut patch_sweep: Option<SweepCount> = None;
+    if let Some((from, to)) = slice_range
+        && let Ok(e) = to.parse::<Timestamp>()
     {
         let slice = Round {
-            window_start: prev.window_end.clone(),
-            window_end: e.to_string(),
+            window_start: from.clone(),
+            window_end: to.clone(),
             ..prev.clone()
         };
         tracing::info!(从 = %slice.window_start, 到 = %slice.window_end, "返工：补采窗口缺的那一段");
@@ -1603,11 +1617,57 @@ pub async fn rework_in_place(
             true,
         )
         .await?;
-        record_patch(conn, prev.id, &slice, &j.sweeps);
         // 留痕：原来的全留着（补采那一趟的宽取会整份覆盖），只把这一段新入窗的接在后面
         let known: HashSet<String> = kept_trace.iter().map(|t| t.source_id.clone()).collect();
         let slice_trace =
             csw_collector_core::window_trace::of_round(conn, prev.id).unwrap_or_default();
+        // 补采那一趟取回的**每一条**另存一份，按首次入库 first_seen 判这一段内外（派工单口径），纯图文才算资格
+        let judged: HashSet<&str> = judgements
+            .iter()
+            .map(|x| x.candidate_key.as_str())
+            .chain(j.judgements.iter().map(|x| x.candidate_key.as_str()))
+            .collect();
+        let (patch_rows, fs_in, fs_unjudged) = patch_trace(&slice_trace, &from, &to, &judged);
+        if let Err(e) =
+            csw_collector_core::window_trace::put(conn, prev.id, PATCH_SWEEP, &patch_rows)
+        {
+            tracing::warn!("补采逐键留痕没存下：{e:#}");
+        }
+        let main = j.sweeps.iter().find(|s| s.sweep_key == "csw-window");
+        let query = format!(
+            "补采 {from} ~ {to}（左闭右开）：接口按发布时间宽取 {} 条、去重 {} 条；按首次入库 first_seen 复算，纯图文且首次入库在这一段内 {} 条，\
+             其中已判 {}、未判 {}{}；逐键见 trace/window_patch.jsonl",
+            main.map_or(0, |m| m.found),
+            main.map_or(0, |m| m.fetched_unique),
+            fs_in,
+            fs_in - fs_unjudged.len(),
+            fs_unjudged.len(),
+            if fs_unjudged.is_empty() {
+                String::new()
+            } else {
+                format!("（未判：{}）", fs_unjudged.join("、"))
+            }
+        );
+        let mut sw = main.cloned().unwrap_or_default();
+        sw.sweep_key = PATCH_SWEEP.into();
+        sw.platform = "instagram".into();
+        if sw.source_key.is_empty() {
+            sw.source_key = "channel".into();
+        }
+        sw.query = query.clone();
+        sw.in_window = fs_in as i64;
+        sw.reviewed = (fs_in - fs_unjudged.len()) as i64;
+        sw.unreviewed = fs_unjudged.len() as i64;
+        sw.registered = 0;
+        sw.result = "ok".into();
+        sw.trace = Vec::new();
+        let mut for_record = j.sweeps.clone();
+        if let Some(m) = for_record.iter_mut().find(|s| s.sweep_key == "csw-window") {
+            m.query = query;
+            m.in_window = fs_in as i64;
+        }
+        record_patch(conn, prev.id, &slice, &for_record);
+        patch_sweep = Some(sw);
         let mut by_sweep: std::collections::BTreeMap<
             String,
             Vec<csw_collector_core::window_trace::TraceRow>,
@@ -1618,9 +1678,11 @@ pub async fn rework_in_place(
         for t in slice_trace
             .into_iter()
             .filter(|t| t.outcome == "in_window" && !known.contains(&t.source_id))
+            .filter(|t| t.sweep_key != PATCH_SWEEP)
         {
             by_sweep.entry(t.sweep_key.clone()).or_default().push(t);
         }
+        by_sweep.remove(PATCH_SWEEP);
         for (sweep, rows) in &by_sweep {
             if let Err(e) = csw_collector_core::window_trace::put(conn, prev.id, sweep, rows) {
                 tracing::warn!("补采后留痕没合上：{e:#}");
@@ -1641,11 +1703,13 @@ pub async fn rework_in_place(
                 .filter(|t| !have_topics.contains(&t.topic_key)),
         );
         by_key.extend(j.by_key);
-        conn.execute(
-            "UPDATE rounds SET window_end = ?2 WHERE id = ?1",
-            rusqlite::params![prev.id, e.to_string()],
-        )?;
-        win_end = e.to_string();
+        if prev.window_end.parse::<Timestamp>().is_ok_and(|w| w < e) {
+            conn.execute(
+                "UPDATE rounds SET window_end = ?2 WHERE id = ?1",
+                rusqlite::params![prev.id, e.to_string()],
+            )?;
+            win_end = e.to_string();
+        }
     }
 
     // 二·再：类型是图或轮播、来源接口却没给媒体的，当初被当成「非图文」排除了。
@@ -1856,7 +1920,15 @@ pub async fn rework_in_place(
 
     // 七、采集轮沿用上次的，窗口内条数按收口后的重算
     let mut sweeps = register::previous_sweeps(conn, prev.id);
+    // 补采独立成一个采集轮登记（这次补过就用这次的，否则沿用上次登记的那条）
+    if let Some(p) = patch_sweep {
+        sweeps.retain(|s| s.sweep_key != PATCH_SWEEP);
+        sweeps.push(p);
+    }
     for sw in &mut sweeps {
+        if sw.sweep_key == PATCH_SWEEP {
+            continue; // 补采那一路的窗口内条数按 first_seen 复算过，不按采集器重数
+        }
         let col = register::collector_of(&sw.sweep_key);
         let n = judgements
             .iter()
@@ -1946,7 +2018,7 @@ fn apply_calibrations(
     judgements: &mut [Judgement],
     topics: &mut Vec<csw_collector_core::types::Topic>,
 ) -> HashSet<String> {
-    use csw_collector_core::types::{Gap, GapLevel, GapOwner, Tier, Topic};
+    use csw_collector_core::types::{Gap, GapLevel, GapOwner, Tier, Topic, Unanswered};
     let mut done = HashSet::new();
     for c in calibrations {
         let Some(j) = judgements.iter_mut().find(|j| j.candidate_key == c.key) else {
@@ -1954,14 +2026,29 @@ fn apply_calibrations(
         };
         let before = j.tier;
         j.tier = c.tier;
-        if c.tier == Tier::PendingCheck && !j.has_decision_gap() {
-            j.gaps.push(Gap {
-                level: GapLevel::Decision,
-                what: format!("主编校准为待核（{}），核心证据待补", c.source),
-                owner: GapOwner::Editor,
-                tried: String::new(),
-                next: "按主编退回意见补证后再定档".into(),
-            });
+        if c.tier == Tier::PendingCheck {
+            // 缺口、未答、成稿条件跟着待核走，写主编原话而不是泛泛的「主编待核」
+            //（10-08 r66 v2 退回：POPEYE / Legacy 降了待核，unanswered 仍 none、readiness 仍「足以短讯」）
+            let what = if c.note.is_empty() {
+                format!("主编校准为待核（{}），核心证据待补", c.source)
+            } else {
+                format!("主编校准待核：{}", c.note)
+            };
+            j.gaps
+                .retain(|g| !(g.level == GapLevel::Decision && g.what.starts_with("主编校准")));
+            j.gaps.insert(
+                0,
+                Gap {
+                    level: GapLevel::Decision,
+                    what: what.clone(),
+                    owner: GapOwner::Editor,
+                    tried: String::new(),
+                    next: "只核主编点名的这一项，不扩大深核".into(),
+                },
+            );
+            j.unanswered = Unanswered::MissingMaterial;
+            j.readiness.material_complete = false;
+            j.readiness.note = what;
         }
         let flags = vec![format!(
             "【主编校准】{}（{}；工作台原判 {before:?}，不交模型重判）",
@@ -1972,6 +2059,16 @@ fn apply_calibrations(
             ledger::put_judgement(conn, round_id, j, &flags, &cfg.model.model, RUBRIC_VERSION)
         {
             tracing::warn!(候选 = %c.key, "主编校准没落库：{e:#}");
+        }
+        // 它本来就是某个选题的代表帖：整组跟着主编走，不拆（拆出去会让组里别的帖子换了归属，
+        // 与引擎登记的条目键对不上——10-08 r66 v2：asimocrafts-e1a771 本包空、引擎仍挂 628da9）
+        if let Some(t) = topics
+            .iter_mut()
+            .find(|t| t.primary_key == c.key && t.members.len() > 1)
+        {
+            t.tier = Some(c.tier);
+            done.insert(c.key.clone());
+            continue;
         }
         // 单独成一个选题：条目键就是它，登记状态跟着主编走，不被组里别的帖子带偏
         let solo = topics
@@ -2138,6 +2235,63 @@ pub fn readmit_no_media(
 /// 留痕里的媒体摘要是「类型：无媒体」，且类型是图或轮播。
 fn is_no_media_image(media: &str) -> bool {
     matches!(media, "Image：无媒体" | "Carousel：无媒体")
+}
+
+/// 补采那一路单独登记、单独留痕的采集轮键。
+pub const PATCH_SWEEP: &str = "csw-window-patch";
+
+/// 补采那一趟取回的全部留痕，按首次入库 first_seen 重判这一段内外；纯图文（图 / 轮播）才有资格。
+/// 返回（留痕行，资格内且首次入库在这一段内的条数，其中没判过的键）。
+fn patch_trace(
+    rows: &[csw_collector_core::window_trace::TraceRow],
+    from: &str,
+    to: &str,
+    judged: &HashSet<&str>,
+) -> (
+    Vec<csw_collector_core::window_trace::TraceRow>,
+    usize,
+    Vec<String>,
+) {
+    let (Ok(a), Ok(b)) = (from.parse::<Timestamp>(), to.parse::<Timestamp>()) else {
+        return (Vec::new(), 0, Vec::new());
+    };
+    let mut out = Vec::new();
+    let mut n = 0;
+    let mut missing = Vec::new();
+    let mut seen = HashSet::new();
+    for t in rows.iter().filter(|t| t.sweep_key == "csw-window") {
+        if !seen.insert(t.source_id.clone()) {
+            continue;
+        }
+        let image = t.media.starts_with("Image") || t.media.starts_with("Carousel");
+        let fs = t
+            .ingested_at
+            .as_deref()
+            .and_then(|x| x.parse::<Timestamp>().ok());
+        let outcome = if !image {
+            "not_image_only"
+        } else {
+            match fs {
+                None => "no_time",
+                Some(x) if x < a => "before_window",
+                Some(x) if x >= b => "after_window",
+                Some(_) => "in_window",
+            }
+        };
+        if outcome == "in_window" {
+            n += 1;
+            if !judged.contains(t.candidate_key.as_str()) {
+                missing.push(t.candidate_key.clone());
+            }
+        }
+        out.push(csw_collector_core::window_trace::TraceRow {
+            sweep_key: PATCH_SWEEP.into(),
+            outcome: outcome.into(),
+            source: "patch".into(),
+            ..t.clone()
+        });
+    }
+    (out, n, missing)
 }
 
 /// 记一次补采（主力窗口采集器那一路）。0 条也记：这就是「这一段扫过、没有新入库」的证据。
@@ -3012,6 +3166,53 @@ pub fn save_window_trace(
 mod tests {
     use super::*;
 
+    #[test]
+    fn 补采按首次入库重判并列出未判() {
+        use csw_collector_core::window_trace::TraceRow;
+        let row = |sid: &str, key: &str, media: &str, fs: &str| TraceRow {
+            sweep_key: "csw-window".into(),
+            source_id: sid.into(),
+            candidate_key: key.into(),
+            account: "a".into(),
+            url: String::new(),
+            posted_at: Some("2026-10-01T00:00:00Z".into()),
+            ingested_at: Some(fs.into()),
+            media: media.into(),
+            outcome: "before_window".into(),
+            dup_of: None,
+            source: "live".into(),
+        };
+        let rows = vec![
+            row("1", "a-111111", "Image：图 1", "2026-10-07T22:00:00Z"),
+            row("2", "b-222222", "Carousel：图 3", "2026-10-07T22:30:00Z"),
+            row("3", "c-333333", "Reel：视频 1", "2026-10-07T22:10:00Z"),
+            row("4", "d-444444", "Image：图 1", "2026-10-07T20:00:00Z"),
+            row("1", "a-111111", "Image：图 1", "2026-10-07T22:00:00Z"),
+        ];
+        let judged: HashSet<&str> = ["a-111111"].into_iter().collect();
+        let (out, n, missing) = patch_trace(
+            &rows,
+            "2026-10-07T21:30:18Z",
+            "2026-10-07T23:00:00Z",
+            &judged,
+        );
+        assert_eq!(out.len(), 4, "同一贴文只留一行");
+        assert_eq!(n, 2);
+        assert_eq!(missing, vec!["b-222222".to_string()]);
+        assert!(
+            out.iter()
+                .all(|r| r.sweep_key == PATCH_SWEEP && r.source == "patch")
+        );
+        assert_eq!(
+            out.iter().find(|r| r.source_id == "3").unwrap().outcome,
+            "not_image_only"
+        );
+        assert_eq!(
+            out.iter().find(|r| r.source_id == "4").unwrap().outcome,
+            "before_window"
+        );
+    }
+
     fn open_test_round(conn: &Connection, from: &str, to: &str) -> i64 {
         rounds::open_round(
             conn,
@@ -3248,11 +3449,13 @@ mod tests {
                 key: "coleman-e9591e".into(),
                 tier: Tier::Recommend,
                 source: "v6 退回意见".into(),
+                note: String::new(),
             },
             Calibration {
                 key: "drlv-cf21b4".into(),
                 tier: Tier::PendingCheck,
                 source: "引擎条目".into(),
+                note: String::new(),
             },
         ];
         let cfg = Config::default();

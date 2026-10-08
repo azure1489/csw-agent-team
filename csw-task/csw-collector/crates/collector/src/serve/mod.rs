@@ -1251,7 +1251,7 @@ async fn start_round(
                 .collect();
             // 返工补采可能改了窗口止点：页头时间、台账窗口按库里的最新值（09-30 r58 v2 还写着 06:00:12）
             let r = rounds::get(conn, r.id)?.unwrap_or(r);
-            let five = five_columns(engine, t.task.run_id, &judgements, &calib).await;
+            let five = five_columns(engine, t.task.run_id, &judgements, &fin.topics, &calib).await;
             let built = finish::build_deliverable(
                 conn,
                 &r,
@@ -1374,18 +1374,22 @@ async fn five_columns(
     engine: &EngineClient,
     run_id: i64,
     judgements: &[csw_collector_core::types::Judgement],
+    topics: &[csw_collector_core::types::Topic],
     calib: &[calibration::Calibration],
 ) -> finish::FiveColumns {
     use csw_collector_core::types::Tier;
     let calibrated: std::collections::HashSet<&str> =
         calib.iter().map(|c| c.key.as_str()).collect();
+    let tier_of: HashMap<&str, Tier> = judgements
+        .iter()
+        .map(|j| (j.candidate_key.as_str(), j.tier))
+        .collect();
     let mut f = finish::FiveColumns {
-        leads: judgements
+        post_leads: judgements
             .iter()
             .filter(|j| matches!(j.tier, Tier::Recommend | Tier::Alternate))
-            .filter(|j| !calibrated.contains(j.candidate_key.as_str()))
             .count(),
-        pending: judgements
+        post_pending: judgements
             .iter()
             .filter(|j| j.tier == Tier::PendingCheck)
             .count(),
@@ -1404,6 +1408,19 @@ async fn five_columns(
         target: engine.run_target(run_id).await.ok().flatten(),
         ..Default::default()
     };
+    // 独立事件 = 选题；档位取代表帖的（主编校准过的已写进判断）
+    for t in topics {
+        let k = t.primary_key.as_str();
+        match tier_of.get(k).copied().or(t.tier) {
+            Some(Tier::Recommend | Tier::Alternate) if !calibrated.contains(k) => {
+                f.lead_keys.push(k.to_string())
+            }
+            Some(Tier::PendingCheck) => f.pending_keys.push(k.to_string()),
+            _ => {}
+        }
+    }
+    f.leads = f.lead_keys.len();
+    f.pending = f.pending_keys.len();
     if let Ok(tr) = engine.intake_trace(run_id).await {
         let mut last: HashMap<String, String> = HashMap::new();
         for t in tr
@@ -1427,8 +1444,9 @@ async fn five_columns(
         {
             let key = it.get("item_key").and_then(|v| v.as_str()).unwrap_or("");
             match it.get("status").and_then(|v| v.as_str()).unwrap_or("") {
-                "approved_write" | "written" => f.van_approved += 1,
+                "approved_write" | "written" => f.van_keys.push(key.to_string()),
                 "shortlisted" if last.get(key).is_some_and(|r| r == "editor") => {
+                    f.mature_keys.push(key.to_string());
                     if it.get("rank").and_then(|v| v.as_str()) == Some("alt") {
                         f.mature_alt += 1;
                     } else {
@@ -1438,6 +1456,7 @@ async fn five_columns(
                 _ => {}
             }
         }
+        f.van_approved = f.van_keys.len();
     }
     f
 }

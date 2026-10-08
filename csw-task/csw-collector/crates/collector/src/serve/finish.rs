@@ -69,9 +69,17 @@ pub fn first_batch<'a>(
     picked
 }
 
-/// 五栏与目标缺口用到的数。成熟只认主编在引擎里亲手定的，工作台不自定。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// 五栏与目标缺口用到的数。**按独立事件（选题）计**，逐帖数另列；成熟只认主编在引擎里亲手定的，工作台不自定。
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct FiveColumns {
+    /// 各栏的事件键（选题代表帖的条目键）
+    pub lead_keys: Vec<String>,
+    pub pending_keys: Vec<String>,
+    pub mature_keys: Vec<String>,
+    pub van_keys: Vec<String>,
+    /// 逐帖口径：推荐 + 备选的帖数、待核的帖数（只作对照，不进五栏）
+    pub post_leads: usize,
+    pub post_pending: usize,
     /// 工作台初判推荐 / 备选、尚未经主编校准
     pub leads: usize,
     pub pending: usize,
@@ -99,7 +107,11 @@ pub fn five_columns_section(f: &FiveColumns) -> String {
         "| {} | {} | {} | {} | {} |\n\n",
         f.leads, f.pending, f.mature_primary, f.mature_alt, f.van_approved
     ));
-    s.push_str("- 线索是工作台初判的推荐 / 备选，未经主编校准，不算成熟；成熟只认主编在引擎里定的，工作台不自定。\n");
+    s.push_str("- 按独立事件（选题）计，各栏的事件键见 `trace/five_columns.json`。线索是工作台初判推荐 / 备选、未经主编校准的事件；主编定为继续评估的不算线索也不算成熟；成熟只认主编在引擎里定的，工作台不自定。\n");
+    s.push_str(&format!(
+        "- 逐帖口径另列、不混进五栏：推荐 + 备选 {} 帖、待核 {} 帖；引擎登记的 shortlisted / 待核是条目数，也不等于五栏。\n",
+        f.post_leads, f.post_pending
+    ));
     match f.target {
         Some((p, a)) => {
             let (gp, ga) = (
@@ -620,16 +632,20 @@ pub fn build_deliverable(
     // 窗口行后写补采记录：补过的一段扫了多少、窗口内多少，0 条照写（不是只改止点）
     let patches = csw_collector_core::window_trace::patches_of(conn, round.id).unwrap_or_default();
     if !patches.is_empty()
-        && let Some(i) = body.find("窗口（按")
+        && let Some(i) = body.find("窗口（")
         && let Some(end) = body[i..].find('\n')
     {
         let lines: Vec<String> = patches
             .iter()
             .map(|p| {
-                format!(
-                    "> 补采 {} ~ {}：{} 补采，接口按发布时间宽取 {} 条，按原始披露时间收口后窗口内 {} 条（见 trace/window_summary.json「补采记录」）",
-                    p.window_from, p.window_to, p.fetched_at, p.found, p.in_window
-                )
+                if p.query.contains("first_seen 复算") {
+                    format!("> {}（{} 补采）", p.query, p.fetched_at)
+                } else {
+                    format!(
+                        "> 补采 {} ~ {}：{} 补采，接口按发布时间宽取 {} 条，窗口内 {} 条（见 trace/window_summary.json「补采记录」）",
+                        p.window_from, p.window_to, p.fetched_at, p.found, p.in_window
+                    )
+                }
             })
             .collect();
         body.insert_str(i + end, &format!("\n\n{}", lines.join("\n>\n")));
@@ -638,12 +654,14 @@ pub fn build_deliverable(
     let (cards, card_keys) =
         first_cards(conn, cfg, judgements, topics, by_key, pinned, calib_labels);
     // 五栏与目标缺口紧跟首批卡：「首批另补几张」按实际挑出来的卡算
-    let five = five
-        .map(|mut f| {
-            f.new_cards = card_keys.iter().filter(|k| !pinned.contains(k)).count();
-            five_columns_section(&f)
-        })
-        .unwrap_or_default();
+    let five = five.map(|mut f| {
+        f.new_cards = card_keys.iter().filter(|k| !pinned.contains(k)).count();
+        f
+    });
+    let five_trace = five
+        .as_ref()
+        .and_then(|f| serde_json::to_string_pretty(f).ok());
+    let five = five.as_ref().map(five_columns_section).unwrap_or_default();
     body = format!("{cards}{five}{body}");
     // 口径冲突单独说明，不混进红灯
     if let Some((_, lines)) = reconciled
@@ -819,6 +837,29 @@ pub fn build_deliverable(
         "trace/window_summary.json",
         serde_json::to_string_pretty(&summary)?,
     ));
+    if let Some(t) = five_trace {
+        entries.push(pack::Entry::text("trace/five_columns.json", t));
+    }
+    // 补采那一趟取回的每一条：按首次入库判的这一段内外、资格（10-08 r66 v2 退回要逐键留痕）
+    let patch_rows: Vec<String> = csw_collector_core::window_trace::of_round(conn, round.id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| t.sweep_key == super::round::PATCH_SWEEP)
+        .filter_map(|t| {
+            serde_json::to_string(&serde_json::json!({
+                "source_id": t.source_id, "candidate_key": t.candidate_key, "account": t.account,
+                "url": t.url, "posted_at": t.posted_at, "first_seen": t.ingested_at,
+                "media": t.media, "outcome_by_first_seen": t.outcome,
+            }))
+            .ok()
+        })
+        .collect();
+    if !patch_rows.is_empty() {
+        entries.push(pack::Entry::text(
+            "trace/window_patch.jsonl",
+            patch_rows.join("\n") + "\n",
+        ));
+    }
     // 本包与引擎逐键对账：条目、判断各一份，不一致的逐键列出
     if let Some((r, _)) = reconciled {
         entries.push(pack::Entry::text(
@@ -1227,6 +1268,25 @@ fn first_cards(
         .take(MAX)
         .cloned()
         .collect();
+    // 补位：同品牌只占一张（10-08 r66 v2：卡 7、卡 8 同是 cargocontainer）；
+    // 同事实无增量、或历史上已批准写作 / 已写成的不回流（卡 8 是 r62 写成的 MODULE X）
+    let brand = |k: &str| -> String {
+        by_key
+            .get(k)
+            .map(|c| {
+                c.account
+                    .chars()
+                    .filter(|ch| ch.is_ascii_alphanumeric())
+                    .collect::<String>()
+                    .to_lowercase()
+            })
+            .unwrap_or_default()
+    };
+    let mut brands: std::collections::HashSet<String> = keys
+        .iter()
+        .map(|k| brand(k))
+        .filter(|b| !b.is_empty())
+        .collect();
     for t in topics.iter().filter(|t| t.tier == Some(Tier::Recommend)) {
         if keys.len() >= MAX {
             break;
@@ -1234,9 +1294,21 @@ fn first_cards(
         let Some(j) = by_j.get(t.primary_key.as_str()) else {
             continue;
         };
-        if j.tier == Tier::Recommend && !j.has_decision_gap() && !keys.contains(&t.primary_key) {
-            keys.push(t.primary_key.clone());
+        if j.tier != Tier::Recommend || j.has_decision_gap() || keys.contains(&t.primary_key) {
+            continue;
         }
+        if j.comparison.verdict == csw_collector_core::types::ComparisonVerdict::SameFactNoGain
+            || (j.comparison.note.contains("历史：r")
+                && (j.comparison.note.contains("已批准写作")
+                    || j.comparison.note.contains("已写成")))
+        {
+            continue;
+        }
+        let b = brand(&t.primary_key);
+        if !b.is_empty() && !brands.insert(b) {
+            continue;
+        }
+        keys.push(t.primary_key.clone());
     }
     if keys.is_empty() {
         return (String::new(), keys);
@@ -1905,12 +1977,17 @@ mod five_columns_tests {
             calib_continue: 2,
             new_cards: 4,
             target: Some((6, 2)),
+            post_leads: 245,
+            post_pending: 344,
+            ..Default::default()
         };
         let s = five_columns_section(&f);
         assert!(s.contains("| 253 | 342 | 0 | 0 | 0 |"));
         assert!(s.contains("现差 6 主 2 备"));
         assert!(s.contains("停止 4 条、隔离待核 2 条、继续评估 2 条"));
         assert!(s.contains("首批另补 4 张卡"));
+        assert!(s.contains("推荐 + 备选 245 帖、待核 344 帖"));
+        assert!(s.contains("trace/five_columns.json"));
         assert!(five_columns_section(&FiveColumns::default()).contains("没给目标数"));
     }
 }

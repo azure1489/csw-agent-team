@@ -22,6 +22,8 @@ pub struct Calibration {
     pub tier: Tier,
     /// 这个结论从哪来：「v6 退回意见」「引擎条目（主编 2026-09-30T08:34:02Z）」
     pub source: String,
+    /// 主编对这一条写的原话（条目键后面那一段），待核时作缺口的具体内容；引擎条目来源为空
+    pub note: String,
 }
 
 impl Calibration {
@@ -82,7 +84,91 @@ static FORMS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 
 /// 一段退回意见里写明去向的条目。按分句认，只认条目键**之后**明确写出的去向（见 [`FORMS`]）。
 /// 没写条目键的（只写品牌）不认——宁可不认，也不认错。
+#[cfg(test)]
 pub fn parse_review(text: &str) -> Vec<(String, Tier)> {
+    parse_review_notes(text)
+        .into_iter()
+        .map(|(k, t, _)| (k, t))
+        .collect()
+}
+
+/// 编号条目里后文才写的去向（「卡6 key：此前…无新增变化…。隔离待核不作成熟替补」）只认这几个明确说法，
+/// 前面紧挨着否定词的不算（10-08 r66 v2 退回：卡 6、卡 8 的「隔离待核」写在第二句，没认出来）。
+const ITEM_PHRASES: [(&str, Tier); 9] = [
+    ("隔离待核", Tier::PendingCheck),
+    ("降为待核", Tier::PendingCheck),
+    ("降待核", Tier::PendingCheck),
+    ("改为待核", Tier::PendingCheck),
+    ("停止本期", Tier::NotRecommend),
+    ("停止追加", Tier::NotRecommend),
+    ("继续价值评估", Tier::Recommend),
+    ("保留继续评估", Tier::Recommend),
+    ("继续评估", Tier::Recommend),
+];
+
+fn item_phrase(after_key: &str) -> Option<Tier> {
+    const NEG: [&str; 5] = ["不", "勿", "别", "禁止", "非"];
+    let mut best: Option<(usize, Tier)> = None;
+    for (p, t) in ITEM_PHRASES {
+        for (at, _) in after_key.match_indices(p) {
+            let before: String = after_key[..at].chars().rev().take(3).collect();
+            if NEG.iter().any(|n| before.contains(n)) {
+                continue;
+            }
+            if best.is_none_or(|(b, _)| at < b) {
+                best = Some((at, t));
+            }
+            break;
+        }
+    }
+    best.map(|(_, t)| t)
+}
+
+/// 同 [`parse_review`]，另带主编对这一条写的原话。
+pub fn parse_review_notes(text: &str) -> Vec<(String, Tier, String)> {
+    static ITEM: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^\s*(?:\d+[\.、．]|卡\s*\d+)").expect("正则"));
+    let note_of = |after: &str| -> String {
+        after
+            .trim_start_matches([':', '：', ' ', '='])
+            .chars()
+            .take(160)
+            .collect::<String>()
+            .trim()
+            .to_string()
+    };
+    let mut out: Vec<(String, Tier, String)> = Vec::new();
+    // 一、按分句认：条目键后紧跟去向
+    for (k, t) in parse_review_clauses(text) {
+        let note = text
+            .find(&k)
+            .map(|i| note_of(text[i + k.len()..].split(['\n']).next().unwrap_or("")))
+            .unwrap_or_default();
+        out.push((k, t, note));
+    }
+    // 二、编号条目里只有一个条目键、分句没认出的：在这一条里找明确说法
+    let starts: Vec<usize> = ITEM.find_iter(text).map(|m| m.start()).collect();
+    for (n, &a) in starts.iter().enumerate() {
+        let b = starts.get(n + 1).copied().unwrap_or(text.len());
+        // 一条到换行为止：最后一条后面常跟着「方向：」等别的段落，不能并进来
+        let item = text[a..b]
+            .split('\n')
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("");
+        let keys: Vec<&str> = KEY.find_iter(item).map(|m| m.as_str()).collect();
+        let [key] = keys.as_slice() else { continue };
+        if out.iter().any(|(k, _, _)| k == key) {
+            continue;
+        }
+        let after = &item[item.find(key).unwrap_or(0) + key.len()..];
+        if let Some(t) = item_phrase(after) {
+            out.push((key.to_string(), t, note_of(after)));
+        }
+    }
+    out
+}
+
+fn parse_review_clauses(text: &str) -> Vec<(String, Tier)> {
     let mut out: Vec<(String, Tier)> = Vec::new();
     for clause in text.split(['；', ';', '。', '\n']) {
         for m in KEY.find_iter(clause) {
@@ -151,8 +237,8 @@ pub fn from_reviews_with_keys(detail: &TaskDetail, known: &[String]) -> Vec<Cali
             .collect::<Vec<_>>()
             .join("\n");
         let text = expand_short_keys(&text, known);
-        for (key, tier) in parse_review(&text) {
-            upsert(&mut out, key, tier, format!("v{v} 退回意见"));
+        for (key, tier, note) in parse_review_notes(&text) {
+            upsert(&mut out, key, tier, format!("v{v} 退回意见"), note);
         }
     }
     out
@@ -196,17 +282,26 @@ pub fn from_traces(trace: &serde_json::Value, hub: &str, into: &mut Vec<Calibrat
             key.to_string(),
             tier,
             format!("引擎条目（主编 {at}）"),
+            String::new(),
         );
     }
 }
 
-fn upsert(v: &mut Vec<Calibration>, key: String, tier: Tier, source: String) {
+fn upsert(v: &mut Vec<Calibration>, key: String, tier: Tier, source: String, note: String) {
     match v.iter_mut().find(|c| c.key == key) {
         Some(c) => {
             c.tier = tier;
             c.source = source;
+            if !note.is_empty() {
+                c.note = note;
+            }
         }
-        None => v.push(Calibration { key, tier, source }),
+        None => v.push(Calibration {
+            key,
+            tier,
+            source,
+            note,
+        }),
     }
 }
 
@@ -249,6 +344,7 @@ mod tests {
             key: "drlv-cf21b4".into(),
             tier: Tier::Recommend,
             source: "v5 退回意见".into(),
+            note: String::new(),
         }];
         let trace = serde_json::json!({"traces": [
             {"item_key": "drlv-cf21b4", "to_status": "pending_check", "actor_role": "editor", "created_at": "2026-09-30T08:34:02Z"},
@@ -295,6 +391,39 @@ mod tests {
             "原全池中可另挑有明确使用变化的现成独立事件补首批"
         ));
         assert!(!asks_replacement("首页恢复四继续，另加上述四条"));
+    }
+
+    #[test]
+    fn r66v2编号条目后文的去向也认出并带原话() {
+        let t = "5. 卡6 campshoplantern-cc4260：此前有效反馈已停chair1987追加，当前材料与v1同核资料，无新增变化，不能以栗木+网布同义解释回流。隔离待核不作成熟替补，保留素材。\n\
+6. 卡8 cargocontainer-fbe002：自己确认r62写成且同事实无增量，仍recommend且readiness称宜接续制作，与POPEYE同样隔离待核，旧批准不继承。\n\
+方向：asimocrafts-628da9/bluelug-2a9c39保留继续评估；新增bushdebrunt-1b7eeb继续价值评估，画面可见三圈护框；cargocontainer-a3c6ce继续评估，图可见锅篮烤架";
+        let got = parse_review_notes(t);
+        let tier = |k: &str| got.iter().find(|(x, _, _)| x == k).map(|(_, t, _)| *t);
+        assert_eq!(
+            tier("campshoplantern-cc4260"),
+            Some(Tier::PendingCheck),
+            "{got:?}"
+        );
+        assert_eq!(
+            tier("cargocontainer-fbe002"),
+            Some(Tier::PendingCheck),
+            "{got:?}"
+        );
+        assert_eq!(tier("bushdebrunt-1b7eeb"), Some(Tier::Recommend), "{got:?}");
+        assert_eq!(
+            tier("cargocontainer-a3c6ce"),
+            Some(Tier::Recommend),
+            "{got:?}"
+        );
+        let note = &got
+            .iter()
+            .find(|(k, _, _)| k == "cargocontainer-fbe002")
+            .unwrap()
+            .2;
+        assert!(note.contains("r62写成"), "{note}");
+        // 否定语境不认
+        assert!(parse_review_notes("1. abc-123456：不继续评估，另议").is_empty());
     }
 
     #[test]
