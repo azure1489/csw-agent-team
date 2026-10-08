@@ -1,0 +1,727 @@
+<title>杂志背景库方案</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&display=swap">
+<style>
+:root { --ground:#F4F5F7; --surface:#FFFFFF; --ink:#1B1F2A; --muted:#5F6673; --rule:#DCDFE6; --accent:#4F46E5; --accent-soft:#EEF0FD; --warn:#B23B2A; --code-bg:#ECEEF3;
+  --sans:"Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif; --serif:"Noto Serif SC","Songti SC",serif; --mono:"IBM Plex Mono",Menlo,monospace; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --ground:#12141A; --surface:#1A1D26; --ink:#E6E8EE; --muted:#9AA1AE; --rule:#2C3140; --accent:#8B85F6; --accent-soft:#232647; --warn:#F08A76; --code-bg:#22263A; } }
+:root[data-theme="dark"] { --ground:#12141A; --surface:#1A1D26; --ink:#E6E8EE; --muted:#9AA1AE; --rule:#2C3140; --accent:#8B85F6; --accent-soft:#232647; --warn:#F08A76; --code-bg:#22263A; }
+body { background:var(--ground); color:var(--ink); font-family:var(--sans); font-size:16px; line-height:1.85; padding-inline:20px; padding-block:44px 96px; }
+.page { max-width:1080px; margin-inline:auto; display:flex; flex-direction:column; gap:28px; }
+.eyebrow { font-size:13px; color:var(--muted); letter-spacing:.08em; display:flex; flex-wrap:wrap; gap:4px 14px; }
+.chip { border:1px solid var(--accent); color:var(--accent); padding:0 8px; border-radius:3px; }
+h1 { font-family:var(--serif); font-weight:700; font-size:clamp(28px,5vw,38px); line-height:1.3; margin:12px 0 14px; text-wrap:balance; }
+h1 span { display:block; font-family:var(--sans); font-size:.5em; font-weight:500; color:var(--accent); margin-top:6px; }
+.lede { font-size:17px; line-height:1.9; margin:0; max-width:46em; }
+.meta { font-size:13.5px; color:var(--muted); margin:10px 0 0; max-width:60em; }
+nav ol { list-style:none; margin:0; padding:0; display:flex; flex-wrap:wrap; gap:6px 8px; }
+nav a { display:block; font-size:13.5px; padding:3px 11px; border:1px solid var(--rule); border-radius:3px; background:var(--surface); color:var(--ink); text-decoration:none; }
+nav a:hover { border-color:var(--accent); color:var(--accent); }
+article { min-width:0; }
+article h2 { font-family:var(--serif); font-weight:700; font-size:24px; margin:56px 0 14px; padding-top:18px; border-top:2px solid var(--ink); text-wrap:balance; }
+article h3 { font-size:17px; font-weight:700; margin:34px 0 8px; color:var(--accent); }
+article p { margin:12px 0; max-width:46em; }
+article ul, article ol { padding-left:1.4em; margin:12px 0; display:flex; flex-direction:column; gap:6px; max-width:46em; }
+code { font-family:var(--mono); font-size:.86em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+pre { background:var(--code-bg); border:1px solid var(--rule); border-radius:6px; padding:14px 16px; overflow-x:auto; font-size:13px; line-height:1.6; margin:16px 0; }
+pre code { background:none; padding:0; font-size:inherit; }
+.table-wrap { overflow-x:auto; margin:18px 0; border:1px solid var(--rule); border-radius:6px; background:var(--surface); }
+table { border-collapse:collapse; width:100%; font-size:14.5px; line-height:1.7; }
+th, td { text-align:left; vertical-align:top; padding:10px 13px; border-bottom:1px solid var(--rule); min-width:6em; }
+th { font-size:13px; color:var(--muted); background:var(--ground); font-weight:700; white-space:nowrap; }
+tr:last-child td { border-bottom:0; }
+.diagram { margin:22px 0; background:var(--surface); border:1px solid var(--rule); border-radius:8px; padding:18px 18px 12px; overflow-x:auto; }
+.diagram svg { display:block; min-width:640px; }
+.diagram figcaption { font-size:13.5px; color:var(--muted); line-height:1.6; margin-top:10px; max-width:60em; }
+footer { font-size:13.5px; color:var(--muted); border-top:1px solid var(--rule); padding-top:16px; }
+@media (max-width:560px) { body { font-size:15.5px; padding-inline:16px; } }
+</style>
+<div class="page">
+<header>
+  <div class="eyebrow"><span>营事编集室 · 情报收集员工作台</span><span>子方案 · 2026-10-07</span><span class="chip">未动工</span></div>
+  <h1>杂志背景库<span>刊译台图文 → OSS → 工作台知识库</span></h1>
+  <p class="lede">把刊译台加工好的日文杂志图文（扫描 PDF → 中文译文 + 商品表 + 裁图）导入工作台知识库，作为<strong>杂志背景</strong>一类材料，支持文字检索与以图搜图。刊译台不再导入 llm_wiki。</p>
+  <p class="meta">日期：2026-10-07（10-07 晚按 review 改第 2 版）｜状态：方案已定，未动工（动工时间由用户决定）｜涉及：<code>~/project/csw-kb</code>（刊译台）、<code>csw-task/csw-collector</code>（工作台后端）、<code>csw-task/csw-collector-web</code>（工作台前端）</p>
+</header>
+<nav aria-label="目录"><ol><li><a href="#1-已定决策">1. 已定决策</a></li><li><a href="#2-数据源与规模">2. 数据源与规模</a></li><li><a href="#3-架构">3. 架构</a></li><li><a href="#4-清单格式-manifest-jsonl">4. 清单格式 <code>manifest.jsonl</code></a></li><li><a href="#5-刊译台改动-project-csw-kb">5. 刊译台改动（<code>~/project/csw-kb</code>）</a></li><li><a href="#6-工作台后端改动-csw-task-csw-collector">6. 工作台后端改动（<code>csw-task/csw-collector</code>）</a></li><li><a href="#7-前端改动">7. 前端改动</a></li><li><a href="#8-设计稿-第-0-步-先于前端">8. 设计稿（第 0 步，先于前端）</a></li><li><a href="#9-护栏-必须有单测">9. 护栏（必须有单测）</a></li><li><a href="#10-实施步骤">10. 实施步骤</a></li><li><a href="#11-范围外">11. 范围外</a></li></ol></nav>
+<article><h2 id="1-已定决策">1. 已定决策</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>决策</th>
+<th>结论</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>类型</td>
+<td>新增第五类 <code>magazine_item</code>（杂志背景）。不并入现有四类：它不是 CSW 报过的（不参与查重）、不是 Van 认可的写法、不是她选过的、不带她的原话</td>
+</tr>
+<tr>
+<td>2</td>
+<td>用途边界</td>
+<td><strong>阶段一只进检索</strong>（文字检索、以图搜图、品牌页、MCP），不进判断第 4 步的对照材料；阶段二看过命中质量再定是否作为第六组「背景参照」进 <code>judge::materials</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td>llm_wiki</td>
+<td>刊译台不再导入 llm_wiki，出口改为「上传 OSS + 写清单」</td>
+</tr>
+<tr>
+<td>4</td>
+<td>OSS</td>
+<td>复用 <code>cws-file</code>（oss-cn-guangzhou），前缀 <code>kb/magazine/</code>，<strong>公开读</strong>（刊物已有版权，仅公司内部使用），返回公开地址，不做签名</td>
+</tr>
+<tr>
+<td>5</td>
+<td>网络</td>
+<td>centos9 不是阿里云 ECS，上传走公网</td>
+</tr>
+<tr>
+<td>6</td>
+<td>向量</td>
+<td>用本项目的 Qwen3-VL-Embedding（agent 主机 <code>127.0.0.1:8022</code>）计算，不在 AutoDL 预算</td>
+</tr>
+<tr>
+<td>7</td>
+<td>上传范围</td>
+<td>裁图原尺寸 + 整页图 2400px 都上传</td>
+</tr>
+<tr>
+<td>8</td>
+<td>向量范围</td>
+<td>只算 <code>has_content=1 &amp;&amp; skipped=0</code> 且 <code>category != decor</code> 的裁图；整页图不算</td>
+</tr>
+<tr>
+<td>9</td>
+<td>回填方式</td>
+<td>可让路的空档回填，分两遍：先融合向量，后纯图向量</td>
+</tr>
+<tr>
+<td>10</td>
+<td>栏目级内容</td>
+<td>暂不入库（以后可作为子类型补入栏目摘要与正文）</td>
+</tr>
+<tr>
+<td>11</td>
+<td>以图搜图索引</td>
+<td>先实测暴力扫描延迟，超过约 200 ms 再给 <code>images</code> 表建索引</td>
+</tr>
+<tr>
+<td>12</td>
+<td>设计稿</td>
+<td><strong>先补设计稿</strong>，两边前端照设计稿实现</td>
+</tr>
+<tr>
+<td>13</td>
+<td>品牌别名表</td>
+<td>杂志品牌<strong>不自动</strong>扩充别名表（ZERO、STORM、REI、COAL 这类会全文误命中）；要加走人工、<code>source='kb'</code></td>
+</tr>
+<tr>
+<td>14</td>
+<td>数据源</td>
+<td>centos9 <code>/opt/goout</code> 全部（174 本 PDF + 2019.12 的 jpg），加进刊译台 <code>import_roots</code> 直接读，只读不写</td>
+</tr>
+<tr>
+<td>15</td>
+<td>ARCHIVE 合本</td>
+<td>跳过（4 本 705 页），单期全部入库后再议</td>
+</tr>
+<tr>
+<td>16</td>
+<td>导入顺序</td>
+<td>由近到远：2026 → 2014，别册穿插在对应年份后</td>
+</tr>
+<tr>
+<td>17</td>
+<td>刊译台模型</td>
+<td><code>gpt-6.1-sol</code>，走与主编 Hermes 相同的 sub2api 通道（<code>https://csw-subapi.833233.xyz/v1</code>、Responses API），<strong>但用刊译台单独的密钥</strong>（不与主编共用，避免批量期挤占 05:30 正式轮的按用户并发上限）；密钥只存 <code>~/.csw-kb/env</code>（本机 + centos9），2026-10-07 已切换，生产 smoke 5/5 通过</td>
+</tr>
+<tr>
+<td>18</td>
+<td>工作台入库状态回传</td>
+<td>不走 HTTP：工作台入库后在清单旁写 <code>ingested.json</code>，刊译台读文件显示</td>
+</tr>
+<tr>
+<td>19</td>
+<td><code>book_key</code></td>
+<td>沿用刊译台按文件名派生的键（<code>book_key_of</code>），<code>catalog.csv</code> 只做映射，不改生成规则</td>
+</tr>
+<tr>
+<td>20</td>
+<td>OSS AccessKey</td>
+<td>存 <code>~/.csw-kb/env</code>，不进 settings 表</td>
+</tr>
+<tr>
+<td>21</td>
+<td>解析通道与策略</td>
+<td>两条通道：<strong>MinerU 云端免费额度</strong>（每天 1000 页，单本 ≤200 页且 ≤200 MB）与<strong>自建 MinerU</strong>（AutoDL Pro 实例）。settings <code>parser_strategy</code>：<code>auto</code>（默认，云端优先，额度用完或单本超限自动切自建）/ <code>cloud</code>（只用云端，超限报失败、额度用完留队等次日）/ <code>self</code>（只用自建）。<strong>每本在开始解析（上传段）时判一次</strong>，判定的通道与原因写进任务（<code>tasks.parser</code>、<code>tasks.route_reason</code>），之后轮询、取结果都按任务自己的通道走，不随设置变化；所以排队中的书次日额度恢复后会自然回到云端。额度按北京日期本地记账（<code>tasks.quota_date</code> 累计页数），云端返回 <code>-60018</code>（当日上限）时当天剩余额度记为 0。auto 下云端提交失败（网络 / 鉴权）不阻塞，当本切自建并记原因。现有调度器的解析段在等待远端时不占用并发名额，云端与自建本来就能同时解析，调度准入不需要改</td>
+</tr>
+<tr>
+<td>22</td>
+<td>AutoDL 实例</td>
+<td>10-08 换为容器实例 Pro（北京 B 区 RTX 5090，uuid <code>pro-791490d33583</code>），开关机由刊译台直接调 AutoDL 开发者 API（决策 23、24）。刊译台改走 <code>api</code> 后端直连公网映射地址（6006 → <code>https://u316109-791490d33583.bjb2.seetacloud.com:8443</code>），<strong>nginx 做 Bearer 令牌校验</strong>（env <code>MINERU_API_TOKEN</code>），不再 scp + ssh；实测 CentOS → 实例 HTTPS 约 2 MB/s</td>
+</tr>
+<tr>
+<td>23</td>
+<td>AutoDL 自动开关机</td>
+<td>刊译台自己开关实例（10-08 已实现并闭环实测，<code>csw-kb/src/autodl.rs</code>）：<code>api</code> 后端下任务进上传段发现实例关机 → <code>power_on</code>（带 <code>start_command</code> 拉起 nginx + API，约 35 秒在线）；解析段空闲 <code>autodl_idle_off_minutes</code>（默认 15）且开机满 10 分钟 → <code>power_off</code>。不再手动开关</td>
+</tr>
+<tr>
+<td>24</td>
+<td>页面内开关机</td>
+<td>设置 · 解析服务页有「立即开机 / 立即关机 / 刷新状态」，由刊译台后端直接调 AutoDL 开发者 API（<code>power_on</code> / <code>power_off</code> / <code>status</code>），不需要登录服务器或命令行；有自建任务在解析段时拒绝关机。开机后在实例内拉起服务的脚本（AutoDL <code>start_command</code> 参数）作为程序内置默认值，不在页面上暴露</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="2-数据源与规模">2. 数据源与规模</h2>
+<h3 id="2-1-数据源-centos9-opt-goout-2026-10-07-只读盘点">2.1 数据源：centos9 <code>/opt/goout</code>（2026-10-07 只读盘点）</h3>
+<p>全部要入库的杂志都在这里：<strong>174 本 PDF、26,560 页、24 GB</strong>，另有一期只有 jpg。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>系列</th>
+<th>本数</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GO OUT 正刊</td>
+<td>117</td>
+<td>2014（1）· 2016（3）· 2017（12）· 2018（8）· 2019（11）· 2020–2025 各 12 · 2026（10）；文件名 <code>GO OUT YYYY.MM.pdf</code></td>
+</tr>
+<tr>
+<td>THE CAMP STYLE BOOK</td>
+<td>22</td>
+<td>含 3 本 ARCHIVE 合本（2010-2015 261 页 · 2013-2017 132 页 · 2020-2024 196 页）</td>
+</tr>
+<tr>
+<td>GO OUT LIVIN'</td>
+<td>20</td>
+<td>含 1 本 ARCHIVE 合本（2020-2025 116 页）</td>
+</tr>
+<tr>
+<td>CAMP GEAR BOOK · OUTDOOR GEAR BOOK · GOLF OUT · GRAND GO OUT</td>
+<td>7 · 3 · 4 · 1</td>
+<td>别册，文件名 <code>… Vol.NN.pdf</code>，无日期</td>
+</tr>
+<tr>
+<td>GO OUT 2019.12</td>
+<td>—</td>
+<td>只有 184 张 jpg（<code>GO OUT 2019.12 (仅jpg)/</code>），刊译台只收 PDF</td>
+</tr>
+</tbody>
+</table></div>
+<p>单本最大 449 MB（2025.03）。2016.07、2016.08 两本刊译台已处理过（<code>GoOut-16-07日本</code>、<code>goout-16-08日本</code>）。</p>
+<h3 id="2-2-规模估算-以-go-out-2016-08-实测每页比例外推">2.2 规模估算（以 GO OUT 2016-08 实测每页比例外推）</h3>
+<p>2016-08 实测：174 页 → 裁图 811（product 491 · decor 165 · ambience 117 · infographic 18 · 未分类 20）、有译文 627、计入向量约 500、OSS 325 MB。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>项</th>
+<th>全部 26,560 页</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>裁图</td>
+<td>约 12.4 万</td>
+</tr>
+<tr>
+<td>有译文的图（= <code>kb_docs</code> 行）</td>
+<td>约 9.6 万</td>
+</tr>
+<tr>
+<td>计入向量的图（决策 8）</td>
+<td>约 7.6 万</td>
+</tr>
+<tr>
+<td>OSS 体积（裁图 + 整页）</td>
+<td>约 50 GB</td>
+</tr>
+<tr>
+<td>工作台 GPU（每图约 0.9 s）</td>
+<td>约 19 小时</td>
+</tr>
+<tr>
+<td>刊译台模型调用（实测 138 万 tokens / 174 页）</td>
+<td>约 2.1 亿 tokens</td>
+</tr>
+<tr>
+<td>刊译台模型阶段（75 分钟 / 本，2 本并行）</td>
+<td>约 4.5 天</td>
+</tr>
+<tr>
+<td>MinerU 解析</td>
+<td>云端免费额度：符合限制的 147 本、21,887 页，按每天 1000 页约 <strong>22 天</strong>（每天约 6 本，与模型阶段 2 本并行 × 75 分钟的吞吐相当）；超限 23 本约 4,000 页走 AutoDL，0.85 s / 页约 1 小时，开一次机即可</td>
+</tr>
+<tr>
+<td>CentOS → 解析端上传 PDF</td>
+<td>走 AutoDL（HTTPS 直连 Pro 实例）实测约 2 MB/s，23 本约 5 GB ≈ 40 分钟；上传 mineru.net 的预签名 OSS 地址速度未测，两本演练时量</td>
+</tr>
+</tbody>
+</table></div>
+<p>向量库：<code>docs</code> 表约 9.8 万行（含现有参考库），贴近 <code>vectors.rs</code> 写的「十万行再谈索引」；<code>images</code> 表约 7.6 万行。决策 11 的实测按全量做。上表未扣合本（705 页）与已处理两本（341 页），实际约少 4%。</p>
+<h3 id="2-3-批量导入的处理">2.3 批量导入的处理</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>问题</th>
+<th>处理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>导入白名单</td>
+<td>刊译台 <code>import_roots</code> 现为 <code>/data/magazines</code>。<strong>把 <code>/opt/goout</code> 加进白名单直接读</strong>，不复制 24 GB（根分区已用 74%、剩 227 GB；产出仍写 <code>/data/kanyitai</code>，<code>/data</code> 剩 4.8 TB）。<code>/opt/goout</code> 只读，不在里面写任何东西</td>
+</tr>
+<tr>
+<td>刊名与期号</td>
+<td>文件名不足以给出刊期（别册只有 Vol 号）。建一份 <code>catalog.csv</code>（<code>book_key</code> → 系列、期号、刊期、是否合本），正刊从文件名自动生成，别册刊期留空待补（留空时 <code>published_at</code> 为空，不阻塞入库）。<code>book_key</code> <strong>沿用刊译台按文件名派生的键</strong>（<code>GO OUT 2025.03.pdf</code> → <code>GO-OUT-2025.03</code>，<code>tasks.book_key</code> UNIQUE），清单里系列 / 期号 / 刊期与 <code>book_key</code> 都带</td>
+</tr>
+<tr>
+<td>已处理的两本</td>
+<td>2016.07、2016.08 不重跑，直接从现有产出生成清单（省约 280 万 tokens）；它们的 <code>book_key</code> 是 <code>GoOut-16-07日本</code> / <code>goout-16-08日本</code>，<code>catalog.csv</code> 照此登记</td>
+</tr>
+<tr>
+<td>ARCHIVE 合本（4 本 705 页）</td>
+<td>内容与各期重复。<strong>跳过（已定）</strong>，单期全部入库后再看是否补（补的话标 <code>is_archive</code>，检索时同一商品优先显示单期）</td>
+</tr>
+<tr>
+<td>超过 200 页（3 本）</td>
+<td>刊译台原先硬性拒收超过 200 页的 PDF（<code>s1_import.rs</code> <code>MAX_PAGES</code>）。非合本里超限的有 GO OUT 2023.12（275 页）、CAMP GEAR BOOK Vol.09（232 页）、GO OUT LIVIN' Vol.17（231 页）。<strong>已定：上限改为 500 页</strong>（2026-10-07 改代码，未部署）；自建 mineru-api 处理 200 页以上的实际表现，在首本超限书解析时观察</td>
+</tr>
+<tr>
+<td>超过 200 MB（21 本，不含合本）</td>
+<td>刊译台原先拒收超过 200 MB 的 PDF（<code>MAX_BYTES</code>），2025 年正刊多在 350–449 MB。<strong>已定：上限改为 700 MB</strong>（2026-10-07 改代码，未部署）；大文件上传 AutoDL 更慢，计入 §2.2 解析段瓶颈</td>
+</tr>
+<tr>
+<td>2019.12 只有 jpg</td>
+<td>用 img2pdf 按文件名顺序合成 PDF，放 <code>/data/magazines/</code>，再走正常流程</td>
+</tr>
+<tr>
+<td>处理顺序</td>
+<td>（已定）由近到远：2026 → 2025 → … → 2014，别册穿插在对应年份后。近年的对当下选题更有用，批次中途停也不亏</td>
+</tr>
+<tr>
+<td>云端实测（10-08，1 页）</td>
+<td><code>file-urls/batch</code> → <code>PUT</code> 预签名地址 200 → 约 15 秒 done → 下载 zip。zip 内：<code>layout.json</code>（<code>pdf_info[].page_size / para_blocks</code>，与自建 <code>*_middle.json</code> 同结构）、<code>*_content_list.json</code>、<code>*_content_list_v2.json</code>、<code>*_model.json</code>、<code>full.md</code>、<code>images/</code>、原 PDF；元数据 <code>_backend=hybrid</code>、<code>_effort=medium</code>、<code>_version_name=3.4.4</code>。当日上限错误码 <code>-60018</code>、任务不存在 <code>-60012</code>。<strong>同一封面页云端只切出 2 块（1 文字 + 1 整页图），自建切出 14 块</strong>——两路版面结果有差异，2a 验收要用整本（GO OUT 2016.06）对比裁图数与商品覆盖，差异大则 auto 策略需重新评估</td>
+</tr>
+<tr>
+<td>解析路由（决策 21、22）</td>
+<td>每本开始解析（上传段）时判断：页数 ≤200 且文件 ≤200 MB 且当日云端剩余额度 ≥ 页数 → <code>cloud</code>；否则 → <code>api</code>（AutoDL Pro 实例，HTTPS + Bearer）。当日额度用完时走 AutoDL：实例关着会被刊译台自动开机（决策 23），用完自动关。云端批次：<code>POST /api/v4/file-urls/batch</code>（<code>model_version=vlm</code>、<code>language=japan</code>、<code>is_ocr=true</code>、<code>data_id=book_key</code>）→ <code>PUT</code> 预签名地址 → 轮询 <code>GET /api/v4/extract-results/batch/{batch_id}</code> → 下载 <code>full_zip_url</code>。两点要在演练时核：云端 zip 里是 <code>layout.json</code>（自建 mineru-api 返回的是 <code>middle.json</code>），s3 解包要兼容两种命名、bbox 单位一致；云端 zip 不支持 <code>return_images=false</code>，会带全部图片，体积比自建的 ≈1 MB 大得多，走 CDN 下载应不成问题</td>
+</tr>
+<tr>
+<td>超限书的处理</td>
+<td>非合本里超 200 页 3 本、超 200 MB 21 本（其中 1 本两项都超），共 23 本走 AutoDL。可选优化：开 <code>upload_downscale</code> 降采样后上传，20 本「只超体积」的书也能走云端（裁图在本机按原 PDF 做，降采样只影响版面检测），AutoDL 只剩 3 本——是否开启看两本演练里降采样对 bbox 的影响</td>
+</tr>
+<tr>
+<td>模型代理</td>
+<td>4.5 天连续调用，代理曾三次整段 503、且有按用户并发上限；刊译台用单独密钥（决策 17），不挤占主编 05:30 正式轮。10-07 探测时单独密钥首次请求也回了 429 <code>gateway_concurrency_limit</code>，说明网关限额可能按账号而非按密钥——首本批量时在 05:00–07:30 观察主编侧是否受影响，受影响则加时窗把 <code>max_model_tasks</code> 降为 0</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="3-架构">3. 架构</h2>
+<pre><code>刊译台（centos9 /data/kanyitai）                       工作台（centos9 /opt/csw-collector）
+  s1–s7 不变                                             kb sync（五路，各报各的）
+  s8 上传 OSS ──公网──▶ cws-file/kb/magazine/            ├ sync_magazine：读本机清单 → kb_docs + kb_doc_images + 全文
+     写 manifest.jsonl（本机 + OSS 各一份）  ──本机文件──▶ └ 回填任务（让路）：读本机图 → 融合向量 → 纯图向量
+  读 ingested.json 显示入库状态   ◀──本机文件──  入库后写 {book}/ingested.json
+                                                         检索：杂志文字检索 · 以图搜图 · 品牌页 · MCP
+                                                         图片展示：OSS 公开地址
+</code></pre>
+<ul>
+<li><strong>契约是清单</strong>，工作台不读刊译台的库；反向只有一个 <code>ingested.json</code>（条数、融合 / 纯图向量进度、时间），刊译台读文件，不调工作台 HTTP（免账号与 CSRF）。</li>
+<li>清单放在 OSS 公开前缀下，含全文译文与商品表；按决策 4 可接受（内部使用），这里明说。</li>
+<li><strong>算向量读本机文件</strong>（两服务同机），不从 OSS 下载，不产生流出费。</li>
+<li>对象名用图片内容的 blake3：<code>kb/magazine/{h[:2]}/{h}.jpg</code>，与 LanceDB <code>images</code> 表主键同值；重复上传幂等，跨期重复的广告图只存一份。</li>
+</ul>
+<h2 id="4-清单格式-manifest-jsonl">4. 清单格式 <code>manifest.jsonl</code></h2>
+<p>每本一份，位置：本机 <code>{产出目录}/{book_key}/manifest.jsonl</code>，OSS <code>kb/magazine/manifests/{book_key}.jsonl</code>。<strong>清单最后写</strong>：有清单 = 这一本的图已全部上传。每行一张裁图：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>字段</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>book_key</code></td>
+<td>刊译台文件名派生键，如 <code>goout-16-08日本</code>、<code>GO-OUT-2025.03</code>；整本对账与清理的键</td>
+</tr>
+<tr>
+<td><code>magazine</code> / <code>issue</code> / <code>issue_date</code></td>
+<td>刊名、期号、刊期（如 <code>2016-08-01</code>）</td>
+</tr>
+<tr>
+<td><code>image_id</code></td>
+<td>刊译台 image id（<code>task_id:pdf_index:seq</code>，主键稳定）</td>
+</tr>
+<tr>
+<td><code>pdf_index</code> / <code>printed_page</code> / <code>bbox_pt</code></td>
+<td>页与位置</td>
+</tr>
+<tr>
+<td><code>section_title_zh</code></td>
+<td>所属栏目</td>
+</tr>
+<tr>
+<td><code>category</code> / <code>has_content</code> / <code>skipped</code></td>
+<td>刊译台的图分类与标记</td>
+</tr>
+<tr>
+<td><code>description</code> / <code>md_zh</code></td>
+<td>图片描述、中文译文</td>
+</tr>
+<tr>
+<td><code>products</code></td>
+<td>商品数组（brand、name、price_jpy、tax_included、specs）</td>
+</tr>
+<tr>
+<td><code>image_blake3</code> / <code>image_url</code> / <code>local_path</code> / <code>width</code> / <code>height</code></td>
+<td>裁图；<code>image_blake3</code> 参与工作台 <code>content_hash</code>（换图触发重算）</td>
+</tr>
+<tr>
+<td><code>page_blake3</code> / <code>page_url</code> / <code>page_local_path</code></td>
+<td>整页图（2400px）</td>
+</tr>
+<tr>
+<td><code>manifest_version</code> / <code>generated_at</code></td>
+<td>契约版本与生成时间</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="5-刊译台改动-project-csw-kb">5. 刊译台改动（<code>~/project/csw-kb</code>）</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>位置</th>
+<th>改动</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>kanyitai/src/parser/</code></td>
+<td>新增 <code>cloud.rs</code> 实现 <code>Parser</code>（v4 <code>file-urls/batch</code> → <code>PUT</code> 预签名地址 → 轮询 <code>extract-results/batch</code> → 下载 <code>full_zip_url</code>；<code>model_version=vlm</code>、<code>language=japan</code>、<code>is_ocr=true</code>、<code>data_id=book_key</code>）；<code>ParserFactory</code> 支持按名取后端（轮询 / 取结果按任务句柄里的通道）</td>
+</tr>
+<tr>
+<td><code>pipeline/stages/s2_parse.rs</code> + 迁移 0007</td>
+<td>决策 21 的路由：<code>parser_strategy</code>、<code>tasks.route_reason</code>、<code>mineru_daily_quota=1000</code>；按北京日期记账；<code>-60018</code> 记当日用尽；路由与切换写 <code>logs</code>（<code>stage='route'</code>）</td>
+</tr>
+<tr>
+<td><code>pipeline/scheduler.rs</code></td>
+<td>自动关机的空闲判断只看<strong>自建通道</strong>：已判定为自建且在解析段的书，加上还没开始、按当前策略会判到自建的书；云端书排队不让 AutoDL 一直开着</td>
+</tr>
+<tr>
+<td><code>pipeline/stages/s3_unpack.rs</code></td>
+<td>解包兼容云端 zip：<code>layout.json</code> 当 <code>middle.json</code>（10-08 实测结构一致：<code>pdf_info[].page_size/para_blocks</code>），<code>*_content_list.json</code> 同名；云端 zip 带 <code>images/</code> 与原 PDF，解包时忽略</td>
+</tr>
+<tr>
+<td><code>api/</code></td>
+<td><code>GET /api/parser/overview</code>（策略、云端今日额度、自建实例状态、各书通道与原因、切换记录）；<code>POST /api/autodl/power_on</code>、<code>/power_off</code>（决策 24，审计记录操作人）</td>
+</tr>
+<tr>
+<td><code>kanyitai/src/pipeline/stages/s8_export.rs</code>、<code>src/export/</code></td>
+<td>s8 由「写 llm_wiki 源料」改为「上传裁图与整页 → 写清单」；按 blake3 判重，已存在的对象跳过；断点续传，失败只重传缺的；<code>export/llm_wiki.rs</code> 下线</td>
+</tr>
+<tr>
+<td>迁移 + settings / env</td>
+<td>settings 新增 <code>oss_endpoint</code>、<code>oss_bucket</code>、<code>oss_prefix</code>、<code>oss_public_base</code>、<code>oss_upload_concurrency</code>、<code>oss_page_long_side</code>；<strong>AccessKey 走 <code>~/.csw-kb/env</code>（<code>OSS_ACCESS_KEY_ID</code> / <code>OSS_ACCESS_KEY_SECRET</code>）</strong>，与其他密钥同处，不进库；<code>llm_wiki_*</code>、<code>llm_wiki_split_products</code> 下线</td>
+</tr>
+<tr>
+<td><code>tasks</code> 或新表</td>
+<td>记录每本的上传计数（应传 / 已传 / 失败）与清单写入时间</td>
+</tr>
+<tr>
+<td>API</td>
+<td>「重新上传缺失」「重写清单」「暂停 / 继续上传」；入库状态读 <code>output/{book}/ingested.json</code>（没有则显示「待入库」）</td>
+</tr>
+<tr>
+<td>CLI</td>
+<td>给已完成的两本补导出</td>
+</tr>
+<tr>
+<td>脚本</td>
+<td><code>scripts/wiki_requeue_failed.py</code>、<code>wiki_coverage.py</code> 归档</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="6-工作台后端改动-csw-task-csw-collector">6. 工作台后端改动（<code>csw-task/csw-collector</code>）</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>位置</th>
+<th>改动</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/kb/src/docs.rs</code> <code>KbKind</code></td>
+<td>加 <code>MagazineItem</code>（<code>magazine_item</code>），<strong>不放进 <code>KbKind::ALL</code></strong>（<code>ALL</code> 是判断参考库四类）；另设杂志检索专用入口</td>
+</tr>
+<tr>
+<td><code>From&lt;KbKind&gt; for MaterialKind</code>、<code>judge/src/materials.rs</code></td>
+<td>加对应类型；阶段一 <code>materials</code> 显式排除</td>
+</tr>
+<tr>
+<td><code>crates/kb/src/search.rs</code></td>
+<td>判断路径默认类型仍是四类（第 227 行），<code>backfill_kinds</code> 不得用杂志补位；新增杂志文字检索与以图搜图</td>
+</tr>
+<tr>
+<td><code>crates/core/migrations/</code></td>
+<td><code>kb_docs.kind</code> 注释加 <code>magazine_item</code>；<code>kb_cursors.source</code> 加 <code>magazine</code>；新表 <code>kb_doc_images(doc_id, book_key, blake3, url, page_blake3, page_url, pdf_index, bbox, local_path)</code>——<code>images</code> 表刻意不记归属，以图搜图命中要靠它回到条目；<code>book_key</code> 也在这张表上，整本对账 / 清理按它查</td>
+</tr>
+<tr>
+<td><code>crates/kb/src/sync.rs</code></td>
+<td>新增 <code>sync_magazine</code>：扫清单目录，一张有译文的图一条 doc，按 <code>UNIQUE(kind, ref_id)</code> + <code>content_hash</code> 幂等；<strong>按本对账</strong>：清单里没有的该书 ref_id 直接删（重新解析一本书 task_id 会变，旧 doc 不靠人记得清理）；<code>content_hash</code> 对杂志类纳入 <code>image_blake3</code>；入库完成写 <code>{book}/ingested.json</code></td>
+</tr>
+<tr>
+<td>回填任务</td>
+<td>主循环调度，正式轮、预取轮、知识库同步都不在跑时取下一批；正式轮开始时当前批结束即停；第一遍融合向量进 <code>docs</code> 表，第二遍纯图向量进 <code>images</code> 表；图缩到 768 宽；只标成功的批次，中断可续。<strong>不复用 <code>embed_pending</code></strong>（它只送文本）：新写 <code>embed_magazine</code>，读 <code>local_path</code> 组 <code>EmbedInput::Fused{text, image}</code>，批量按 <code>fused_batch</code>（默认 4）/ <code>image_batch</code>（默认 2）。其他四类仍是纯文本向量，与杂志的融合向量同在 <code>docs</code> 表，靠 <code>kind</code> 过滤隔开</td>
+</tr>
+<tr>
+<td><code>crates/collector/src/main.rs</code> <code>KbCommand</code></td>
+<td>新增 <code>kb import-magazine &lt;jsonl&gt;</code>、<code>kb purge --book &lt;book_key&gt;</code>：清 <code>kb_docs</code>、<code>kb_fts</code>、<code>kb_doc_images</code> 中该书的行与 <code>docs</code> 表向量；<code>images</code> 表向量按 blake3 跨书共用，<strong>只删不再被任何 <code>kb_doc_images</code> 引用的 blake3</strong></td>
+</tr>
+<tr>
+<td>HTTP / MCP</td>
+<td><code>GET /api/kb/magazine/search</code>（viewer）、<code>POST /api/kb/image-search</code>（operator，占 GPU；限制图片大小，缩到 768 再算；不做重排）、<code>GET /api/kb/magazine/:id</code>（viewer）；MCP 加 <code>kb_magazine_search</code>、<code>kb_image_search</code>；<code>/api/kb/status</code> 加「杂志同步到哪本」「回填剩余」；品牌页加杂志一节</td>
+</tr>
+<tr>
+<td>文档</td>
+<td><code>API.md</code>、<code>docs/情报收集员工作台_总方案_20260921.md</code> §6.1（加第五类一行）、运维手册（回填任务与清理命令）</td>
+</tr>
+</tbody>
+</table></div>
+<p>字段映射（一张有译文的图 → 一条 doc）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th><code>kb_docs</code></th>
+<th>取值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>kind</code> / <code>ref_id</code></td>
+<td><code>magazine_item</code> / <code>image_id</code></td>
+</tr>
+<tr>
+<td><code>post_id</code></td>
+<td><strong>留空</strong>。检索末尾 <code>dedupe_by_post</code> 按 (kind, post_id) 去重，填 <code>book_key</code> 会让每本只剩一条；整本清理改用 <code>kb_doc_images.book_key</code></td>
+</tr>
+<tr>
+<td><code>platform</code></td>
+<td><code>magazine</code></td>
+</tr>
+<tr>
+<td><code>title</code></td>
+<td>品牌 商品名 · 刊名 期号 P.xx</td>
+</tr>
+<tr>
+<td><code>body</code></td>
+<td>描述 + 译文 + 商品表文字（价格、规格）；多品牌时全部品牌写进正文靠全文命中</td>
+</tr>
+<tr>
+<td><code>brand</code></td>
+<td><code>products[0].brand</code></td>
+</tr>
+<tr>
+<td><code>published_at</code></td>
+<td>刊期</td>
+</tr>
+<tr>
+<td><code>url</code></td>
+<td>裁图 OSS 地址</td>
+</tr>
+<tr>
+<td><code>is_reference</code> / <code>publish_state</code></td>
+<td><code>0</code> / <code>magazine</code>（永不参与查重）</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="7-前端改动">7. 前端改动</h2>
+<h3 id="7-1-刊译台前端-kanyitai-web">7.1 刊译台前端（<code>kanyitai/web</code>）</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>页面</th>
+<th>改动</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>设置（<code>Settings.tsx</code>）</td>
+<td>「知识库导出」换成「OSS 上传」：endpoint、bucket、前缀、公开地址前缀、并发、整页长边、测试连通；AccessKey 不在页面上（env），页面只显示「密钥：已配置 / 未配置」；去掉「工作台状态接口」一项</td>
+</tr>
+<tr>
+<td>结果库（<code>Library.tsx</code>）</td>
+<td>每本：上传进度（已传 / 应传）、失败数、清单状态、工作台入库状态（读 <code>ingested.json</code>）；按钮「重新上传缺失」「重写清单」；删除整本时提示工作台需 <code>kb purge --book</code></td>
+</tr>
+<tr>
+<td>进度（<code>Progress.tsx</code>、<code>Tasks.tsx</code>）</td>
+<td>「汇总导出」改名「上传 OSS」，按图片数推进，显示失败重试数；任务页「解析服务」侧卡改为云端 / 自建两条通道并列</td>
+</tr>
+<tr>
+<td>解析通道（新页）</td>
+<td>路由规则、云端今日额度、自建实例状态与关机按钮、每本通道与判定原因、切换记录</td>
+</tr>
+<tr>
+<td>设计稿待改一处</td>
+<td>「任务 · 解析通道」板上写的是「每本入队时判一次」，按决策 21 应为「每本开始解析时判一次」</td>
+</tr>
+<tr>
+<td>设置 · 解析服务</td>
+<td>策略三选一；云端组（今日已用 / 额度、Key 已配置）；自建组（地址、令牌已配置）；AutoDL 组（uuid、空闲分钟、实例状态、开机 / 关机 / 刷新按钮）</td>
+</tr>
+<tr>
+<td>阅读页（<code>Reader.tsx</code>）</td>
+<td>图片仍走本机 <code>/files</code>；加「复制 OSS 地址」</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="7-2-工作台前端-csw-collector-web">7.2 工作台前端（<code>csw-collector-web</code>）</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>位置</th>
+<th>改动</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Kb.tsx</code> 统计区</td>
+<td>加「杂志背景」卡：本数、条数、融合 / 纯图向量进度、回填预计完成时间</td>
+</tr>
+<tr>
+<td>检索区</td>
+<td>文字搜 / 以图搜（上传、粘贴、拖入）两入口；范围切换「判断参考库（四类）/ 杂志背景」，默认参考库</td>
+</tr>
+<tr>
+<td>结果卡</td>
+<td>杂志结果带缩略图（OSS 公开地址、懒加载）、刊名期号页码、品牌商品价格，描述译文折叠</td>
+</tr>
+<tr>
+<td>杂志条目详情（新页）</td>
+<td>大图、整页图上标出 bbox、商品表、复制地址</td>
+</tr>
+<tr>
+<td>品牌页</td>
+<td>「CSW 历史覆盖」与「杂志里出现过」分两节，后者按刊期排序</td>
+</tr>
+<tr>
+<td>同步状态</td>
+<td>加杂志同步行、回填剩余行</td>
+</tr>
+<tr>
+<td><code>lib/queries.ts</code></td>
+<td>加 <code>useKbMagazineSearch</code>、<code>useKbImageSearch</code> 与类型</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="8-设计稿-第-0-步-先于前端">8. 设计稿（第 0 步，先于前端）</h2>
+<p>两边都用已完成两本 GO OUT 的真实数据画。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>项目</th>
+<th>源文件</th>
+<th>要补的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>刊译台</td>
+<td><code>~/project/csw-kb/design/*.dc.html</code> + <code>canvas.json</code>（发布到原设计画布链接）</td>
+<td>① 设置 · OSS 与安全（含连通成功 / 失败）② 结果库（上传中、部分失败、清单已写待入库、已入库四态）③ 进度页「上传 OSS」④ 删除确认 ⑤ 任务 · 解析通道 ⑥ 设置 · 解析服务（10-08 补，已完成）</td>
+</tr>
+<tr>
+<td>工作台</td>
+<td><code>docs/tools/plan_pages/build_mockup.py</code> → <code>docs/情报收集员工作台_设计稿/情报收集员工作台_界面设计稿.html</code>，截图进 <code>screenshots/</code></td>
+<td>① 知识库统计区 ② 检索区（以图搜三态：上传前 / 计算中 / 出结果）③ 杂志结果卡 ④ 杂志条目详情（新页）⑤ 品牌页两节 ⑥ 同步状态表与总览告警措辞</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="9-护栏-必须有单测">9. 护栏（必须有单测）</h2>
+<ol>
+<li>判断路径（<code>materials</code> / 默认检索）召回不到 <code>magazine_item</code>；且库里塞 10 万条杂志后，四类检索的 top-K 不丢（验证 LanceDB <code>only_if</code> 在当前版本是前过滤）。</li>
+<li>以图搜图命中经 <code>kb_doc_images</code> 能回到条目与 OSS 地址。</li>
+<li><code>kb purge --book</code> 后 <code>kb_docs</code>、<code>kb_fts</code>、<code>kb_doc_images</code>、<code>docs</code> 表向量一致；被其他书引用的 <code>images</code> 向量保留。</li>
+<li>杂志检索对同一本书能返回多条（<code>post_id</code> 为空，不被 <code>dedupe_by_post</code> 合并）。</li>
+<li>重新解析一本书后 <code>sync_magazine</code> 对账删掉旧 ref_id，不残留。</li>
+<li>清单缺失或未写完的书不入库；坏行跳过并计数，不让整份失败。</li>
+<li>回填任务在正式轮开始后不再取新批。</li>
+</ol>
+<h2 id="10-实施步骤">10. 实施步骤</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>步</th>
+<th>内容</th>
+<th>验收</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>补设计稿（先刊译台 4 块板，再工作台）</td>
+<td>用户确认，截图归档</td>
+</tr>
+<tr>
+<td>1</td>
+<td>定清单格式；建 <code>catalog.csv</code>、把 <code>/opt/goout</code> 加进 <code>import_roots</code>、合成 2019.12 的 PDF</td>
+<td>两边文档一致</td>
+</tr>
+<tr>
+<td>2a</td>
+<td>刊译台：解析通道（云端后端、路由、额度记账、自建空闲判断、解包兼容）+ 页面内开关机 + 解析通道页与设置页（<strong>待确认后开工</strong>；10-08 写过的草稿代码在 csw-kb <code>git stash</code> 里）</td>
+<td>整本 GO OUT 2016.06 走云端，与自建的裁图数 / 商品覆盖对比；把额度临时设成 1，第 2 本自动切自建并自动开机、空闲后自动关机；页面按钮开关机；<code>make check</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>刊译台后端：上传 OSS + 写清单，下线 llm_wiki</td>
+<td>两本补导出，清单行数 = 裁图数，OSS 对象可公开访问；用 GO OUT 2016.06（172 页）走云端解析，裁图数与版面结果和 self_hosted 的 2016.08 同量级</td>
+</tr>
+<tr>
+<td>3</td>
+<td>刊译台前端</td>
+<td>照设计稿；<code>make check</code> 通过</td>
+</tr>
+<tr>
+<td>4</td>
+<td>工作台后端：类型、映射表、清单同步、清理</td>
+<td>护栏 1、3、4</td>
+</tr>
+<tr>
+<td>5</td>
+<td>工作台后端：回填任务</td>
+<td>护栏 5；实测每图耗时</td>
+</tr>
+<tr>
+<td>6</td>
+<td>工作台后端：检索、以图搜图、MCP、状态</td>
+<td>护栏 2；实测以图搜图延迟</td>
+</tr>
+<tr>
+<td>7</td>
+<td>工作台前端</td>
+<td>照设计稿；<code>tsc</code> 通过</td>
+</tr>
+<tr>
+<td>8</td>
+<td>两本演练 → 按 §2.3 顺序分批导入 <code>/opt/goout</code> 全部</td>
+<td>文字检索抽检（如 Hard Rock Cooler、snow peak × Grizzly）、以图搜图抽检（拿 IG 同款图搜杂志）；实测公网上传速度后排批次</td>
+</tr>
+</tbody>
+</table></div>
+<p>部署前备份工作台本地库与 LanceDB；部署后手动跑一次 <code>kb sync</code>。写生产库的动作逐次征得用户同意。</p>
+<h2 id="11-范围外">11. 范围外</h2>
+<ul>
+<li>llm_wiki 实例 3 里已导入的两本是否清理，由 llm_wiki 侧决定。</li>
+<li>阶段二（杂志进判断）另行评估。</li>
+</ul></article>
+<footer>源文件 <code>docs/情报收集员工作台_杂志背景库方案_20261007.md</code>，以源文件为准；刊译台设计稿见 csw-kb 仓库 <code>design/</code>。</footer>
+</div>
