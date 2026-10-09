@@ -2810,6 +2810,11 @@ fn stop_words(review: &str) -> Stops {
                 .map(str::to_lowercase),
         );
     }
+    // 意见里写了任何条目键，就是按键指名的写法：只写品牌的那几句多是说明（「卡7/8停止说明」），
+    // 拆出来的 syndrome、dropped、comma9 不是要停的账号（10-09 r67 #1141）。只有通篇只写品牌的老式意见才按账号认
+    if !super::calibration::keys_in(review).is_empty() {
+        out.accounts.clear();
+    }
     out
 }
 
@@ -3705,7 +3710,10 @@ mod tests {
         let st = stop_words("drlv-4f2957=停止；其余保留");
         assert!(st.hits("drlv-4f2957", "drlv"));
         assert!(!st.hits("drlv-aaaaaa", "drlv"));
-        // 只写品牌的仍按账号认（09-28 r56）
+        // 意见里别处写了条目键，只写品牌的句子不按账号认
+        let st = stop_words("fasunaa-6ea867=继续；卡7/8停止说明 comma9 作定点修正");
+        assert!(st.accounts.is_empty(), "{st:?}");
+        // 通篇只写品牌的仍按账号认（09-28 r56）
         let st = stop_words("停止 KEEN 访谈、RAYWOOD 纯促销");
         assert!(st.hits("keen-111111", "keenofficial"));
         assert!(st.hits("raywood-222222", "raywood"));
