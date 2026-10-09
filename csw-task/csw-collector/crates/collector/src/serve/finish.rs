@@ -370,6 +370,73 @@ fn all_previews(conn: &Connection, cfg: &Config, key: &str) -> Vec<intake::Previ
         .collect()
 }
 
+/// 补采记录里没有逐页请求（10-09 之前的补采只记概要）时，写明缺失与证据等级。
+const PAGE_LOG_MISSING: &str = "不存在：当时只记了概要（接口返回条数、翻到 has_more=false），没有逐页 offset 记录。first_seen 复算只限接口返回的集合，未独立证明入口全覆盖；不补造、不补采";
+
+fn page_log_note(p: &csw_collector_core::window_trace::Patch) -> String {
+    if p.query.contains("请求 GET") {
+        String::new()
+    } else {
+        format!("\n>\n> 这一趟的逐页请求日志{PAGE_LOG_MISSING}。")
+    }
+}
+
+/// 在每一行以 `prefix` 开头的行后面插一行（已经插过的不重复插）。
+fn insert_after(body: &str, prefix: &str, line: &str) -> String {
+    let mut out = String::with_capacity(body.len() + line.len() + 1);
+    let mut lines = body.split_inclusive('\n').peekable();
+    while let Some(l) = lines.next() {
+        out.push_str(l);
+        if l.starts_with(prefix) && lines.peek().map(|n| n.trim_end()) != Some(line) {
+            if !l.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// 这一轮前几版交付包里 `images/` 下有、`have` 里没有的文件，按原字节取出（同名以较新的一版为准）。
+fn archived_images(
+    conn: &Connection,
+    round_id: i64,
+    have: &std::collections::HashSet<String>,
+) -> Vec<(String, Vec<u8>)> {
+    use std::io::Read;
+    let paths: Vec<String> = conn
+        .prepare("SELECT zip_path FROM deliverables_local WHERE round_id = ?1 AND deliv_kind = '产出' ORDER BY id")
+        .and_then(|mut st| {
+            st.query_map([round_id], |r| r.get::<_, String>(0))
+                .map(|it| it.filter_map(Result::ok).collect())
+        })
+        .unwrap_or_default();
+    let mut out: std::collections::BTreeMap<String, Vec<u8>> = Default::default();
+    for p in paths {
+        let Ok(f) = std::fs::File::open(&p) else {
+            continue;
+        };
+        let Ok(mut z) = zip::ZipArchive::new(f) else {
+            continue;
+        };
+        for i in 0..z.len() {
+            let Ok(mut e) = z.by_index(i) else { continue };
+            let Some(rel) = e.name().split_once('/').map(|(_, r)| r.to_string()) else {
+                continue;
+            };
+            if !rel.starts_with("images/") || have.contains(&rel) {
+                continue;
+            }
+            let mut b = Vec::new();
+            if e.read_to_end(&mut b).is_ok() {
+                out.insert(rel, b);
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
 /// 首批卡与联系图上展示的图：主编指定了代表预览就只放那几张（按指定顺序），否则全部。
 /// 指定的张数在本地一张都对不上时退回全部，并不当成没图。
 fn shown_previews(
@@ -661,11 +728,11 @@ pub fn build_deliverable(
             .iter()
             .map(|p| {
                 if p.query.contains("first_seen 复算") {
-                    format!("> {}（{} 补采）", p.query, p.fetched_at)
+                    format!("> {}（{} 补采）{}", p.query, p.fetched_at, page_log_note(p))
                 } else {
                     format!(
-                        "> 补采 {} ~ {}：{} 补采，接口按发布时间宽取 {} 条，窗口内 {} 条（见 trace/window_summary.json「补采记录」）",
-                        p.window_from, p.window_to, p.fetched_at, p.found, p.in_window
+                        "> 补采 {} ~ {}：{} 补采，接口按发布时间宽取 {} 条，窗口内 {} 条（见 trace/window_summary.json「补采记录」）{}",
+                        p.window_from, p.window_to, p.fetched_at, p.found, p.in_window, page_log_note(p)
                     )
                 }
             })
@@ -818,6 +885,63 @@ pub fn build_deliverable(
         };
     }
     let version = round.target_version.max(1);
+    // 上一版包里有、这一版不再展示的原图：从旧包逐文件原样带上，不重下载、不重编码
+    //（10-09 r67 v5：换卡后 v4 的 35 张原图从包里消失，主编要原图与冻结材料保留）
+    let have: std::collections::HashSet<String> = previews
+        .iter()
+        .map(|p| {
+            format!(
+                "images/{}.{}",
+                p.candidate_key,
+                if p.ext.trim().is_empty() {
+                    "jpg"
+                } else {
+                    p.ext.trim()
+                }
+            )
+        })
+        .collect();
+    let archived = archived_images(conn, round.id, &have);
+    // 主编要原样加的卡面 / 台账说明：放在首批卡与台账这一条的条目键下面，不改六维与历史判断
+    //（10-09 r67 v5：「保留历史判断不改六维，旁加主编当前决定即可」）
+    if let Some(notes) = review_parse
+        .as_ref()
+        .and_then(|v| v.get("旁注"))
+        .and_then(|v| v.as_array())
+    {
+        for n in notes {
+            let (Some(k), Some(t)) = (
+                n.get("条目键").and_then(|v| v.as_str()),
+                n.get("原话").and_then(|v| v.as_str()),
+            ) else {
+                continue;
+            };
+            let src = n.get("来源").and_then(|v| v.as_str()).unwrap_or("退回意见");
+            let line = format!("- **主编当前决定**（{src}原文）：{t}");
+            body = insert_after(&body, &format!("- 条目 `{k}`"), &line);
+            body = insert_after(&body, &format!("- 条目键：`{k}`"), &line);
+        }
+    }
+    if !archived.is_empty() {
+        let mut by_key: std::collections::BTreeMap<String, usize> = Default::default();
+        for (path, _) in &archived {
+            let k = path
+                .trim_start_matches("images/")
+                .rsplit_once('_')
+                .map_or(path.as_str(), |(k, _)| k)
+                .to_string();
+            *by_key.entry(k).or_default() += 1;
+        }
+        body.push_str(&format!(
+            "\n## 归档原图（{} 张）\n\n前几版包里有、这一版首批卡不再展示的原图，从旧包逐文件原样带上（字节不变），只作素材归档，不代表恢复采用资格：\n\n{}\n",
+            archived.len(),
+            by_key
+                .iter()
+                .map(|(k, n)| format!("- `{k}`：{n} 张"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
     let mut entries = intake::assemble(
         Meta {
             task: format!(
@@ -855,6 +979,9 @@ pub fn build_deliverable(
         },
         trace::items_jsonl(judgements, lookup)?,
     );
+    for (path, bytes) in archived {
+        entries.push(pack::Entry::binary(&path, bytes));
+    }
     // 逐条判断全文：六维依据、三句话、查重命中、分级缺口都在这里，主编要能直接复核
     let mut jl = String::new();
     for j in judgements {
@@ -1375,9 +1502,16 @@ fn first_cards(
         .iter()
         .map(|j| (j.candidate_key.as_str(), j))
         .collect();
+    // 并进别的事件的成员不单占一张卡：素材随主事件（10-09 r67 v5：53e957 已并入 fasunaa，
+    // 仍作卡 6 与卡 4 重复占 SATISFY 同题）
+    let merged_member = |k: &str| {
+        topics
+            .iter()
+            .any(|t| t.primary_key != k && t.members.iter().any(|m| m == k))
+    };
     let mut keys: Vec<String> = pinned
         .iter()
-        .filter(|k| by_j.contains_key(k.as_str()))
+        .filter(|k| by_j.contains_key(k.as_str()) && !merged_member(k))
         .take(MAX)
         .cloned()
         .collect();
@@ -1741,6 +1875,7 @@ fn window_ids(
                 "去重后": p.fetched_unique,
                 "窗口内": p.in_window,
                 "query": p.query,
+                "逐页请求日志": if p.query.contains("请求 GET") { "见 query" } else { PAGE_LOG_MISSING },
             }))
             .collect::<Vec<_>>(),
         // 引擎自查按登记条目数；这里是逐帖数，两者口径不同
@@ -1890,6 +2025,67 @@ mod tests {
         j.image_seen = tier != Tier::PendingCheck;
         j.inputs_hash = "ih".into();
         j
+    }
+
+    #[test]
+    fn 主编旁注插在条目键下面且不重复插() {
+        let body = "## 卡 2 ｜Comma9\n\n- 条目 `commanine-e30841` ｜档位：推荐\n- 其他\n\n### x｜y\n\n- 条目键：`commanine-e30841`\n";
+        let line = "- **主编当前决定**（v5 退回意见原文）：旧译文仅留溯源";
+        let once = insert_after(body, "- 条目 `commanine-e30841`", line);
+        let once = insert_after(&once, "- 条目键：`commanine-e30841`", line);
+        assert_eq!(once.matches(line).count(), 2, "{once}");
+        let twice = insert_after(&once, "- 条目 `commanine-e30841`", line);
+        assert_eq!(twice, once, "再跑一次不重复插");
+    }
+
+    #[test]
+    fn 旧包里有这版没有的原图逐字节归档() {
+        let dir = tempdir::TempDir::new("arch").unwrap();
+        let conn = csw_collector_core::store::open_in_memory().unwrap();
+        let (r, _) = rounds::open_round(
+            &conn,
+            &rounds::NewRound {
+                kind: csw_collector_core::types::RoundKind::Task,
+                trigger: csw_collector_core::types::RoundTrigger::Dispatch,
+                run_id: Some(67),
+                task_id: Some(763),
+                stage_code: Some("intake".into()),
+                target_version: 5,
+                parent_round_id: None,
+                window_start: "A".into(),
+                window_end: "B".into(),
+                plan_version: 1,
+                rubric_version: "v".into(),
+                kb_snapshot: "k".into(),
+                instructions_hash: String::new(),
+            },
+        )
+        .unwrap();
+        let v4 = dir.path().join("v4.zip");
+        pack::build(
+            "pkg_v4",
+            &[
+                pack::Entry::binary("images/drlv-4f2957_1.jpg", vec![1, 2, 3]),
+                pack::Entry::binary("images/ankorau0-615184_1.jpg", vec![9]),
+                pack::Entry::text("index.md", "x"),
+            ],
+            &v4,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO deliverables_local(round_id, deliv_kind, item_key, zip_path, zip_sha256, zip_bytes, idem_key, created_at)
+             VALUES (?1,'产出','',?2,'s',1,'i','t')",
+            params![r.id, v4.to_string_lossy()],
+        )
+        .unwrap();
+        let have: std::collections::HashSet<String> = ["images/ankorau0-615184_1.jpg".to_string()]
+            .into_iter()
+            .collect();
+        let got = archived_images(&conn, r.id, &have);
+        assert_eq!(
+            got,
+            vec![("images/drlv-4f2957_1.jpg".to_string(), vec![1, 2, 3])]
+        );
     }
 
     #[test]

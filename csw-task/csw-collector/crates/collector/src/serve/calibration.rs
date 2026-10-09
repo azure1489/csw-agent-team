@@ -24,7 +24,14 @@ pub struct Calibration {
     pub source: String,
     /// 主编对这一条写的原话（条目键后面那一段），待核时作缺口的具体内容；引擎条目来源为空
     pub note: String,
+    /// 第一次被校准的版本（退回意见的版本号；引擎条目流转记 [`SINCE_TRACE`]）。
+    /// 首批卡按它先后占位：早定下的卡位不被后来的校准挤掉（10-09 r67 v5：v4 意见里描述误改的
+    /// 四条 lesyndrome 被读成校准、按档位排到停止卡前面，四张停止卡与它们的 35 张原图被挤出包）
+    pub since: i64,
 }
+
+/// 引擎条目流转来的校准排在所有退回意见之后
+pub const SINCE_TRACE: i64 = 1_000_000;
 
 impl Calibration {
     /// 给人看的去向
@@ -224,6 +231,25 @@ fn parse_review_clauses(text: &str) -> Vec<(String, Tier)> {
     out
 }
 
+/// 首批卡按主编校准排的顺序：**先定下的先占位**（第一次校准的版本早的在前），同一版里继续 → 备选 →
+/// 待核 → 停止（主编「首页恢复四继续，另加上述四条」）。后来的校准只补空位，不挤掉已定的卡
+///（10-09 r67 v5：v4 意见里描述误改的四条被读成校准、按档位排到四张停止卡前面，停止卡与原图被挤出包）。
+/// 主编要从池里另选来补首批时，定为停止的不再占卡位（10-08 r66）。
+pub fn pin_order(calib: &[Calibration], replace: bool) -> Vec<String> {
+    let rank = |t: Tier| match t {
+        Tier::Recommend => 0,
+        Tier::Alternate => 1,
+        Tier::PendingCheck => 2,
+        Tier::NotRecommend => 3,
+    };
+    let mut v: Vec<&Calibration> = calib
+        .iter()
+        .filter(|c| !(replace && c.tier == Tier::NotRecommend))
+        .collect();
+    v.sort_by_key(|c| (c.since, rank(c.tier)));
+    v.into_iter().map(|c| c.key.clone()).collect()
+}
+
 /// 退回意见是不是要从池里另选条目补首批（停止的条目让出卡位）。
 pub fn asks_replacement(review: &str) -> bool {
     static R: LazyLock<Regex> =
@@ -268,7 +294,7 @@ pub fn from_reviews_with_keys(detail: &TaskDetail, known: &[String]) -> Vec<Cali
             .join("\n");
         let text = expand_short_keys(&text, known);
         for (key, tier, note) in parse_review_notes(&text) {
-            upsert(&mut out, key, tier, format!("v{v} 退回意见"), note);
+            upsert(&mut out, key, tier, format!("v{v} 退回意见"), note, v);
         }
     }
     out
@@ -361,13 +387,46 @@ pub fn parse_preview_picks(text: &str) -> Vec<(String, Vec<u32>)> {
     out
 }
 
+/// 主编要求原样加到卡面 / 台账旁的说明：「在 hakunokiroku-aa2a17 台账旁新增“主编本期不纳入：…”」。
+/// 只认「在 条目键 …新增 / 加上 / 补上“原话”」这一种写法；返回（条目键, 原话）。
+pub fn parse_side_notes(text: &str) -> Vec<(String, String)> {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"在\s*([a-z0-9_.]+-[0-9a-f]{6})\s*(?:的)?\s*(?:首批卡|台账旁|台账|卡面|题卡)?\s*(?:旁)?\s*(?:新增|加上|补上|增加)\s*[“"「]([^”"」]{2,400})[”"」]"#,
+        )
+        .expect("正则")
+    });
+    let mut out: Vec<(String, String)> = Vec::new();
+    for c in RE.captures_iter(text) {
+        let (k, t) = (c[1].to_string(), c[2].trim().to_string());
+        out.retain(|(x, _)| *x != k);
+        out.push((k, t));
+    }
+    out
+}
+
+/// 各版退回意见里要加的卡面 / 台账说明，新的覆盖旧的；返回（条目键, 原话, 来源版本）。
+pub fn side_notes_from_reviews(
+    detail: &TaskDetail,
+    known: &[String],
+) -> Vec<(String, String, String)> {
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    for (text, source) in instruction_texts(detail, known) {
+        for (k, t) in parse_side_notes(&text) {
+            out.retain(|(x, _, _)| *x != k);
+            out.push((k, t, source.clone()));
+        }
+    }
+    out
+}
+
 /// 各版退回意见里指定的代表预览，新的覆盖旧的。
 pub fn preview_picks_from_reviews(
     detail: &TaskDetail,
     known: &[String],
 ) -> Vec<(String, Vec<u32>)> {
     let mut out: Vec<(String, Vec<u32>)> = Vec::new();
-    for text in reject_texts(detail, known) {
+    for (text, _) in instruction_texts(detail, known) {
         for (k, ns) in parse_preview_picks(&text) {
             out.retain(|(x, _)| *x != k);
             out.push((k, ns));
@@ -376,30 +435,11 @@ pub fn preview_picks_from_reviews(
     out
 }
 
-/// 按版本先后的各版退回意见全文（意见 + 方向 + 位置），短键已展开。
-fn reject_texts(detail: &TaskDetail, known: &[String]) -> Vec<String> {
-    let mut ds: Vec<&serde_json::Value> = detail.deliverables.iter().collect();
-    ds.sort_by_key(|d| d.get("version").and_then(|v| v.as_i64()).unwrap_or(0));
-    ds.into_iter()
-        .filter_map(|d| d.get("latest_review"))
-        .filter(|r| r.get("verdict").and_then(|v| v.as_str()) == Some("reject"))
-        .map(|r| {
-            let text = ["return_direction", "comment", "return_location"]
-                .iter()
-                .filter_map(|k| r.get(*k).and_then(|x| x.as_str()))
-                .collect::<Vec<_>>()
-                .join("\n");
-            expand_short_keys(&text, known)
-        })
-        .collect()
-}
-
-/// 各版退回意见里的并入指示，新的覆盖旧的。
-pub fn merges_from_reviews(detail: &TaskDetail, known: &[String]) -> Vec<Merge> {
-    let mut ds: Vec<&serde_json::Value> = detail.deliverables.iter().collect();
-    ds.sort_by_key(|d| d.get("version").and_then(|v| v.as_i64()).unwrap_or(0));
-    let mut out: Vec<Merge> = Vec::new();
-    for d in ds {
+/// 主编的指示全文，按时间先后：各版退回意见（意见 + 方向 + 位置）与本任务的主编反馈（returned 不能重开时，
+/// 主编以反馈下达恢复交接，10-09 r67 #66）。短键已展开。返回（全文, 来源）。
+pub fn instruction_texts(detail: &TaskDetail, known: &[String]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    for d in &detail.deliverables {
         let Some(r) = d.get("latest_review") else {
             continue;
         };
@@ -407,18 +447,48 @@ pub fn merges_from_reviews(detail: &TaskDetail, known: &[String]) -> Vec<Merge> 
             continue;
         }
         let v = d.get("version").and_then(|v| v.as_i64()).unwrap_or(0);
+        let at = r
+            .get("created_at")
+            .and_then(|x| x.as_str())
+            .map_or_else(|| format!("v{v:06}"), str::to_string);
         let text = ["return_direction", "comment", "return_location"]
             .iter()
             .filter_map(|k| r.get(*k).and_then(|x| x.as_str()))
             .collect::<Vec<_>>()
             .join("\n");
-        let text = expand_short_keys(&text, known);
+        out.push((
+            at,
+            expand_short_keys(&text, known),
+            format!("v{v} 退回意见"),
+        ));
+    }
+    for f in &detail.feedback {
+        let Some(q) = f.get("quote").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let at = f
+            .get("created_at")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let id = f.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
+        out.push((at, expand_short_keys(q, known), format!("反馈 #{id}")));
+    }
+    // 时间写法一致（RFC 3339 UTC），按字符串排就是按时间排；没有时间的退回意见按版本号排在前面
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.into_iter().map(|(_, t, src)| (t, src)).collect()
+}
+
+/// 各版退回意见里的并入指示，新的覆盖旧的。
+pub fn merges_from_reviews(detail: &TaskDetail, known: &[String]) -> Vec<Merge> {
+    let mut out: Vec<Merge> = Vec::new();
+    for (text, source) in instruction_texts(detail, known) {
         for (subject, target) in parse_merges(&text) {
             out.retain(|m| m.subject != subject);
             out.push(Merge {
                 subject,
                 target,
-                source: format!("v{v} 退回意见"),
+                source: source.clone(),
             });
         }
     }
@@ -464,11 +534,19 @@ pub fn from_traces(trace: &serde_json::Value, hub: &str, into: &mut Vec<Calibrat
             tier,
             format!("引擎条目（主编 {at}）"),
             String::new(),
+            SINCE_TRACE,
         );
     }
 }
 
-fn upsert(v: &mut Vec<Calibration>, key: String, tier: Tier, source: String, note: String) {
+fn upsert(
+    v: &mut Vec<Calibration>,
+    key: String,
+    tier: Tier,
+    source: String,
+    note: String,
+    since: i64,
+) {
     match v.iter_mut().find(|c| c.key == key) {
         Some(c) => {
             c.tier = tier;
@@ -482,6 +560,7 @@ fn upsert(v: &mut Vec<Calibration>, key: String, tier: Tier, source: String, not
             tier,
             source,
             note,
+            since,
         }),
     }
 }
@@ -526,6 +605,7 @@ mod tests {
             tier: Tier::Recommend,
             source: "v5 退回意见".into(),
             note: String::new(),
+            since: 5,
         }];
         let trace = serde_json::json!({"traces": [
             {"item_key": "drlv-cf21b4", "to_status": "pending_check", "actor_role": "editor", "created_at": "2026-09-30T08:34:02Z"},
@@ -605,6 +685,49 @@ mod tests {
         assert!(note.contains("r62写成"), "{note}");
         // 否定语境不认
         assert!(parse_review_notes("1. abc-123456：不继续评估，另议").is_empty());
+    }
+
+    #[test]
+    fn 首批卡先定下的先占位后来的校准只补空位() {
+        let c = |k: &str, tier, since| Calibration {
+            key: k.into(),
+            tier,
+            source: String::new(),
+            note: String::new(),
+            since,
+        };
+        // r67：v1 定了四继续四停止，v4 意见里描述误改的 lesyndrome 被读成继续 / 备选
+        let calib = [
+            c("ankorau0-615184", Tier::Recommend, 1),
+            c("betterweekend-7cc615", Tier::NotRecommend, 1),
+            c("fasunaa-6ea867", Tier::Recommend, 1),
+            c("lesyndrome-29913d", Tier::Recommend, 4),
+            c("lesyndrome-4bd27e", Tier::Alternate, 4),
+        ];
+        assert_eq!(
+            pin_order(&calib, false),
+            [
+                "ankorau0-615184",
+                "fasunaa-6ea867",
+                "betterweekend-7cc615",
+                "lesyndrome-29913d",
+                "lesyndrome-4bd27e"
+            ]
+        );
+        // 要另选补首批时停止的让位
+        assert!(!pin_order(&calib, true).contains(&"betterweekend-7cc615".to_string()));
+    }
+
+    #[test]
+    fn 旁注认条目键和原话() {
+        // 10-09 r67 v5 退回原文
+        let t = "- 在hakunokiroku-aa2a17台账旁新增“主编本期不纳入：增量止于手工扎结视觉变化，缺染整方法或功能取舍实质信息；不写功能保持已验证，不换抽象文化角度补足。”\n- 在commanine-e30841首批卡新增“旧译文‘印度挂架’仅留溯源，不作为产品译名；采用独立置物架/挂架。”";
+        let got = parse_side_notes(t);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].0, "hakunokiroku-aa2a17");
+        assert!(got[0].1.starts_with("主编本期不纳入：增量止于"));
+        assert_eq!(got[1].0, "commanine-e30841");
+        assert!(got[1].1.contains("印度挂架"));
     }
 
     #[test]

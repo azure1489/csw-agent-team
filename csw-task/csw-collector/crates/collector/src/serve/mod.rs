@@ -1242,24 +1242,7 @@ async fn start_round(
             let pinned: Vec<String> = if calib.is_empty() {
                 round::named_in_review(&review_text, &judgements, &fin.by_key)
             } else {
-                // 继续在前，再备选、待核、停止（主编「首页恢复四继续，另加上述四条」）
-                let rank = |t: csw_collector_core::types::Tier| match t {
-                    csw_collector_core::types::Tier::Recommend => 0,
-                    csw_collector_core::types::Tier::Alternate => 1,
-                    csw_collector_core::types::Tier::PendingCheck => 2,
-                    csw_collector_core::types::Tier::NotRecommend => 3,
-                };
-                // 主编要从池里另选来补首批时（10-08 r66：「现池另选实质使用/结构/工艺事件补首批」），
-                // 定为停止的不再占卡位，空出来的按全池排序补；没这么说就照旧八键不换（09-30 r58）
-                let replace = calibration::asks_replacement(&review_text);
-                let mut v: Vec<&calibration::Calibration> = calib
-                    .iter()
-                    .filter(|c| {
-                        !(replace && c.tier == csw_collector_core::types::Tier::NotRecommend)
-                    })
-                    .collect();
-                v.sort_by_key(|c| rank(c.tier));
-                v.into_iter().map(|c| c.key.clone()).collect()
+                calibration::pin_order(&calib, calibration::asks_replacement(&review_text))
             };
             let calib_labels: HashMap<String, String> = calib
                 .iter()

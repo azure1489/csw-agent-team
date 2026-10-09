@@ -1910,16 +1910,20 @@ pub async fn rework_in_place(
         prev,
         detail,
         &serde_json::json!({
-            "说明": "工作台这一版返工从主编各版退回意见里认出的指示与实际动作。只认条目键后写明的去向；认不出的不动",
-            "校准": calibrations.iter().map(|c| serde_json::json!({
+            "说明": "工作台这一版返工读了哪些意见、认出了什么、实际做了什么。「实际」开头的是真执行的动作；「解析出的」只是认出的候选，未必执行（例如被主编校准锁定、或对不上任何条目）",
+            "实际套用的校准": calibrations.iter().map(|c| serde_json::json!({
                 "条目键": c.key, "去向": c.label(), "来源": c.source, "原话": c.note,
             })).collect::<Vec<_>>(),
-            "并入": merged.iter().map(|(s, t)| serde_json::json!({"条目键": s, "并入": t})).collect::<Vec<_>>(),
-            "停止_条目键": stops.keys,
-            "停止_账号": stops.accounts,
+            "实际并入": merged.iter().map(|(s, t)| serde_json::json!({"条目键": s, "并入": t})).collect::<Vec<_>>(),
+            "解析出的停止对象_条目键": stops.keys,
+            "解析出的停止对象_账号": stops.accounts,
             "实际移出主备选": stopped,
-            "定点重判": focus,
+            "实际定点重判": focus,
             "意见写明不重判": rejudge_forbidden,
+            "旁注": super::calibration::side_notes_from_reviews(detail, &known)
+                .into_iter()
+                .map(|(k, t, src)| serde_json::json!({"条目键": k, "原话": t, "来源": src}))
+                .collect::<Vec<_>>(),
             "代表图": super::calibration::preview_picks_from_reviews(detail, &known)
                 .into_iter()
                 .map(|(k, ns)| (k, serde_json::json!(ns)))
@@ -2159,6 +2163,17 @@ fn record_review_parse(
                 "交付物": d.get("id"),
                 "版本": d.get("version"),
                 "审核时间": d.pointer("/latest_review/created_at"),
+            }))
+            .collect::<Vec<_>>()
+    );
+    // 与本任务相关的主编反馈也是指示的一部分（10-09 r67：returned 不能重开，主编以反馈 #66 下达恢复交接）
+    body["所读反馈"] = serde_json::json!(
+        detail
+            .feedback
+            .iter()
+            .map(|f| serde_json::json!({
+                "反馈": f.get("id"),
+                "时间": f.get("created_at"),
             }))
             .collect::<Vec<_>>()
     );
@@ -3772,12 +3787,14 @@ mod tests {
                 tier: Tier::Recommend,
                 source: "v6 退回意见".into(),
                 note: String::new(),
+                since: 6,
             },
             Calibration {
                 key: "drlv-cf21b4".into(),
                 tier: Tier::PendingCheck,
                 source: "引擎条目".into(),
                 note: String::new(),
+                since: crate::serve::calibration::SINCE_TRACE,
             },
         ];
         let cfg = Config::default();
