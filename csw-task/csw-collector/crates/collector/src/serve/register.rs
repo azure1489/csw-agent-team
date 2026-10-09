@@ -466,6 +466,59 @@ pub fn dropped_since(conn: &Connection, round_id: i64, now: &[ItemInput]) -> Vec
         .collect()
 }
 
+/// 撤下的条目如果现在是别的选题的成员（主编让它并进那个事件），理由写明并入谁：
+/// 笼统的「返工后不再列入本期」读起来像淘汰（10-09 r67 v3：主编要 reason=并入fasunaa-6ea867）。
+pub fn mark_merged_drops(
+    conn: &Connection,
+    round_id: i64,
+    items: &mut Vec<ItemInput>,
+    topics: &[Topic],
+) {
+    // 早已撤过（理由还是笼统的那句）的成员也补发一次，把理由改成并入谁
+    let mut last_reason: HashMap<String, (String, String, String)> = HashMap::new();
+    for body in all_bodies(conn, round_id, "items") {
+        for it in body
+            .get("items")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let s = |k: &str| it.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            last_reason.insert(s("item_key"), (s("status"), s("reason"), s("title")));
+        }
+    }
+    for t in topics {
+        for m in t.members.iter().filter(|m| **m != t.primary_key) {
+            if items.iter().any(|i| &i.item_key == m) {
+                continue;
+            }
+            let Some((status, reason, title)) = last_reason.get(m) else {
+                continue;
+            };
+            if status == "dropped" && !reason.starts_with(&format!("并入 {}", t.primary_key)) {
+                items.push(ItemInput {
+                    item_key: m.clone(),
+                    title: title.clone(),
+                    status: "dropped".into(),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+    for it in items.iter_mut().filter(|i| i.status == "dropped") {
+        if let Some(t) = topics
+            .iter()
+            .find(|t| t.primary_key != it.item_key && t.members.contains(&it.item_key))
+        {
+            it.reason_code = "superseded".into();
+            it.reason = format!(
+                "并入 {}：同一事件只占一个位，不是低价值淘汰；逐帖判断与图片保留",
+                t.primary_key
+            );
+        }
+    }
+}
+
 /// 只补登条目（纠正引擎与本包不一致的）。与整套登记同一套幂等键规则。
 pub fn enqueue_items(
     conn: &Connection,
@@ -919,6 +972,72 @@ mod tests {
                 .len(),
             3
         );
+    }
+
+    #[test]
+    fn 并入的成员撤出时写明并入谁且早撤过的也补发理由() {
+        let c = csw_collector_core::store::open_in_memory().unwrap();
+        let (r, _) = csw_collector_core::rounds::open_round(
+            &c,
+            &csw_collector_core::rounds::NewRound {
+                kind: csw_collector_core::types::RoundKind::Task,
+                trigger: csw_collector_core::types::RoundTrigger::Dispatch,
+                run_id: Some(67),
+                task_id: Some(763),
+                stage_code: Some("intake".into()),
+                target_version: 1,
+                parent_round_id: None,
+                window_start: "A".into(),
+                window_end: "B".into(),
+                plan_version: 1,
+                rubric_version: "v".into(),
+                kb_snapshot: "k".into(),
+                instructions_hash: String::new(),
+            },
+        )
+        .unwrap();
+        let it = |k: &str, st: &str| ItemInput {
+            item_key: k.into(),
+            title: format!("{k} 标题"),
+            status: st.into(),
+            ..Default::default()
+        };
+        // v4 已用笼统理由撤过
+        enqueue_registration(
+            &c,
+            r.id,
+            67,
+            &[
+                it("lesyndrome-53e957", "dropped"),
+                it("fasunaa-6ea867", "shortlisted"),
+            ],
+            &[],
+            &[],
+        )
+        .unwrap();
+        let topics = vec![Topic {
+            topic_key: "fasunaa-6ea867".into(),
+            primary_key: "fasunaa-6ea867".into(),
+            members: vec!["fasunaa-6ea867".into(), "lesyndrome-53e957".into()],
+            merge_note: String::new(),
+            tier: Some(Tier::Recommend),
+            headline: String::new(),
+            synthesis: Default::default(),
+        }];
+        let mut items = vec![it("fasunaa-6ea867", "shortlisted")];
+        mark_merged_drops(&c, r.id, &mut items, &topics);
+        let m = items
+            .iter()
+            .find(|i| i.item_key == "lesyndrome-53e957")
+            .expect("要补发");
+        assert_eq!(m.status, "dropped");
+        assert_eq!(m.reason_code, "superseded");
+        assert!(m.reason.starts_with("并入 fasunaa-6ea867"), "{}", m.reason);
+        // 发过带并入理由的之后，不再补发
+        enqueue_registration(&c, r.id, 67, &items, &[], &[]).unwrap();
+        let mut again = vec![it("fasunaa-6ea867", "shortlisted")];
+        mark_merged_drops(&c, r.id, &mut again, &topics);
+        assert_eq!(again.len(), 1);
     }
 
     #[test]

@@ -54,6 +54,42 @@ struct Envelope<T> {
     message: String,
 }
 
+/// 窗口取数实际发出的请求。
+#[derive(Debug, Clone, Default)]
+pub struct WindowLog {
+    /// 不含 offset 的请求路径
+    pub path: String,
+    pub pages: Vec<PageLog>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PageLog {
+    pub offset: u32,
+    pub n: usize,
+    pub has_more: bool,
+    pub total: i64,
+}
+
+impl WindowLog {
+    /// 一句话写进采集轮：请求、翻了几页、每页 offset 与条数、末页 has_more。
+    pub fn describe(&self) -> String {
+        let pages = self
+            .pages
+            .iter()
+            .map(|p| format!("{}:{}", p.offset, p.n))
+            .collect::<Vec<_>>()
+            .join(",");
+        let last = self.pages.last();
+        format!(
+            "请求 GET {}&offset=…，共 {} 页（offset:本页条数 {pages}），末页 has_more={}、接口 total={}",
+            self.path,
+            self.pages.len(),
+            last.is_some_and(|p| p.has_more),
+            last.map_or(0, |p| p.total)
+        )
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct WindowPage {
     #[serde(default)]
@@ -184,7 +220,20 @@ impl CswClient {
     ///
     /// 返回的是**全部**页，分页由这里负责：调用方不该关心 `has_more`。
     pub async fn window(&self, start: &str, end: &str) -> Result<Vec<RawPost>> {
+        Ok(self.window_logged(start, end).await?.0)
+    }
+
+    /// 同 [`window`](Self::window)，另外返回实际发出的每一页请求（offset、本页条数、has_more）。
+    /// 主编要核「补采那一趟到底怎么请求、翻到哪页结束」（10-09 r67 v3/v4 退回），只留概要数核不了。
+    pub async fn window_logged(&self, start: &str, end: &str) -> Result<(Vec<RawPost>, WindowLog)> {
         let mut out = Vec::new();
+        let mut log = WindowLog {
+            path: format!(
+                "/api/v1/posts/window?start={start}&end={end}&limit={}",
+                self.cfg.page_size
+            ),
+            pages: Vec::new(),
+        };
         let mut offset = 0u32;
         loop {
             let page: WindowPage = self
@@ -195,6 +244,12 @@ impl CswClient {
                 .await
                 .with_context(|| format!("取窗口 {start}~{end} offset={offset}"))?;
             let n = page.items.len();
+            log.pages.push(PageLog {
+                offset,
+                n,
+                has_more: page.has_more,
+                total: page.total,
+            });
             out.extend(page.items);
             // 同时看 has_more 与本页条数：接口某天不返回 has_more 也不会死循环
             if !page.has_more || n == 0 {
@@ -205,9 +260,8 @@ impl CswClient {
             if offset > 20_000 {
                 bail!("窗口分页超过 20000 条，疑似参数有误：{start}~{end}");
             }
-            let _ = page.total;
         }
-        Ok(out)
+        Ok((out, log))
     }
 
     /// 单条。注意查询参数是 `include-media`（**连字符**，不是下划线）。
@@ -620,6 +674,41 @@ mod tests {
         assert!(format!("{e:#}").contains("回放未命中"), "{e:#}");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn 窗口取数逐页留下请求记录() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, ResponseTemplate};
+        let item =
+            |id: &str| serde_json::json!({"postId": id, "account": "a", "contentType": "Image"});
+        let srv = wiremock::MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/posts/window"))
+            .and(query_param("offset", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true, "data": {"items": [item("1"), item("2")], "total": 3, "has_more": true}})))
+            .mount(&srv)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/posts/window"))
+            .and(query_param("offset", "100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true, "data": {"items": [item("3")], "total": 3, "has_more": false}})))
+            .mount(&srv)
+            .await;
+        let (got, log) = client(&srv.uri())
+            .window_logged("2026-10-07", "2026-10-10")
+            .await
+            .unwrap();
+        assert_eq!(got.len(), 3);
+        let d = log.describe();
+        assert!(
+            d.contains("start=2026-10-07&end=2026-10-10&limit=100"),
+            "{d}"
+        );
+        assert!(d.contains("共 2 页（offset:本页条数 0:2,100:1）"), "{d}");
+        assert!(d.contains("末页 has_more=false"), "{d}");
     }
 
     fn client(base: &str) -> CswClient {

@@ -67,6 +67,17 @@ fn is_reference(before: &str) -> bool {
     REF.is_match(before)
 }
 
+/// 一段文字里写到的完整条目键（按出现顺序、去重）。
+pub fn keys_in(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for m in KEY.find_iter(text) {
+        if !out.iter().any(|k| k == m.as_str()) {
+            out.push(m.as_str().to_string());
+        }
+    }
+    out
+}
+
 static LIST: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:\s*[、,，]\s*[a-z0-9_.]+-[0-9a-f]{6})+").expect("正则"));
 
@@ -263,6 +274,157 @@ pub fn from_reviews_with_keys(detail: &TaskDetail, known: &[String]) -> Vec<Cali
     out
 }
 
+/// 主编要把一条并进另一个事件：「X 并入 Y」「X 退出独立事件位，关联 Y」。
+/// X 的逐帖判断与图片不动，只是不再单占一个选题位，登记时撤出独立位并写明并入谁。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Merge {
+    pub subject: String,
+    /// 完整条目键，或只写了账号（「关联fasunaa」）时的账号前缀，由选题层按唯一匹配解析
+    pub target: MergeTarget,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeTarget {
+    Key(String),
+    Account(String),
+}
+
+/// 一段意见里的并入指示。按分句认；主语是这句里第一个不在归属标签后的条目键，
+/// 目标是并入动词之后的另一个条目键，没有就取动词后紧跟的账号名。
+pub fn parse_merges(text: &str) -> Vec<(String, MergeTarget)> {
+    static VERB: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"并入|归入|归到|合并到|退出独立[^，,。；;]{0,4}位").expect("正则")
+    });
+    static POINT: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?:关联|并入|归入|归到|合并到)\s*[=＝:：]?\s*([a-z0-9_.]{3,})").expect("正则")
+    });
+    let mut out: Vec<(String, MergeTarget)> = Vec::new();
+    for sent in text.split(['。', '；', ';', '\n']) {
+        let Some(v) = VERB.find(sent) else { continue };
+        if !super::designated::affirms(sent, v.as_str()) {
+            continue;
+        }
+        let Some(subject) = KEY
+            .find_iter(sent)
+            .find(|m| !is_reference(&sent[..m.start()]))
+            .map(|m| m.as_str().to_string())
+        else {
+            continue;
+        };
+        let after = &sent[v.start()..];
+        let target = KEY
+            .find_iter(after)
+            .map(|m| m.as_str())
+            .find(|k| *k != subject)
+            .map(|k| MergeTarget::Key(k.to_string()))
+            .or_else(|| {
+                POINT
+                    .captures_iter(sent)
+                    .filter_map(|c| c.get(1))
+                    .map(|m| m.as_str())
+                    .find(|w| !subject.starts_with(&format!("{w}-")) && *w != subject)
+                    .map(|w| MergeTarget::Account(w.trim_end_matches('.').to_string()))
+            });
+        if let Some(target) = target {
+            out.retain(|(s, _)| *s != subject);
+            out.push((subject, target));
+        }
+    }
+    out
+}
+
+/// 主编指定的代表预览：「代表预览只放 hinataoutdoor-5caef3 第2张地钉包」。
+/// 只认同一分句里写了完整条目键与「第 N 张」的；返回（条目键, 原帖第几张，从 1 起）。
+pub fn parse_preview_picks(text: &str) -> Vec<(String, Vec<u32>)> {
+    static NTH: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"第\s*(\d{1,2})\s*张").expect("正则"));
+    let mut out: Vec<(String, Vec<u32>)> = Vec::new();
+    for sent in text.split(['。', '；', ';', '\n']) {
+        if !(sent.contains("代表预览") || sent.contains("代表图") || sent.contains("展示图"))
+        {
+            continue;
+        }
+        let keys = keys_in(sent);
+        let [key] = keys.as_slice() else { continue };
+        let ns: Vec<u32> = NTH
+            .captures_iter(sent)
+            .filter_map(|c| c.get(1)?.as_str().parse().ok())
+            .filter(|n| *n >= 1)
+            .collect();
+        if ns.is_empty() {
+            continue;
+        }
+        out.retain(|(k, _)| k != key);
+        out.push((key.clone(), ns));
+    }
+    out
+}
+
+/// 各版退回意见里指定的代表预览，新的覆盖旧的。
+pub fn preview_picks_from_reviews(
+    detail: &TaskDetail,
+    known: &[String],
+) -> Vec<(String, Vec<u32>)> {
+    let mut out: Vec<(String, Vec<u32>)> = Vec::new();
+    for text in reject_texts(detail, known) {
+        for (k, ns) in parse_preview_picks(&text) {
+            out.retain(|(x, _)| *x != k);
+            out.push((k, ns));
+        }
+    }
+    out
+}
+
+/// 按版本先后的各版退回意见全文（意见 + 方向 + 位置），短键已展开。
+fn reject_texts(detail: &TaskDetail, known: &[String]) -> Vec<String> {
+    let mut ds: Vec<&serde_json::Value> = detail.deliverables.iter().collect();
+    ds.sort_by_key(|d| d.get("version").and_then(|v| v.as_i64()).unwrap_or(0));
+    ds.into_iter()
+        .filter_map(|d| d.get("latest_review"))
+        .filter(|r| r.get("verdict").and_then(|v| v.as_str()) == Some("reject"))
+        .map(|r| {
+            let text = ["return_direction", "comment", "return_location"]
+                .iter()
+                .filter_map(|k| r.get(*k).and_then(|x| x.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            expand_short_keys(&text, known)
+        })
+        .collect()
+}
+
+/// 各版退回意见里的并入指示，新的覆盖旧的。
+pub fn merges_from_reviews(detail: &TaskDetail, known: &[String]) -> Vec<Merge> {
+    let mut ds: Vec<&serde_json::Value> = detail.deliverables.iter().collect();
+    ds.sort_by_key(|d| d.get("version").and_then(|v| v.as_i64()).unwrap_or(0));
+    let mut out: Vec<Merge> = Vec::new();
+    for d in ds {
+        let Some(r) = d.get("latest_review") else {
+            continue;
+        };
+        if r.get("verdict").and_then(|v| v.as_str()) != Some("reject") {
+            continue;
+        }
+        let v = d.get("version").and_then(|v| v.as_i64()).unwrap_or(0);
+        let text = ["return_direction", "comment", "return_location"]
+            .iter()
+            .filter_map(|k| r.get(*k).and_then(|x| x.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text = expand_short_keys(&text, known);
+        for (subject, target) in parse_merges(&text) {
+            out.retain(|m| m.subject != subject);
+            out.push(Merge {
+                subject,
+                target,
+                source: format!("v{v} 退回意见"),
+            });
+        }
+    }
+    out
+}
+
 /// 从引擎条目流转里取主编亲手改的状态（actor_role = 中枢），按时间先后覆盖。
 pub fn from_traces(trace: &serde_json::Value, hub: &str, into: &mut Vec<Calibration>) {
     let mut rows: Vec<&serde_json::Value> = trace
@@ -443,6 +605,42 @@ mod tests {
         assert!(note.contains("r62写成"), "{note}");
         // 否定语境不认
         assert!(parse_review_notes("1. abc-123456：不继续评估，另议").is_empty());
+    }
+
+    #[test]
+    fn 代表预览认条目键和第几张() {
+        // 10-09 r67 v3 退回原文
+        let t = "3. SotoLabo代表预览仍错：主编实际看v3联系图，第三行仍混有夹烤器与OFFLINE桌架，index卡3仍展示五件清单全部6图。首批代表预览只放hinataoutdoor-5caef3第2张地钉包，其他图可留原始素材目录，不作为该则配图。";
+        assert_eq!(
+            parse_preview_picks(t),
+            vec![("hinataoutdoor-5caef3".to_string(), vec![2])]
+        );
+        // 只写品牌、没写条目键的不认
+        assert!(parse_preview_picks("SotoLabo代表预览仅第2张地钉包").is_empty());
+    }
+
+    #[test]
+    fn 并入指示认主语和目标() {
+        // 10-09 r67 v3 退回原文（方向与意见各一句）
+        let dir = "fasunaa-6ea867=继续；lesyndrome-53e957仅退出独立事件位(status=dropped,reason_code=superseded)，关联fasunaa，保留alternate逐帖判断与图片，不按低价值停止主事件。";
+        assert_eq!(
+            parse_merges(dir),
+            vec![(
+                "lesyndrome-53e957".to_string(),
+                MergeTarget::Account("fasunaa".into())
+            )]
+        );
+        let cmt = "仅将重复事件lesyndrome-53e957登记退出独立采用位：status=dropped、reason_code=superseded、reason=并入fasunaa-6ea867，仅作关联图文佐证";
+        assert_eq!(
+            parse_merges(cmt),
+            vec![(
+                "lesyndrome-53e957".to_string(),
+                MergeTarget::Key("fasunaa-6ea867".into())
+            )]
+        );
+        // 否定的、没有目标的都不认
+        assert!(parse_merges("lesyndrome-53e957不并入任何事件").is_empty());
+        assert!(parse_merges("lesyndrome-53e957退出独立事件位").is_empty());
     }
 
     #[test]

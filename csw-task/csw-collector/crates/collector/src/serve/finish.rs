@@ -370,6 +370,28 @@ fn all_previews(conn: &Connection, cfg: &Config, key: &str) -> Vec<intake::Previ
         .collect()
 }
 
+/// 首批卡与联系图上展示的图：主编指定了代表预览就只放那几张（按指定顺序），否则全部。
+/// 指定的张数在本地一张都对不上时退回全部，并不当成没图。
+fn shown_previews(
+    conn: &Connection,
+    cfg: &Config,
+    key: &str,
+    picks: &HashMap<String, Vec<u32>>,
+) -> Vec<intake::Preview> {
+    let mut all = all_previews(conn, cfg, key);
+    let Some(ns) = picks.get(key) else { return all };
+    let mut picked: Vec<intake::Preview> = Vec::new();
+    for n in ns {
+        if let Some(i) = all
+            .iter()
+            .position(|p| p.candidate_key == format!("{key}_{n}"))
+        {
+            picked.push(all.remove(i));
+        }
+    }
+    if picked.is_empty() { all } else { picked }
+}
+
 /// 一条候选的封面缩略：能当配图的第一张，没有就第一张。取不到就不放（不让一张图拦住交付）。
 fn cover_preview(conn: &Connection, cfg: &Config, key: &str) -> Option<intake::Preview> {
     let hash: String = conn
@@ -650,9 +672,31 @@ pub fn build_deliverable(
             .collect();
         body.insert_str(i + end, &format!("\n\n{}", lines.join("\n>\n")));
     }
+    // 返工这一版的解析留痕（没有就是首版）。主编指定的代表预览从这里取
+    let review_parse: Option<serde_json::Value> = conn
+        .query_row(
+            "SELECT detail_json FROM audit WHERE action = 'rework_parse' AND target = ?1 ORDER BY id DESC LIMIT 1",
+            [super::round::review_parse_target(round.id, round.target_version.max(1))],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok());
+    let picks: HashMap<String, Vec<u32>> = review_parse
+        .as_ref()
+        .and_then(|v| v.get("代表图"))
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
     // 首页先放 4–8 张独立首批卡（点名的优先），其余清单在后（09-30 r58 退回）
-    let (cards, card_keys) =
-        first_cards(conn, cfg, judgements, topics, by_key, pinned, calib_labels);
+    let (cards, card_keys) = first_cards(
+        conn,
+        cfg,
+        judgements,
+        topics,
+        by_key,
+        pinned,
+        calib_labels,
+        &picks,
+    );
     // 五栏与目标缺口紧跟首批卡：「首批另补几张」按实际挑出来的卡算
     let five = five.map(|mut f| {
         f.new_cards = card_keys.iter().filter(|k| !pinned.contains(k)).count();
@@ -737,7 +781,7 @@ pub fn build_deliverable(
     let mut sheet_rows: Vec<Vec<Vec<u8>>> = Vec::new();
     let mut legend = String::new();
     for (i, k) in card_keys.iter().enumerate() {
-        let ps = all_previews(conn, cfg, k);
+        let ps = shown_previews(conn, cfg, k, &picks);
         let cells: Vec<String> = ps
             .iter()
             .take(3)
@@ -839,6 +883,13 @@ pub fn build_deliverable(
     ));
     if let Some(t) = five_trace {
         entries.push(pack::Entry::text("trace/five_columns.json", t));
+    }
+    // 返工这一版认出了哪些指示、实际做了什么（见 round::record_review_parse）
+    if let Some(v) = &review_parse {
+        entries.push(pack::Entry::text(
+            "trace/review_parse.json",
+            serde_json::to_string_pretty(v)?,
+        ));
     }
     // 补采那一趟取回的每一条：按首次入库判的这一段内外、资格（10-08 r66 v2 退回要逐键留痕）
     let patch_rows: Vec<String> = csw_collector_core::window_trace::of_round(conn, round.id)
@@ -1308,6 +1359,7 @@ fn registration_section(
 /// 首页的独立首批卡：点名的优先，再按推荐选题的代表帖补到 8 张；不足 4 张如实交实际数，不凑。
 /// 每张卡内联：完整原文、原始披露时间、首次入库、同帖图（至多 6 张）、真实查重依据、
 /// 能改变采用决定的缺口（09-30 r58 退回点名的卡片要素）。返回（正文, 上卡的条目键）。
+#[allow(clippy::too_many_arguments)]
 fn first_cards(
     conn: &Connection,
     cfg: &Config,
@@ -1316,6 +1368,7 @@ fn first_cards(
     by_key: &HashMap<String, Candidate>,
     pinned: &[String],
     calib_labels: &HashMap<String, String>,
+    picks: &HashMap<String, Vec<u32>>,
 ) -> (String, Vec<String>) {
     const MAX: usize = 8;
     let by_j: HashMap<&str, &Judgement> = judgements
@@ -1416,8 +1469,18 @@ fn first_cards(
                     .unwrap_or_else(|| "缺：未核，不以发布时间顶替".into())
             ));
         }
-        let imgs = all_previews(conn, cfg, k);
-        if imgs.is_empty() {
+        let imgs = shown_previews(conn, cfg, k, picks);
+        if let Some(ns) = picks.get(k.as_str()).filter(|_| !imgs.is_empty()) {
+            let n: Vec<String> = ns.iter().map(|n| format!("第 {n} 张")).collect();
+            s.push_str(&format!(
+                "- 代表预览（主编指定原帖{}；同帖其余原图留在 images/ 作原始素材，不作这一则的配图，正式配图由 05 补）：\n\n",
+                n.join("、")
+            ));
+            for p in &imgs {
+                s.push_str(&format!("  ![{0}](images/{0}.jpg)\n", p.candidate_key));
+            }
+            s.push('\n');
+        } else if imgs.is_empty() {
             s.push_str("- 同帖图：本地没有落库的图\n");
         } else {
             s.push_str(&format!(

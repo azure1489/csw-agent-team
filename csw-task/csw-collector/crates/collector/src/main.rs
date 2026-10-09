@@ -28,6 +28,7 @@ mod mcp;
 mod p5;
 mod p5_distill;
 mod rejudge;
+mod restore;
 mod schema;
 mod serve;
 mod xcheck;
@@ -197,6 +198,25 @@ enum Command {
         /// 哪一轮
         #[arg(long)]
         round: i64,
+    },
+    /// 按某一版交付包的 trace/judgements.jsonl 恢复本地某一轮里几条判断（返工误改后由维护者执行）。
+    /// 只写本地，不写引擎、不提交；不给 `--apply` 只打印要改什么
+    RestoreJudgements {
+        /// 哪一轮
+        #[arg(long)]
+        round: i64,
+        /// 作为基准的交付包（本地 zip）
+        #[arg(long)]
+        from: String,
+        /// 恢复哪几条（条目键，逗号分隔）
+        #[arg(long, value_delimiter = ',')]
+        keys: Vec<String>,
+        /// 为什么恢复：写进这几条的留痕
+        #[arg(long)]
+        reason: String,
+        /// 真写入
+        #[arg(long)]
+        apply: bool,
     },
     /// 打印某个任务当前认到的主编校准（只读：读退回意见与引擎条目流转，不改任何东西）
     Calibration {
@@ -558,6 +578,26 @@ async fn main() -> anyhow::Result<()> {
                 csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
             let secrets = csw_collector_core::Secrets::from_env();
             evidence::run(&cfg, &secrets, evidence::Opts { round, keys }).await
+        }
+        Command::RestoreJudgements {
+            round,
+            from,
+            keys,
+            reason,
+            apply,
+        } => {
+            let cfg =
+                csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
+            restore::run(
+                &cfg,
+                restore::Opts {
+                    round,
+                    from: from.into(),
+                    keys,
+                    reason,
+                    apply,
+                },
+            )
         }
         Command::WindowTrace { round } => {
             let cfg =

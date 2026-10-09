@@ -242,6 +242,7 @@ pub fn register_and_enqueue(
     let mut items = register::item_inputs_by_topic(judgements, topics, lookup);
     // 返工时上次登记过、这次不列的撤下来（第一次登记时没有上一份，这一步是空的）
     items.extend(register::dropped_since(conn, round.id, &items));
+    register::mark_merged_drops(conn, round.id, &mut items, topics);
     let item_of = register::item_of_with_history(conn, round.id, topics);
     // 每一路各算各的：这一路来的候选里，判了几条、没判几条
     let per = |sweep_key: &str| {
@@ -1208,7 +1209,7 @@ fn persist_history_notes(conn: &Connection, round_id: i64, judgements: &mut [Jud
 fn forbids_rejudge(review: &str) -> bool {
     static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(
-            r"不(?:再)?(?:整池|自动|继续)?(?:重判|重评)|禁止(?:再)?(?:自动)?重判|不再执行改档|不(?:再)?(?:追加|新增|自动)?深核|停止[^。；;]{0,40}?(?:深核|重写|重判|升版|返工|改档)",
+            r"不[^，,。；;、]{0,6}?(?:重判|重评)|禁止[^，,。；;]{0,12}?重判|不得[^，,。；;]{0,6}?重判|不再执行改档|不(?:再)?(?:追加|新增|自动)?深核|停止[^。；;]{0,40}?(?:深核|重写|重判|升版|返工|改档)",
         )
         .expect("正则")
     });
@@ -1636,7 +1637,7 @@ pub async fn rework_in_place(
         let main = j.sweeps.iter().find(|s| s.sweep_key == "csw-window");
         let query = format!(
             "补采 {from} ~ {to}（左闭右开）：接口按发布时间宽取 {} 条、去重 {} 条；按首次入库 first_seen 复算，纯图文且首次入库在这一段内 {} 条，\
-             其中已判 {}、未判 {}{}；逐键见 trace/window_patch.jsonl",
+             其中已判 {}、未判 {}{}；逐键见 trace/window_patch.jsonl。这一趟的实际请求：{}",
             main.map_or(0, |m| m.found),
             main.map_or(0, |m| m.fetched_unique),
             fs_in,
@@ -1646,7 +1647,8 @@ pub async fn rework_in_place(
                 String::new()
             } else {
                 format!("（未判：{}）", fs_unjudged.join("、"))
-            }
+            },
+            main.map_or("", |m| m.query.as_str())
         );
         let mut sw = main.cloned().unwrap_or_default();
         sw.sweep_key = PATCH_SWEEP.into();
@@ -1749,8 +1751,16 @@ pub async fn rework_in_place(
         &mut judgements,
         &mut topics,
     );
+    // 二·并入：主编要某条并进另一个事件的，挪进那个选题当成员；逐帖判断与图片不动，
+    // 也不交模型重判——这是结构指示，不是重判要求（10-09 r67 v4：53e957 被点名重判，六维全变）
+    let known: Vec<String> = judgements.iter().map(|j| j.candidate_key.clone()).collect();
+    let merges = super::calibration::merges_from_reviews(detail, &known);
+    let merged = apply_merges(&mut topics, &merges);
+    for (s, t) in &merged {
+        tracing::info!(条目 = %s, 并入 = %t, "返工：按退回意见并入另一个事件");
+    }
     let mut focus: Vec<String> = named_in_review(&review_raw, &judgements, &by_key);
-    focus.retain(|k| !calibrated.contains(k));
+    focus.retain(|k| !calibrated.contains(k) && !merged.iter().any(|(s, _)| s == k));
     let norm = |s: &str| -> String {
         s.chars()
             .filter(|c| c.is_alphanumeric())
@@ -1823,7 +1833,8 @@ pub async fn rework_in_place(
     focus.truncate(REWORK_FOCUS_MAX.max(must));
     // 主编写明不重判的，点名条目也不交模型：只做代码口径与导出修复（10-01 r59 v7–v9：
     // 「不再自动重判/深核/升版」，e1cd9d 每版重判都在待核与推荐之间跳、缺口文字跟着变）
-    if forbids_rejudge(&review_raw) && !focus.is_empty() {
+    let rejudge_forbidden = forbids_rejudge(&review_raw);
+    if rejudge_forbidden && !focus.is_empty() {
         tracing::info!(
             条数 = focus.len(),
             "返工：退回意见写明不重判，点名条目不交模型"
@@ -1857,6 +1868,7 @@ pub async fn rework_in_place(
     // 主编退回意见里明确要「停止 / 移出」的对象：不交给模型，直接移出本期主备选
     //（09-28 r56：v1 就说停止 KEEN 访谈、RAYWOOD 纯促销，重判后 KEEN 仍在备选）
     let stops = stop_words(&review);
+    let mut stopped: Vec<String> = Vec::new();
     for j in judgements.iter_mut() {
         let acc = by_key
             .get(&j.candidate_key)
@@ -1865,13 +1877,23 @@ pub async fn rework_in_place(
         // 主编校准过的锁死：品牌词会误中（09-30 r58 v19：「停止项保持停止」把定为继续的 Coleman 冷藏箱移出、又在引擎里撤掉）
         if matches!(j.tier, Tier::Recommend | Tier::Alternate)
             && !calibrated.contains(&j.candidate_key)
-            && stops.iter().any(|w| acc.contains(w.as_str()))
+            && stops.hits(&j.candidate_key, &acc)
         {
+            let before = j.tier;
             j.tier = Tier::NotRecommend;
             j.gaps
                 .retain(|g| g.level != csw_collector_core::types::GapLevel::Decision);
-            let flags =
-                vec!["【返工】主编退回意见要求移出本期主备选（不是品牌永久排除）".to_string()];
+            // 在原有留痕上追加，并记下原判：整体替换会丢口径留痕，也就恢复不回去（10-09 r67 v4）
+            let flags = with_prior_flags(
+                conn,
+                prev.id,
+                &j.candidate_key,
+                STOP_FLAG,
+                format!(
+                    "{STOP_FLAG}主编退回意见要求移出本期主备选（不是品牌永久排除；工作台原判 {before:?}）"
+                ),
+            );
+            stopped.push(j.candidate_key.clone());
             if let Err(e) =
                 ledger::put_judgement(conn, prev.id, j, &flags, &cfg.model.model, RUBRIC_VERSION)
             {
@@ -1880,6 +1902,30 @@ pub async fn rework_in_place(
             tracing::info!(候选 = %j.candidate_key, "返工：按退回意见移出主备选");
         }
     }
+
+    // 这一版读了哪些意见、解析出什么、实际做了什么：写进交付包 trace/review_parse.json
+    //（10-09 r67 v3/v4：主编三次要「所读指示来源 / 解析出的对象键 / 动作 / 执行记录」，只有日志里有）
+    record_review_parse(
+        conn,
+        prev,
+        detail,
+        &serde_json::json!({
+            "说明": "工作台这一版返工从主编各版退回意见里认出的指示与实际动作。只认条目键后写明的去向；认不出的不动",
+            "校准": calibrations.iter().map(|c| serde_json::json!({
+                "条目键": c.key, "去向": c.label(), "来源": c.source, "原话": c.note,
+            })).collect::<Vec<_>>(),
+            "并入": merged.iter().map(|(s, t)| serde_json::json!({"条目键": s, "并入": t})).collect::<Vec<_>>(),
+            "停止_条目键": stops.keys,
+            "停止_账号": stops.accounts,
+            "实际移出主备选": stopped,
+            "定点重判": focus,
+            "意见写明不重判": rejudge_forbidden,
+            "代表图": super::calibration::preview_picks_from_reviews(detail, &known)
+                .into_iter()
+                .map(|(k, ns)| (k, serde_json::json!(ns)))
+                .collect::<serde_json::Map<_, _>>(),
+        }),
+    );
 
     // 旧口径留下的「备选·待补证」（备选但挂着影响选题判断的缺口）：核心证据不足，一律待核
     //（主编验收：「核心证据不足落 pending_check 并同步统计」）
@@ -2006,6 +2052,126 @@ pub async fn rework_in_place(
             deep_gaps: HashMap::new(),
         },
     ))
+}
+
+/// 把并入指示落到选题上：主语从原选题里拿出来，放进目标所在的选题当成员。
+/// 目标写的是账号时，只在**唯一**一个选题的主帖属于这个账号时才认——认不准就不动。
+/// 返回实际并入的（主语, 目标选题的主帖）。
+fn apply_merges(
+    topics: &mut Vec<csw_collector_core::types::Topic>,
+    merges: &[super::calibration::Merge],
+) -> Vec<(String, String)> {
+    use super::calibration::MergeTarget;
+    let mut done = Vec::new();
+    for m in merges {
+        let target = match &m.target {
+            MergeTarget::Key(k) => topics
+                .iter()
+                .position(|t| t.primary_key == *k || t.members.contains(k)),
+            MergeTarget::Account(a) => {
+                let prefix = format!("{a}-");
+                let hits: Vec<usize> = topics
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.primary_key.starts_with(&prefix))
+                    .map(|(i, _)| i)
+                    .collect();
+                match hits.as_slice() {
+                    [i] => Some(*i),
+                    _ => None,
+                }
+            }
+        };
+        let Some(ti) = target else { continue };
+        if topics[ti].primary_key == m.subject || topics[ti].members.contains(&m.subject) {
+            done.push((m.subject.clone(), topics[ti].primary_key.clone()));
+            continue;
+        }
+        // 从原来的选题里拿出来：它是主帖、组里还有别的帖，就由下一帖接任主帖；组里只有它，这个选题就没了
+        let primary = topics[ti].primary_key.clone();
+        for t in topics.iter_mut() {
+            t.members.retain(|k| k != &m.subject);
+            if t.primary_key == m.subject
+                && let Some(next) = t.members.first().cloned()
+            {
+                t.primary_key = next.clone();
+                t.topic_key = next;
+            }
+        }
+        topics.retain(|t| !t.members.is_empty());
+        if let Some(t) = topics.iter_mut().find(|t| t.primary_key == primary) {
+            t.members.push(m.subject.clone());
+            done.push((m.subject.clone(), primary));
+        }
+    }
+    done
+}
+
+/// 返工时按退回意见移出主备选的留痕开头。
+const STOP_FLAG: &str = "【返工移出】";
+
+/// 这条判断已有的留痕，去掉以 `prefix` 开头的旧的一条，再接上新的。
+fn with_prior_flags(
+    conn: &Connection,
+    round_id: i64,
+    key: &str,
+    prefix: &str,
+    new: String,
+) -> Vec<String> {
+    let prior: Vec<String> = conn
+        .query_row(
+            "SELECT check_flags_json FROM judgements WHERE round_id = ?1 AND candidate_key = ?2",
+            rusqlite::params![round_id, key],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let mut flags: Vec<String> = prior
+        .into_iter()
+        .filter(|f| !f.starts_with(prefix))
+        .collect();
+    flags.push(new);
+    flags
+}
+
+/// 返工解析留痕的 audit 目标：一轮一版一条。
+pub fn review_parse_target(round_id: i64, version: i64) -> String {
+    format!("round:{round_id}:v{version}")
+}
+
+fn record_review_parse(
+    conn: &Connection,
+    prev: &Round,
+    detail: &TaskDetail,
+    body: &serde_json::Value,
+) {
+    let mut body = body.clone();
+    // 读的是哪几版意见
+    body["所读意见"] = serde_json::json!(
+        detail
+            .deliverables
+            .iter()
+            .filter(
+                |d| d.pointer("/latest_review/verdict").and_then(|v| v.as_str()) == Some("reject")
+            )
+            .map(|d| serde_json::json!({
+                "交付物": d.get("id"),
+                "版本": d.get("version"),
+                "审核时间": d.pointer("/latest_review/created_at"),
+            }))
+            .collect::<Vec<_>>()
+    );
+    if let Err(e) = conn.execute(
+        "INSERT INTO audit(actor, action, target, detail_json, created_at) VALUES ('workbench','rework_parse',?1,?2,?3)",
+        rusqlite::params![
+            review_parse_target(prev.id, prev.target_version),
+            body.to_string(),
+            jiff::Timestamp::now().to_string()
+        ],
+    ) {
+        tracing::warn!("返工解析留痕没存下：{e:#}");
+    }
 }
 
 /// 主编校准在 check_flags 里的留痕开头。
@@ -2594,21 +2760,57 @@ pub async fn evidence_pass(
 }
 
 /// 退回意见里要「停止 / 移出 / 不进入」的对象：取这类句子里 4 个字母以上的英文词。
-fn stop_words(review: &str) -> Vec<String> {
-    review
-        .split(['。', '；', '\n', ';'])
-        .filter(|sent| {
-            ["停止", "移出", "不进入", "不再进入", "停掉"]
-                .iter()
-                .any(|k| sent.contains(k))
-        })
-        .flat_map(|sent| {
+/// 退回意见里要「停止 / 移出」的对象。
+///
+/// - 只认**肯定**的说法：「不按低价值停止主事件」不是要停（10-09 r67 v4：这句被当成停止，
+///   同账号四条全被移出，三条主编根本没提）。否定词判法与【工作台不接】同一套。
+/// - 句子里写了完整条目键的，**只作用于这些键**，不从键里拆出账号名去整号移出；
+///   没写条目键、只写品牌的（09-28 r56「停止 KEEN 访谈、RAYWOOD 纯促销」），才按账号认，
+///   且账号要以这个词开头（keen → keenofficial），不是任意位置包含。
+#[derive(Debug, Default)]
+struct Stops {
+    keys: Vec<String>,
+    accounts: Vec<String>,
+}
+
+impl Stops {
+    fn hits(&self, candidate_key: &str, account: &str) -> bool {
+        self.keys.iter().any(|k| k == candidate_key)
+            || (!account.is_empty()
+                && self
+                    .accounts
+                    .iter()
+                    .any(|w| account.starts_with(w.as_str())))
+    }
+}
+
+fn stop_words(review: &str) -> Stops {
+    const VERBS: [&str; 5] = ["停止", "移出", "不进入", "不再进入", "停掉"];
+    let mut out = Stops::default();
+    for sent in review.split(['。', '；', '\n', ';']) {
+        // 「不进入」本身就是要停的说法，不按否定处理
+        let affirmative = VERBS.iter().any(|v| {
+            if v.starts_with('不') {
+                sent.contains(v)
+            } else {
+                super::designated::affirms(sent, v)
+            }
+        });
+        if !affirmative {
+            continue;
+        }
+        let keys = super::calibration::keys_in(sent);
+        if !keys.is_empty() {
+            out.keys.extend(keys);
+            continue;
+        }
+        out.accounts.extend(
             sent.split(|c: char| !c.is_ascii_alphanumeric())
                 .filter(|w| w.len() >= 4 && w.chars().any(|c| c.is_ascii_alphabetic()))
-                .map(str::to_lowercase)
-                .collect::<Vec<_>>()
-        })
-        .collect()
+                .map(str::to_lowercase),
+        );
+    }
+    out
 }
 
 /// 返工时至少重核重判几条（不含主编点名的）、至多几条
@@ -3427,6 +3629,95 @@ mod tests {
         // 单帖或不推荐的选题本来就不综合
         t.members.truncate(1);
         assert!(!needs_resynthesis(&t, "y", ""));
+    }
+
+    #[test]
+    fn 并入把主语挪进目标选题且原选题由下一帖接任() {
+        use crate::serve::calibration::{Merge, MergeTarget};
+        use csw_collector_core::types::Topic;
+        let t = |p: &str, ms: &[&str]| Topic {
+            topic_key: p.into(),
+            primary_key: p.into(),
+            members: ms.iter().map(|s| s.to_string()).collect(),
+            merge_note: String::new(),
+            tier: None,
+            headline: String::new(),
+            synthesis: Default::default(),
+        };
+        let mut topics = vec![
+            t("fasunaa-6ea867", &["fasunaa-6ea867"]),
+            t(
+                "lesyndrome-53e957",
+                &["lesyndrome-53e957", "lesyndrome-29913d"],
+            ),
+        ];
+        let m = |s: &str, tg: MergeTarget| Merge {
+            subject: s.into(),
+            target: tg,
+            source: "v3".into(),
+        };
+        let done = apply_merges(
+            &mut topics,
+            &[m(
+                "lesyndrome-53e957",
+                MergeTarget::Account("fasunaa".into()),
+            )],
+        );
+        assert_eq!(
+            done,
+            [(
+                "lesyndrome-53e957".to_string(),
+                "fasunaa-6ea867".to_string()
+            )]
+        );
+        assert_eq!(topics[0].members, ["fasunaa-6ea867", "lesyndrome-53e957"]);
+        // 原选题还在，由 29913d 接任，不被一起带走
+        assert_eq!(topics[1].primary_key, "lesyndrome-29913d");
+        assert_eq!(topics[1].members, ["lesyndrome-29913d"]);
+        // 再套一次不重复
+        apply_merges(
+            &mut topics,
+            &[m(
+                "lesyndrome-53e957",
+                MergeTarget::Key("fasunaa-6ea867".into()),
+            )],
+        );
+        assert_eq!(topics[0].members.len(), 2);
+        // 账号对不上唯一选题的不动
+        assert!(
+            apply_merges(
+                &mut topics,
+                &[m("x-111111", MergeTarget::Account("nobody".into()))]
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn 停止只认肯定说法且写了条目键就只停这些键() {
+        // 10-09 r67 v3 退回方向原文：「不按低价值停止主事件」是否定，不是要停；
+        // 以前整句拆词得到 lesyndrome，同账号四条全被移出
+        let v3 = "原#763继续有限修订，不停本期、不重开重派、不重跑161。fasunaa-6ea867=继续；lesyndrome-53e957仅退出独立事件位(status=dropped,reason_code=superseded)，关联fasunaa，保留alternate逐帖判断与图片，不按低价值停止主事件。";
+        let st = stop_words(v3);
+        assert!(st.keys.is_empty() && st.accounts.is_empty(), "{st:?}");
+        assert!(!st.hits("lesyndrome-29913d", "lesyndrome"));
+        // 写了条目键的停止：只停这个键，不停同账号别的帖
+        let st = stop_words("drlv-4f2957=停止；其余保留");
+        assert!(st.hits("drlv-4f2957", "drlv"));
+        assert!(!st.hits("drlv-aaaaaa", "drlv"));
+        // 只写品牌的仍按账号认（09-28 r56）
+        let st = stop_words("停止 KEEN 访谈、RAYWOOD 纯促销");
+        assert!(st.hits("keen-111111", "keenofficial"));
+        assert!(st.hits("raywood-222222", "raywood"));
+        assert!(!st.hits("x-333333", "statusshop"));
+    }
+
+    #[test]
+    fn 禁止和不得重判都算不重判() {
+        assert!(forbids_rejudge("禁止以改tier/再次重判代替维护"));
+        assert!(forbids_rejudge("不得扩窗、不得重采重判161"));
+        assert!(forbids_rejudge("不自动改档重判升版"));
+        assert!(!forbids_rejudge("按点名条目重判"));
     }
 
     #[test]
