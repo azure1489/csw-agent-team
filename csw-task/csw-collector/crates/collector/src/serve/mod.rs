@@ -1312,9 +1312,13 @@ async fn start_round(
                 reconciled.pointer("/判断/不一致"),
             ]))
             .unwrap_or_default();
+            // 这一轮在引擎里实际登记成的状态（包头「工作台登记」那行就是它）：引擎侧改回来了也是新内容
+            //（10-09 r66 v7：两个产品重发成 shortlisted、包头计数变了，却因判断与选题没变被当成「内容相同」）
+            let registered =
+                serde_json::to_string(&register::registered_items(conn, r.id)).unwrap_or_default();
             let state = blake3::hash(
                 format!(
-                    "{EXPORT_REV}\u{1}{}\u{1}{}\u{1}{}\u{1}{trace}\u{1}{sources}\u{1}{recon}",
+                    "{EXPORT_REV}\u{1}{}\u{1}{}\u{1}{}\u{1}{trace}\u{1}{sources}\u{1}{recon}\u{1}{registered}",
                     serde_json::to_string(&judgements).unwrap_or_default(),
                     serde_json::to_string(&fin.topics).unwrap_or_default(),
                     serde_json::to_string(&items).unwrap_or_default()
