@@ -4,9 +4,14 @@
 数据：`magazine_sample.json` 取自 GO OUT 2016.08 的真实清单（译文、商品、裁图与整页 OSS 地址）；
 统计数字、相似度、耗时为示意。由 build_mockup.py 引入。
 """
+import base64
+import hashlib
 import html
 import json
 import os
+import subprocess
+import tempfile
+import urllib.request
 
 E = lambda s: html.escape(str(s))
 
@@ -36,6 +41,25 @@ CSS = """
 .kv { display:grid; grid-template-columns:6.5em minmax(0,1fr); gap:4px 10px; font-size:12.5px; } .kv dt { color:var(--muted); } .kv dd { margin:0; word-break:break-all; }
 .md { font-size:12.5px; white-space:pre-line; }
 """
+
+
+_CACHE = os.path.join(tempfile.gettempdir(), "mockup_magazine_img")
+
+
+def src(url, side=320):
+    """OSS 图压成缩略图内嵌（发布的页面不让加载外部图片）。macOS 用 sips 缩放；失败就退回原地址。"""
+    try:
+        os.makedirs(_CACHE, exist_ok=True)
+        key = hashlib.sha1(f"{url}|{side}".encode()).hexdigest()
+        out = os.path.join(_CACHE, key + ".jpg")
+        if not os.path.exists(out):
+            raw = os.path.join(_CACHE, key + ".raw.jpg")
+            urllib.request.urlretrieve(url, raw)
+            subprocess.run(["sips", "-Z", str(side), "-s", "formatOptions", "70", raw, "--out", out],
+                           check=True, capture_output=True)
+        return "data:image/jpeg;base64," + base64.b64encode(open(out, "rb").read()).decode()
+    except Exception:
+        return url
 
 
 def load(path):
@@ -76,7 +100,7 @@ def card(x, routes, sim=None):
     tags = "".join(f'<span class="tag">{E(r)}</span>' for r in routes)
     if sim is not None:
         tags += f'<span class="tag pri">相似 {sim:.2f}</span>'
-    return f'''<div class="mag"><img loading="lazy" src="{E(x['image_url'])}" alt="{E(head)}">
+    return f'''<div class="mag"><img loading="lazy" src="{src(x['image_url'], 200)}" alt="{E(head)}">
 <div><span class="meta">{E(label(x))} · {E(x.get('section_title_zh') or '')} {tags}</span>
 <b>{E(head)}</b>
 <span class="price">{E(price(p))}</span>{f' <span class="meta">另 {more} 件商品</span>' if more > 0 else ''}
@@ -91,11 +115,11 @@ def kb_screen(s):
     text_hits = "".join(card(x, r) for x, r in zip(snow[:3], (["全文", "向量"], ["全文"], ["向量"])))
     sims = [0.97, 0.83, 0.79, 0.74]
     img_grid = "".join(
-        f'<figure><img loading="lazy" src="{E(x["image_url"])}" alt=""><figcaption><b>{E((x["products"][0].get("brand") or "")[:22])}</b><br>{E(label(x))} · {sims[i]:.2f}</figcaption></figure>'
+        f'<figure><img loading="lazy" src="{src(x["image_url"], 240)}" alt=""><figcaption><b>{E((x["products"][0].get("brand") or "")[:22])}</b><br>{E(label(x))} · {sims[i]:.2f}</figcaption></figure>'
         for i, x in enumerate(cool[:4])
     )
     brand_mag = "".join(
-        f'<tr><td>{E(x["magazine"])} {E(x["issue"])}</td><td>{E(("P." + str(x["printed_page"])) if x.get("printed_page") else "")}</td><td>{E(x["products"][0].get("name") or "")}</td><td class="num">{E(price(x["products"][0]))}</td><td><img loading="lazy" src="{E(x["image_url"])}" alt="" width="40" height="40" style="object-fit:cover;border-radius:4px"></td></tr>'
+        f'<tr><td>{E(x["magazine"])} {E(x["issue"])}</td><td>{E(("P." + str(x["printed_page"])) if x.get("printed_page") else "")}</td><td>{E(x["products"][0].get("name") or "")}</td><td class="num">{E(price(x["products"][0]))}</td><td><img loading="lazy" src="{src(x["image_url"], 80)}" alt="" width="40" height="40" style="object-fit:cover;border-radius:4px"></td></tr>'
         for x in tnf[:4]
     )
     return f'''
@@ -112,7 +136,7 @@ def kb_screen(s):
 <p class="muted">同一本杂志可以出多条；每条带刊名期号页码、品牌商品价格，描述与译文折叠；缩略图走 OSS 公开地址、懒加载。</p></div>
 <div class="panel"><h3>以图搜图 · 三态</h3><div class="states">
 <div class="state"><h4>上传前</h4><div class="drop"><b>拖一张图进来</b>或粘贴 · 或 <button>选文件</button><br>jpg / png / webp，≤20MB；缩到 768 宽再算</div><p class="muted">只有主编那一档能用：一次占一块 GPU 约一秒</p></div>
-<div class="state"><h4>计算中</h4><div class="qimg"><img src="{E(q['image_url'])}" alt=""><div><b style="font-size:12.5px">ig_cooler.jpg · 1.8 MB</b><div class="bar"><i style="width:60%"></i></div><span class="muted" style="font-size:11.5px">算向量中…（正式轮在跑时排队）</span></div></div></div>
+<div class="state"><h4>计算中</h4><div class="qimg"><img src="{src(q['image_url'], 128)}" alt=""><div><b style="font-size:12.5px">ig_cooler.jpg · 1.8 MB</b><div class="bar"><i style="width:60%"></i></div><span class="muted" style="font-size:11.5px">算向量中…（正式轮在跑时排队）</span></div></div></div>
 <div class="state"><h4>出结果</h4><p class="muted" style="margin:0 0 6px;font-size:12px">算向量 0.9 秒 · 共 1.1 秒 · 回 4 条</p><div class="igrid">{img_grid}</div></div>
 </div><p class="muted">命中经 <code>kb_doc_images</code> 回到条目；同一张图出现在几期就给几条；纯图向量还没算完的书暂时搜不到，统计卡上写着进度。</p></div>
 </div>
@@ -152,9 +176,9 @@ def detail_screen(s):
 <div class="toolbar"><div class="filters"><button class="link">← 返回检索</button><span class="tag">{E(label(x))}</span><span class="tag">{E(x.get("section_title_zh") or "")}</span><span class="tag">{E(x.get("category") or "")}</span><span class="tag ok">融合向量已算</span><span class="tag ok">纯图向量已算</span></div>
 <div class="right"><button>复制裁图地址</button><button>复制整页地址</button><button class="primary">以这张图搜图</button></div></div>
 <div class="detail">
-<div class="col"><h3>{E(p.get("brand") or "")} · {E(p.get("name") or "")}</h3><img class="crop" src="{E(x["image_url"])}" alt="裁图">
+<div class="col"><h3>{E(p.get("brand") or "")} · {E(p.get("name") or "")}</h3><img class="crop" src="{src(x["image_url"], 720)}" alt="裁图">
 <h3>商品</h3><table class="plain"><tr><th>品牌</th><th>商品</th><th>价格</th><th>规格</th></tr>{rows}</table></div>
-<div class="col"><h3>整页 · 框出这张图的位置</h3><div class="pagebox"><img src="{E(x["page_url"])}" alt="整页"><i style="{box}"></i></div>
+<div class="col"><h3>整页 · 框出这张图的位置</h3><div class="pagebox"><img src="{src(x["page_url"], 900)}" alt="整页"><i style="{box}"></i></div>
 <p class="muted">框按清单的 bbox（PDF 点）与 page_size 换算成百分比，整页图缩放后照样对得上。</p></div>
 <div class="col"><h3>描述</h3><p class="md">{E(x.get("description") or "")}</p>
 <h3>译文</h3><p class="md">{md(x.get("md_zh") or "")}</p>
