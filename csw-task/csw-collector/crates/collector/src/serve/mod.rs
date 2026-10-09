@@ -1299,9 +1299,12 @@ async fn start_round(
             //（10-09 r66 v7：两个产品重发成 shortlisted、包头计数变了，却因判断与选题没变被当成「内容相同」）
             let registered =
                 serde_json::to_string(&register::registered_items(conn, r.id)).unwrap_or_default();
+            // 首批卡挑哪几条、按什么顺序也是交付内容：只换了卡也该重交
+            //（10-09 r67 v6：卡位规则改了、判断没变，被当成「内容相同」报了失败）
+            let cards = pinned.join(",");
             let state = blake3::hash(
                 format!(
-                    "{EXPORT_REV}\u{1}{}\u{1}{}\u{1}{}\u{1}{trace}\u{1}{sources}\u{1}{recon}\u{1}{registered}",
+                    "{EXPORT_REV}\u{1}{}\u{1}{}\u{1}{}\u{1}{trace}\u{1}{sources}\u{1}{recon}\u{1}{registered}\u{1}{cards}",
                     serde_json::to_string(&judgements).unwrap_or_default(),
                     serde_json::to_string(&fin.topics).unwrap_or_default(),
                     serde_json::to_string(&items).unwrap_or_default()
@@ -1509,7 +1512,7 @@ const SUBMITTED: &str = "已交状态:";
 const UNCHANGED: &str = "内容与上一版相同，未重交";
 /// 交付物 / 登记导出格式的修订号。**改了导出（字段、登记口径、包内文件）就改它**，
 /// 否则返工后内容指纹一样，修好的导出不会重交
-const EXPORT_REV: &str = "2026-10-01a";
+const EXPORT_REV: &str = "2026-10-09a";
 
 /// 引擎派的窗口止点是否已经过了。读不出来的当已过：不能因为格式问题永远不开工。
 fn window_closed(to: &str, now: jiff::Timestamp) -> bool {
