@@ -72,6 +72,13 @@ func (e *Engine) dispatchInternal(ctx context.Context, q *sqlite.Queries, task d
 	if editorNote == "" && task.ItemKey != "" {
 		editorNote = itemNote(ctx, q, task) // 逐条任务自动派工：派工意见写明条目与 Van 决定
 	}
+	// 上游各阶段主编通过时写的意见随派工单带下来：01 只审格式，主编对内容的意见写在通过意见里，
+	// 由 02 / 03 采用（2026-10-10 分工调整）。此前派工单只带上游链接，研究员读不到这些意见
+	if task.ItemKey == "" {
+		if op := upstreamOpinions(ctx, q, task); op != "" {
+			editorNote = strings.TrimSpace(editorNote + "\n\n" + op)
+		}
+	}
 
 	id, err := q.InsertDeliverable(ctx, domain.Deliverable{
 		TaskID:     task.ID,
@@ -149,6 +156,36 @@ func (e *Engine) autoPrefill(ctx context.Context, q *sqlite.Queries, task domain
 		}
 	}
 	return ups, nil
+}
+
+// upstreamOpinions 各依赖任务已通过的最新产出上，审核方写了内容的通过意见（按闸先后）。没有就返回空串。
+func upstreamOpinions(ctx context.Context, q *sqlite.Queries, task domain.Task) string {
+	depIDs, err := q.TaskDepIDs(ctx, task.ID)
+	if err != nil {
+		return ""
+	}
+	var parts []string
+	for _, depID := range depIDs {
+		dt, err := q.GetTask(ctx, depID)
+		if err != nil {
+			continue
+		}
+		dd, err := q.LatestPassedDeliverable(ctx, depID)
+		if err != nil {
+			continue
+		}
+		rs, err := q.ListReviewsByDeliverable(ctx, dd.ID)
+		if err != nil {
+			continue
+		}
+		for _, r := range rs {
+			if r.Verdict != domain.VerdictPass || strings.TrimSpace(r.Comment) == "" {
+				continue
+			}
+			parts = append(parts, fmt.Sprintf("【上游主编意见】%s（交付物#%d v%d）：\n%s", dt.StageName, dd.ID, dd.Version, strings.TrimSpace(r.Comment)))
+		}
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // itemNote 逐条任务的默认派工意见：条目（品牌｜标题 + 条目键）、来源与 Van 决定原话。条目登记缺失时只写条目键。

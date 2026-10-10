@@ -137,6 +137,11 @@ func TestFullFlow(t *testing.T) {
 	if len(dr.Upstreams) != 1 || dr.Upstreams[0].UpstreamURL != "http://x/files/collect" {
 		t.Fatalf("02 upstream prefill wrong: %+v", dr.Upstreams)
 	}
+	// 上游通过意见随派工单带下来，主编手写的派工意见保留在前（2026-10-10：01 只审格式，内容意见交 02）
+	if note := dr.Dispatch.EditorNote; !strings.HasPrefix(note, "选5则") ||
+		!strings.Contains(note, "【上游主编意见】") || !strings.Contains(note, "Van：ok") {
+		t.Fatalf("02 dispatch note should carry upstream pass opinions: %q", note)
+	}
 
 	// 步 6-9 · 02 提交 → 退回一次 → 升版本重交 → 双闸过
 	researcher, _ := who(t, st, "researcher")

@@ -4,6 +4,7 @@ package adminctl
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -32,6 +33,8 @@ const usage = `用法：
   adminctl source backfill <runID> [--apply]       从实际采集轮找出不在台账的来源；--apply 以停用态写入待转正
   adminctl workflow list                           列已激活工作流
   adminctl workflow validate <wf_key>              校验工作流定义（DAG/入口/中枢/闸）
+  adminctl workflow activate <wf_key> <版本> --confirm <版本> --reason <原因>
+                                                   激活草稿版本（先校验；归档原 active；写审计）
   adminctl user create <username> --role <r> [--name N] [--password P]
                                                    建后台用户（argon2id；缺 --password 则生成并打印）
   adminctl user passwd <username> --password <P>   改后台用户密码
@@ -262,6 +265,8 @@ func workflowCmd(ctx context.Context, store *sqlite.Store, args []string) int {
 			fmt.Printf("%-14s %-12s v%-3d %-8s %s\n", w.WfKey, w.Name, w.Version, w.HubRoleCode, w.DispatchMode)
 		}
 		return 0
+	case "activate":
+		return activateWorkflow(ctx, store, args[1:])
 	case "validate":
 		if len(args) < 2 {
 			fmt.Println(usage)
@@ -512,4 +517,82 @@ func sourceCmd(ctx context.Context, store *sqlite.Store, args []string) int {
 		fmt.Println(usage)
 		return 2
 	}
+}
+
+// activateWorkflow 在服务器上激活某个草稿版本：与后台「激活」同一套——只认草稿、先校验、
+// 归档同 key 其余 active、写审计。--confirm 必须再写一遍版本号，防手滑激活错版本。
+// 已开的 run 用开期快照，不受影响；新开的 run 起用新版本。
+func activateWorkflow(ctx context.Context, store *sqlite.Store, args []string) int {
+	if len(args) < 2 {
+		fmt.Println(usage)
+		return 2
+	}
+	key := args[0]
+	ver, err := strconv.Atoi(args[1])
+	if err != nil {
+		fmt.Println("版本号要是数字：", args[1])
+		return 2
+	}
+	var confirm, reason string
+	for i := 2; i+1 < len(args); i += 2 {
+		switch args[i] {
+		case "--confirm":
+			confirm = args[i+1]
+		case "--reason":
+			reason = args[i+1]
+		}
+	}
+	if confirm != strconv.Itoa(ver) {
+		fmt.Printf("要用 --confirm %d 再写一遍版本号才激活\n", ver)
+		return 2
+	}
+	if strings.TrimSpace(reason) == "" {
+		fmt.Println("要用 --reason 写明激活原因（进审计）")
+		return 2
+	}
+	items, err := store.Q().ListWorkflowsAll(ctx, key, string(domain.WfDraft))
+	if err != nil {
+		fmt.Println("列工作流失败：", err)
+		return 1
+	}
+	var wf *domain.Workflow
+	for i := range items {
+		if items[i].WfKey == key && items[i].Version == ver {
+			wf = &items[i].Workflow
+		}
+	}
+	if wf == nil {
+		fmt.Printf("没有 %s 的草稿 v%d（只有草稿能激活）\n", key, ver)
+		return 1
+	}
+	rep, err := workflow.Validate(ctx, store.Q(), *wf)
+	if err != nil {
+		fmt.Println("校验失败：", err)
+		return 1
+	}
+	if !rep.AllOK() {
+		for _, c := range rep.Checks {
+			if !c.OK {
+				fmt.Printf("❌ %s（%s）\n", c.Name, c.Detail)
+			}
+		}
+		fmt.Println("校验未通过，不激活。")
+		return 1
+	}
+	err = store.Tx(ctx, func(q *sqlite.Queries) error {
+		if err := q.ArchiveOtherActive(ctx, wf.WfKey, wf.ID); err != nil {
+			return err
+		}
+		if err := q.SetWorkflowStatus(ctx, wf.ID, domain.WfActive); err != nil {
+			return err
+		}
+		detail, _ := json.Marshal(map[string]any{"wf_key": wf.WfKey, "version": wf.Version, "reason": reason, "via": "adminctl"})
+		return q.InsertAudit(ctx, nil, "workflow_activate", fmt.Sprintf("%s@%d", wf.WfKey, wf.Version), string(detail))
+	})
+	if err != nil {
+		fmt.Println("激活失败：", err)
+		return 1
+	}
+	fmt.Printf("已激活 %s v%d（原 active 已归档）；新开的 run 起用这一版\n", wf.WfKey, wf.Version)
+	return 0
 }

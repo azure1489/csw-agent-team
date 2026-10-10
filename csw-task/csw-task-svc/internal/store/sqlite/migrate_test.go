@@ -470,6 +470,36 @@ func TestDailyNewsV10Draft(t *testing.T) {
 	if !strings.Contains(intake, "**窗口以原始披露时间为准**") || strings.Contains(intake, "首次进入来源库的时间为准") {
 		t.Fatal("v10 的 01 窗口口径应是原始披露时间，不是首次进入来源库")
 	}
+	// 0044：01 主编审核只查格式与材料，内容意见随通过意见交 02（2026-10-10 分工调整）。
+	// REPLACE 对不上会静默不改，逐处兜住
+	var acc, sl, slAcc, gate string
+	if err := db.QueryRow(`SELECT s.acceptance FROM workflow_stages s JOIN workflows w ON w.id=s.workflow_id
+		WHERE w.wf_key='daily_news' AND w.version=10 AND s.code='intake'`).Scan(&acc); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT s.instructions, s.acceptance FROM workflow_stages s JOIN workflows w ON w.id=s.workflow_id
+		WHERE w.wf_key='daily_news' AND w.version=10 AND s.code='shortlist'`).Scan(&sl, &slAcc); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT g.name FROM workflow_gates g JOIN workflow_stages s ON s.id=g.stage_id
+		JOIN workflows w ON w.id=g.workflow_id WHERE w.wf_key='daily_news' AND w.version=10 AND s.code='intake'`).Scan(&gate); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ got, want, what string }{
+		{acc, "本闸只查格式与材料是否齐全", "01 验收标准"},
+		{intake, "前一天 06:00 至当天 06:00", "01 窗口"},
+		{intake, "工作台不按内容意见返工", "01 先交首批"},
+		{sl, "【上游主编意见】是你的起点", "02 作业内容"},
+		{slAcc, "已采用派工单里【上游主编意见】", "02 验收标准"},
+		{gate, "主编格式核对", "01 闸名"},
+	} {
+		if !strings.Contains(c.got, c.want) {
+			t.Fatalf("0044 没改到 v10 的%s：缺「%s」", c.what, c.want)
+		}
+	}
+	if strings.Contains(intake, "周一覆盖最近 72 小时") || strings.Contains(sl, "01 的主编首批校准结论是你的起点") {
+		t.Fatal("0044 应替换掉旧窗口与旧的 02 起点说法")
+	}
 	// 已激活的 v9 不动
 	var v9 string
 	if err := db.QueryRow(`SELECT s.instructions FROM workflow_stages s JOIN workflows w ON w.id=s.workflow_id
