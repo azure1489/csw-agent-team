@@ -381,6 +381,29 @@ fn page_log_note(p: &csw_collector_core::window_trace::Patch) -> String {
     }
 }
 
+/// 一条候选的原文与译文（随包的 source/{条目键}.md）。只用本地已有的资料，不重新采集、不重新翻译。
+fn source_doc(c: &Candidate) -> String {
+    let t = |v: Option<jiff::Timestamp>| v.map_or_else(|| "缺".to_string(), |t| t.to_string());
+    format!(
+        "# {}｜`{}`\n\n- 原帖：{}\n- 贴文发布时间（来源库 posted_at）：{}\n- 首次入库（first_seen）：{}\n\n## 原文\n\n{}\n\n## 译文\n\n{}\n",
+        c.account,
+        c.candidate_key,
+        c.url,
+        t(c.posted_at),
+        t(c.ingested_at),
+        if c.text.trim().is_empty() {
+            "（来源没有正文）"
+        } else {
+            c.text.trim()
+        },
+        if c.translated.trim().is_empty() {
+            "（没有译文：原文是中文，或来源未给出可翻译的正文）"
+        } else {
+            c.translated.trim()
+        }
+    )
+}
+
 /// 在每一行以 `prefix` 开头的行后面插一行（已经插过的不重复插）。
 fn insert_after(body: &str, prefix: &str, line: &str) -> String {
     let mut out = String::with_capacity(body.len() + line.len() + 1);
@@ -902,6 +925,21 @@ pub fn build_deliverable(
         })
         .collect();
     let archived = archived_images(conn, round.id, &have);
+    // 每条候选的原文与译文分条随包（10-10 r68 v7：五项清单第 4 项「材料齐全」——此前只有首批卡带全文，
+    // 其余 154 条只有判断摘要）。台账该条下链接过去
+    let mut sources: Vec<(String, String)> = Vec::new();
+    for j in judgements {
+        let Some(c) = by_key.get(&j.candidate_key) else {
+            continue;
+        };
+        let path = format!("source/{}.md", j.candidate_key);
+        body = insert_after(
+            &body,
+            &format!("- 条目键：`{}`", j.candidate_key),
+            &format!("- 原文与译文：[{path}]({path})"),
+        );
+        sources.push((path, source_doc(c)));
+    }
     // 主编的去向决定与逐帖初判并列：台账按初判分节，决定写在这一条下面（10-10 r68 #1232：
     // 「包内保留原判断，独立写本次校准决定及出处」「保留旧判断和当前否决并列」）
     for (k, label) in calib_labels {
@@ -991,6 +1029,9 @@ pub fn build_deliverable(
     );
     for (path, bytes) in archived {
         entries.push(pack::Entry::binary(&path, bytes));
+    }
+    for (path, text) in sources {
+        entries.push(pack::Entry::text(&path, text));
     }
     // 逐条判断全文：六维依据、三句话、查重命中、分级缺口都在这里，主编要能直接复核
     let mut jl = String::new();
@@ -2035,6 +2076,38 @@ mod tests {
         j.image_seen = tier != Tier::PendingCheck;
         j.inputs_hash = "ih".into();
         j
+    }
+
+    #[test]
+    fn 每条候选的原文与译文分条随包() {
+        let c = |text: &str, tr: &str| Candidate {
+            candidate_key: "abenteuer2020-2fa251".into(),
+            platform: csw_collector_core::types::Platform::Instagram,
+            source_id: "1".into(),
+            collector: "csw_window".into(),
+            account: "abenteuer2020".into(),
+            url: "https://www.instagram.com/p/X/".into(),
+            text: text.into(),
+            translated: tr.into(),
+            posted_at: None,
+            ingested_at: None,
+            likes: None,
+            comments: None,
+            followers: None,
+            heat_ratio: None,
+            content_type: "Image".into(),
+            media: vec![],
+            tags: vec![],
+            hashtags: vec![],
+        };
+        let d = source_doc(&c("Neue Jacke", "新夹克"));
+        assert!(
+            d.contains("## 原文\n\nNeue Jacke") && d.contains("## 译文\n\n新夹克"),
+            "{d}"
+        );
+        assert!(d.contains("https://www.instagram.com/p/X/"));
+        let d = source_doc(&c("中文正文", ""));
+        assert!(d.contains("没有译文"), "{d}");
     }
 
     #[test]
