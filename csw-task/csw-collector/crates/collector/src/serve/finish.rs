@@ -902,6 +902,16 @@ pub fn build_deliverable(
         })
         .collect();
     let archived = archived_images(conn, round.id, &have);
+    // 主编的去向决定与逐帖初判并列：台账按初判分节，决定写在这一条下面（10-10 r68 #1232：
+    // 「包内保留原判断，独立写本次校准决定及出处」「保留旧判断和当前否决并列」）
+    for (k, label) in calib_labels {
+        let decision = label.trim_start_matches("主编校准：");
+        body = insert_after(
+            &body,
+            &format!("- 条目键：`{k}`"),
+            &format!("- **主编当前决定**：{decision}；上面的档位与六维是工作台初判，保留不改"),
+        );
+    }
     // 主编要原样加的卡面 / 台账说明：放在首批卡与台账这一条的条目键下面，不改六维与历史判断
     //（10-09 r67 v5：「保留历史判断不改六维，旁加主编当前决定即可」）
     if let Some(notes) = review_parse

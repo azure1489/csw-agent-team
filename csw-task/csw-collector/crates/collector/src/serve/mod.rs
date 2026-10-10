@@ -1250,7 +1250,14 @@ async fn start_round(
             let pinned: Vec<String> = if calib.is_empty() {
                 round::named_in_review(&review_text, &judgements, &fin.by_key)
             } else {
-                calibration::pin_order(&calib, calibration::asks_replacement(&review_text))
+                // 要不要另选补首批：哪一版意见说过都算（r68 写在 v1，之后几版只说故障）
+                let known: Vec<String> =
+                    judgements.iter().map(|j| j.candidate_key.clone()).collect();
+                let replace = calibration::asks_replacement(&review_text)
+                    || calibration::instruction_texts(&detail, &known)
+                        .iter()
+                        .any(|(t, _)| calibration::asks_replacement(t));
+                calibration::pin_order(&calib, replace)
             };
             let calib_labels: HashMap<String, String> = calib
                 .iter()
@@ -1520,7 +1527,7 @@ const SUBMITTED: &str = "已交状态:";
 const UNCHANGED: &str = "内容与上一版相同，未重交";
 /// 交付物 / 登记导出格式的修订号。**改了导出（字段、登记口径、包内文件）就改它**，
 /// 否则返工后内容指纹一样，修好的导出不会重交
-const EXPORT_REV: &str = "2026-10-09a";
+const EXPORT_REV: &str = "2026-10-10a";
 
 /// 引擎派的窗口止点是否已经过了。读不出来的当已过：不能因为格式问题永远不开工。
 fn window_closed(to: &str, now: jiff::Timestamp) -> bool {

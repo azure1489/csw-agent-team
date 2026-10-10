@@ -228,6 +228,7 @@ pub fn register_and_enqueue(
     sweeps: &mut [SweepCount],
     by_key: &HashMap<String, Candidate>,
     carried: &HashSet<String>,
+    frozen: Option<&[Judgement]>,
 ) -> Result<i64> {
     let step = rounds::begin_step(conn, round.id, StepCode::Register, &round.instructions_hash)?;
     let unjudged_keys: HashSet<String> =
@@ -288,10 +289,15 @@ pub fn register_and_enqueue(
     }
     let sweep_inputs =
         register::sweep_inputs(sweeps, (&round.window_start, &round.window_end), per);
-    let jis =
-        register::judgement_inputs_with_items(judgements, lookup, carried, RUBRIC_VERSION, |k| {
-            item_of.get(k).cloned()
-        })?;
+    // 发给引擎的逐帖判断是初判；主编的决定只体现在条目（事件）状态上（10-10 r68：「冻结原162逐帖初判及六维，
+    // 不把当前校准写入旧初判」）
+    let jis = register::judgement_inputs_with_items(
+        frozen.unwrap_or(judgements),
+        lookup,
+        carried,
+        RUBRIC_VERSION,
+        |k| item_of.get(k).cloned(),
+    )?;
     let last = register::enqueue_registration(conn, round.id, run_id, &items, &sweep_inputs, &jis)?;
 
     rounds::end_step(
@@ -1487,6 +1493,7 @@ pub async fn run_intake(
             &mut j.sweeps,
             &j.by_key,
             &carried,
+            None,
         )?;
     } else {
         tracing::info!("手动轮不写引擎，只落本地");
@@ -1544,8 +1551,7 @@ pub async fn rework_in_place(
                 .join("\n")
         })
         .unwrap_or_default();
-    let review_raw = review.clone();
-    let review = review.to_lowercase();
+    let review_raw = review;
 
     // 一、读回
     let (mut judgements, mut topics, mut by_key) = load_round_state(conn, prev.id)?;
@@ -1741,16 +1747,16 @@ pub async fn rework_in_place(
         c.collector = register::collector_of(&c.collector);
     }
 
+    // 初判快照：主编的决定（校准、停止）只作为决定层叠在上面，用于选题档位、首批卡、条目登记；
+    // 逐帖初判与六维不改，交付包与引擎里的判断都是它（10-10 r68 #1232）
+    let initial: HashMap<String, Judgement> = judgements
+        .iter()
+        .map(|j| (j.candidate_key.clone(), j.clone()))
+        .collect();
     // 三、挑要改的：退回意见点名的条目优先，再补推荐 / 备选选题的代表帖
     // 二·校准：主编定过去向的条目直接采用，不交给模型重判（09-30 r58：连退十几版的根因）
-    let calibrated: HashSet<String> = apply_calibrations(
-        conn,
-        prev.id,
-        cfg,
-        calibrations,
-        &mut judgements,
-        &mut topics,
-    );
+    let calibrated: HashSet<String> =
+        apply_calibrations(calibrations, &mut judgements, &mut topics);
     // 二·并入：主编要某条并进另一个事件的，挪进那个选题当成员；逐帖判断与图片不动，
     // 也不交模型重判——这是结构指示，不是重判要求（10-09 r67 v4：53e957 被点名重判，六维全变）
     let known: Vec<String> = judgements.iter().map(|j| j.candidate_key.clone()).collect();
@@ -1867,7 +1873,16 @@ pub async fn rework_in_place(
 
     // 主编退回意见里明确要「停止 / 移出」的对象：不交给模型，直接移出本期主备选
     //（09-28 r56：v1 就说停止 KEEN 访谈、RAYWOOD 纯促销，重判后 KEEN 仍在备选）
-    let stops = stop_words(&review);
+    // 只读退回方向：意见正文里描述故障时点到条目键、带着「停止」的句子不是编辑决定
+    //（10-10 r68 v3/v4：描述 Columbia 帽装、rootco 的句子被当成停止，改了初判）
+    let direction = detail
+        .latest_review
+        .as_ref()
+        .and_then(|r| r.get("return_direction"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let stops = stop_words(&direction);
     let mut stopped: Vec<String> = Vec::new();
     for j in judgements.iter_mut() {
         let acc = by_key
@@ -1879,26 +1894,11 @@ pub async fn rework_in_place(
             && !calibrated.contains(&j.candidate_key)
             && stops.hits(&j.candidate_key, &acc)
         {
-            let before = j.tier;
             j.tier = Tier::NotRecommend;
             j.gaps
                 .retain(|g| g.level != csw_collector_core::types::GapLevel::Decision);
-            // 在原有留痕上追加，并记下原判：整体替换会丢口径留痕，也就恢复不回去（10-09 r67 v4）
-            let flags = with_prior_flags(
-                conn,
-                prev.id,
-                &j.candidate_key,
-                STOP_FLAG,
-                format!(
-                    "{STOP_FLAG}主编退回意见要求移出本期主备选（不是品牌永久排除；工作台原判 {before:?}）"
-                ),
-            );
+            // 决定层，不写回本地判断：动作留痕在 review_parse 的「实际移出主备选」
             stopped.push(j.candidate_key.clone());
-            if let Err(e) =
-                ledger::put_judgement(conn, prev.id, j, &flags, &cfg.model.model, RUBRIC_VERSION)
-            {
-                tracing::warn!(候选 = %j.candidate_key, 原因 = %format!("{e:#}"), "移出主备选没落库");
-            }
             tracing::info!(候选 = %j.candidate_key, "返工：按退回意见移出主备选");
         }
     }
@@ -1931,13 +1931,19 @@ pub async fn rework_in_place(
         }),
     );
 
+    // 主编定过去向的（校准、停止）：后面的代码口径不再动它们
+    let decided: HashSet<String> = calibrated
+        .iter()
+        .cloned()
+        .chain(stopped.iter().cloned())
+        .collect();
     // 旧口径留下的「备选·待补证」（备选但挂着影响选题判断的缺口）：核心证据不足，一律待核
     //（主编验收：「核心证据不足落 pending_check 并同步统计」）
     for j in judgements
         .iter_mut()
         .filter(|j| j.tier == Tier::Alternate && j.has_decision_gap())
         // 主编校准过的锁死，定为备选就是备选
-        .filter(|j| !calibrated.contains(&j.candidate_key))
+        .filter(|j| !decided.contains(&j.candidate_key))
     {
         j.tier = Tier::PendingCheck;
         for g in j
@@ -1956,7 +1962,7 @@ pub async fn rework_in_place(
     }
 
     // 五·再：导出前的代码口径，对整轮判断都跑一遍（幂等）。改了的写回本地库并留痕
-    settle_before_export(conn, prev.id, &mut judgements, &calibrated);
+    settle_before_export(conn, prev.id, &mut judgements, &decided);
 
     // 五·补：合题综合（共同事实、各帖新增）跟着成员的原文与译文走。成员的正文或译文改过的
     // 重算一次综合，成员关系不动（10-01 r59：主编改了 C65 的译文，共同事实里的「棉」还在）
@@ -2031,6 +2037,14 @@ pub async fn rework_in_place(
         }
     }
     // 八、登记（上次登记过、这次不列的撤下）。窗口止点可能刚被补采改过，按库里的最新值
+    // 交付与发给引擎的逐帖判断：主编定过去向的取初判，其余就是当前的（含代码口径的修正）
+    let exported: Vec<Judgement> = judgements
+        .iter()
+        .map(|j| match initial.get(&j.candidate_key) {
+            Some(i) if decided.contains(&j.candidate_key) => i.clone(),
+            _ => j.clone(),
+        })
+        .collect();
     let prev_now = rounds::get(conn, prev.id)?.unwrap_or_else(|| prev.clone());
     if let Some(run_id) = prev.run_id {
         register_and_enqueue(
@@ -2042,6 +2056,7 @@ pub async fn rework_in_place(
             &mut sweeps,
             &by_key,
             &HashSet::new(),
+            Some(&exported),
         )?;
     }
     let mut counts = count_round(conn, prev.id, &prepared)?;
@@ -2049,7 +2064,7 @@ pub async fn rework_in_place(
     Ok((
         counts,
         Finished {
-            judgements,
+            judgements: exported,
             topics,
             sweeps,
             by_key,
@@ -2111,34 +2126,6 @@ fn apply_merges(
     done
 }
 
-/// 返工时按退回意见移出主备选的留痕开头。
-const STOP_FLAG: &str = "【返工移出】";
-
-/// 这条判断已有的留痕，去掉以 `prefix` 开头的旧的一条，再接上新的。
-fn with_prior_flags(
-    conn: &Connection,
-    round_id: i64,
-    key: &str,
-    prefix: &str,
-    new: String,
-) -> Vec<String> {
-    let prior: Vec<String> = conn
-        .query_row(
-            "SELECT check_flags_json FROM judgements WHERE round_id = ?1 AND candidate_key = ?2",
-            rusqlite::params![round_id, key],
-            |r| r.get::<_, String>(0),
-        )
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
-    let mut flags: Vec<String> = prior
-        .into_iter()
-        .filter(|f| !f.starts_with(prefix))
-        .collect();
-    flags.push(new);
-    flags
-}
-
 /// 返工解析留痕的 audit 目标：一轮一版一条。
 pub fn review_parse_target(round_id: i64, version: i64) -> String {
     format!("round:{round_id}:v{version}")
@@ -2189,15 +2176,9 @@ fn record_review_parse(
     }
 }
 
-/// 主编校准在 check_flags 里的留痕开头。
-const CALIB_FLAG: &str = "【主编校准】";
-
 /// 套用主编校准：改档、待核补一条交主编的决定级缺口、单独成一个选题（登记的条目键就是它自己），
 /// 留痕写明来源。返回套用了的条目键。
 fn apply_calibrations(
-    conn: &Connection,
-    round_id: i64,
-    cfg: &Config,
     calibrations: &[super::calibration::Calibration],
     judgements: &mut [Judgement],
     topics: &mut Vec<csw_collector_core::types::Topic>,
@@ -2208,7 +2189,6 @@ fn apply_calibrations(
         let Some(j) = judgements.iter_mut().find(|j| j.candidate_key == c.key) else {
             continue;
         };
-        let before = j.tier;
         j.tier = c.tier;
         if c.tier == Tier::PendingCheck {
             // 缺口、未答、成稿条件跟着待核走，写主编原话而不是泛泛的「主编待核」
@@ -2234,36 +2214,7 @@ fn apply_calibrations(
             j.readiness.material_complete = false;
             j.readiness.note = what;
         }
-        // 在原有留痕上合并、只换掉旧的那条校准：整体替换会丢口径和支持度留痕；
-        // 原判沿用第一次校准记下的，不然再套一次就成了「原判=上次校准的结果」（10-08 r66 v6）
-        let prior: Vec<String> = conn
-            .query_row(
-                "SELECT check_flags_json FROM judgements WHERE round_id = ?1 AND candidate_key = ?2",
-                rusqlite::params![round_id, c.key],
-                |r| r.get::<_, String>(0),
-            )
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
-        let original = prior
-            .iter()
-            .filter(|f| f.starts_with(CALIB_FLAG))
-            .find_map(|f| f.split("工作台原判 ").nth(1)?.split('，').next())
-            .map_or_else(|| format!("{before:?}"), str::to_string);
-        let mut flags: Vec<String> = prior
-            .into_iter()
-            .filter(|f| !f.starts_with(CALIB_FLAG))
-            .collect();
-        flags.push(format!(
-            "{CALIB_FLAG}{}（{}；工作台原判 {original}，不交模型重判）",
-            c.label(),
-            c.source
-        ));
-        if let Err(e) =
-            ledger::put_judgement(conn, round_id, j, &flags, &cfg.model.model, RUBRIC_VERSION)
-        {
-            tracing::warn!(候选 = %c.key, "主编校准没落库：{e:#}");
-        }
+        // 决定层，不写回本地判断：逐帖初判不改（10-10 r68 #1232），校准记在 review_parse 与卡面
         // 它本来就是某个选题的代表帖：整组跟着主编走，不拆（拆出去会让组里别的帖子换了归属，
         // 与引擎登记的条目键对不上——10-08 r66 v2：asimocrafts-e1a771 本包空、引擎仍挂 628da9）
         if let Some(t) = topics
@@ -3797,7 +3748,6 @@ mod tests {
                 since: crate::serve::calibration::SINCE_TRACE,
             },
         ];
-        let cfg = Config::default();
         ledger::put_judgement(
             &conn,
             r.id,
@@ -3807,24 +3757,18 @@ mod tests {
             "v",
         )
         .unwrap();
-        let done = apply_calibrations(&conn, r.id, &cfg, &cal, &mut js, &mut topics);
+        let done = apply_calibrations(&cal, &mut js, &mut topics);
         assert_eq!(done.len(), 2);
-        // 再返工一次又套同一条校准：口径留痕还在，原判仍是最初的推荐（10-08 r66 v6 记成了不推荐）
-        apply_calibrations(&conn, r.id, &cfg, &cal, &mut js, &mut topics);
-        let flags: Vec<String> = serde_json::from_str(
-            &conn
-                .query_row(
-                    "SELECT check_flags_json FROM judgements WHERE round_id=?1 AND candidate_key='drlv-cf21b4'",
-                    [r.id],
-                    |row| row.get::<_, String>(0),
-                )
-                .unwrap(),
-        )
-        .unwrap();
-        assert!(flags.contains(&"【口径】查重改否".to_string()), "{flags:?}");
-        let calib: Vec<_> = flags.iter().filter(|f| f.starts_with(CALIB_FLAG)).collect();
-        assert_eq!(calib.len(), 1, "{flags:?}");
-        assert!(calib[0].contains("工作台原判 Recommend"), "{flags:?}");
+        // 决定层不写回本地判断：库里仍是初判、留痕不变（10-10 r68：冻结原逐帖初判）
+        let (tier, flags): (String, String) = conn
+            .query_row(
+                "SELECT tier, check_flags_json FROM judgements WHERE round_id=?1 AND candidate_key='drlv-cf21b4'",
+                [r.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tier, "recommend");
+        assert_eq!(flags, r#"["【口径】查重改否"]"#);
         assert_eq!(js[0].tier, Tier::Recommend, "主编说继续，模型的不推荐不算");
         assert_eq!(js[2].tier, Tier::PendingCheck);
         assert!(js[2].has_decision_gap(), "待核要有交主编的决定级缺口");

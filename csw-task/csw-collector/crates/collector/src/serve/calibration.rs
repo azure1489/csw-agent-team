@@ -199,6 +199,67 @@ pub fn parse_review_notes(text: &str) -> Vec<(String, Tier, String)> {
             out.push((key.to_string(), t, note_of(after)));
         }
     }
+    // 三、分节标题给去向：「继续评估四条（…）：」下面逐行列条目键（10-10 r68 #1232：四继续、一待核、三停止，
+    // 键后面不跟去向词，前两种认法一条都没认出来）。分节的去向优先于句子里顺带的说法
+    for (k, t, note) in parse_sections(text) {
+        out.retain(|(x, _, _)| *x != k);
+        out.push((k, t, note));
+    }
+    out
+}
+
+/// 分节标题给去向的写法。标题行以去向词开头、带「N 条」；其下以「1 」「1.」「- 」开头的行是这一节的条目，
+/// 取每行第一个冒号前的条目键（「columbiajp-17b93c及关联columbiajp-c42bed：」两个都算）；
+/// 标题行冒号后直接写了条目键的（「隔离一条：beamsofficial-6129aa CLASS。」）也算。遇到非列表行这一节就结束。
+fn parse_sections(text: &str) -> Vec<(String, Tier, String)> {
+    static HEAD: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"^\s*(?:[#>*]+\s*)?(保留继续评估|继续评估|继续|隔离待核|隔离|待核|本期不纳入|不纳入|停止)[^\n：:]{0,12}?[一二三四五六七八九十两\d]+\s*条",
+        )
+        .expect("正则")
+    });
+    static LIST: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^\s*(?:\d{1,2}(?:[\s\.、．)）]+)|[-•·*]\s*)").expect("正则"));
+    let tier_of_head = |w: &str| match w {
+        "隔离待核" | "隔离" | "待核" => Tier::PendingCheck,
+        "本期不纳入" | "不纳入" | "停止" => Tier::NotRecommend,
+        _ => Tier::Recommend,
+    };
+    let keys_before_colon = |line: &str| -> Vec<String> {
+        let head = line.split(['：', ':']).next().unwrap_or(line);
+        KEY.find_iter(head)
+            .filter(|m| !is_reference(&head[..m.start()]))
+            .map(|m| m.as_str().to_string())
+            .collect()
+    };
+    let mut out: Vec<(String, Tier, String)> = Vec::new();
+    let mut current: Option<(Tier, String)> = None;
+    for line in text.lines() {
+        if let Some(c) = HEAD.captures(line) {
+            let tier = tier_of_head(&c[1]);
+            let head = line.trim().chars().take(30).collect::<String>();
+            // 标题行冒号后直接写的条目键，到句号为止
+            if let Some((_, rest)) = line.split_once(['：', ':']) {
+                let rest = rest.split('。').next().unwrap_or(rest);
+                for m in KEY.find_iter(rest) {
+                    out.push((m.as_str().to_string(), tier, head.clone()));
+                }
+            }
+            current = Some((tier, head));
+            continue;
+        }
+        let Some((tier, head)) = current.as_ref() else {
+            continue;
+        };
+        if !LIST.is_match(line) {
+            current = None;
+            continue;
+        }
+        for k in keys_before_colon(line) {
+            let note = line.trim().chars().take(160).collect::<String>();
+            out.push((k, *tier, format!("{head}｜{note}")));
+        }
+    }
     out
 }
 
@@ -253,7 +314,13 @@ pub fn pin_order(calib: &[Calibration], replace: bool) -> Vec<String> {
 /// 退回意见是不是要从池里另选条目补首批（停止的条目让出卡位）。
 pub fn asks_replacement(review: &str) -> bool {
     static R: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"另选|另挑|补首批|补足首批|替换|换下|换上").expect("正则"));
+        // 「三停止不占推荐位」「从已取现池补替代卡」（10-10 r68 #1232）
+        LazyLock::new(|| {
+            Regex::new(
+                r"另选|另挑|补首批|补足首批|替换|换下|换上|补替代|停止不占(?:推荐|首批)?(?:卡|位)",
+            )
+            .expect("正则")
+        });
     R.is_match(review)
 }
 
@@ -685,6 +752,42 @@ mod tests {
         assert!(note.contains("r62写成"), "{note}");
         // 否定语境不认
         assert!(parse_review_notes("1. abc-123456：不继续评估，另议").is_empty());
+    }
+
+    #[test]
+    fn 分节标题给的去向按节认() {
+        // 10-10 r68 #1232 退回原文节选
+        let t = "继续评估四条（非成熟、非批准）：\n\
+1 37camp-0aa00e：箱体承载水槽有阅读价值；保留第1张，当前联系图第2/3张分别是其他箱体/炉架，移出水槽代表预览但原文件归档不删。\n\
+2 anobaofficial-610dfe：保留小门/收纳/4.2kg取舍；第3张确有小门与旋钮。\n\
+3 circlesjp-6df8d2：保留三餐作为自选路线后共同会合的组织线索。\n\
+4 cmfoutdoorgarmentofficial-997254：刺绣表面与双面外观可以继续。\n\
+隔离一条：beamsofficial-6129aa CLASS。绳线造型有具体文化参照，但核心是2021档案延续。\n\
+本期不纳入三条，不换题回流：\n\
+- campshoplantern-5cdbe3 B&C：原文明确春季已发布、店铺初到货。\n\
+- columbiajp-17b93c及关联columbiajp-c42bed：六型10-02官方已公布。\n\
+- coteetciel-c79916：当前“无重复”失实。task796 recent_rejected已有2026-10-06 coteetciel-015d5a真人否决。\n\
+定点输出：在原第139轮修当前卡面。\n\
+补卡方向只用已取得现池：优先看fieldstyleofficial-822e20 DICE、nakatomibase-9da8d4 GREBE桶挂副桌。";
+        let mut got: Vec<(String, Tier)> = parse_review(t);
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        let want = [
+            ("37camp-0aa00e", Tier::Recommend),
+            ("anobaofficial-610dfe", Tier::Recommend),
+            ("beamsofficial-6129aa", Tier::PendingCheck),
+            ("campshoplantern-5cdbe3", Tier::NotRecommend),
+            ("circlesjp-6df8d2", Tier::Recommend),
+            ("cmfoutdoorgarmentofficial-997254", Tier::Recommend),
+            ("columbiajp-17b93c", Tier::NotRecommend),
+            ("columbiajp-c42bed", Tier::NotRecommend),
+            ("coteetciel-c79916", Tier::NotRecommend),
+        ];
+        assert_eq!(
+            got,
+            want.iter()
+                .map(|(k, t)| (k.to_string(), *t))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
