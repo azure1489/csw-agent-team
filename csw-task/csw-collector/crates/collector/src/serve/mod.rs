@@ -881,7 +881,15 @@ async fn start_round(
     // 主编最新的指示（派工单，或比派工更新的退回意见）写了【工作台不接】：让开，不做、不报失败。
     // 01 / 05 / 11 都认（10-08 r65 #751 是 05）
     if designated::hands_off(&detail) {
-        tracing::info!(任务 = t.task.id, 阶段 = %t.task.stage_code, "主编最新指示写明工作台不接：不做，等人工交付");
+        tracing::info!(任务 = t.task.id, 阶段 = %t.task.stage_code, "主编最新指示写明工作台不接或停止自动返工：不做，等人工或维护");
+        return Ok(());
+    }
+    if rework && designated::rework_cap_hit(&detail, jiff::Timestamp::now()) {
+        tracing::warn!(
+            任务 = t.task.id,
+            上限 = designated::REWORK_CAP,
+            "一小时内已被退回到上限：不再自动返工，等主编恢复备忘或维护"
+        );
         return Ok(());
     }
     // 主编重开 01 要求重新采集（10-07 r64：Van 全部退回，主编要滚动 24 小时重采）：开新轮次按新窗口采，

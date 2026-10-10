@@ -11,6 +11,7 @@
 //! 不做的事：不给档位、不跑六维判断——资格核查由主编做（派工单原话「不重复再做全池价值筛选」）。
 
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
 use anyhow::{Context, Result};
 use csw_collector_core::Config;
@@ -19,6 +20,7 @@ use csw_collector_deliver::pack::{self, Entry};
 use csw_collector_engineapi::client::EngineClient;
 use csw_collector_engineapi::types::{DeliverableKind, MyTask, SubmitInput, TaskDetail};
 use csw_collector_harvest::hires::HiresResult;
+use regex::Regex;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 
@@ -73,7 +75,87 @@ pub fn wants_recollect(note: &str) -> bool {
 
 /// 文本叫工作台让开（主编要人工直传）。
 pub fn hands_off_note(note: &str) -> bool {
-    affirms(note, MARK_HANDS_OFF)
+    affirms(note, MARK_HANDS_OFF) || stop_requested(note)
+}
+
+/// 主编用文字（没写标记）要工作台停下自动返工：「停止同一自动返工升版路径」「转维护定位」
+/// 「禁止下一版自动提交」「不开启第四轮普通返工」「仅收维护实际执行证据」。
+///
+/// 10-10 r68 #796：v2 起主编连写三次停止，工作台只认【工作台不接】，25 分钟里又交了四版。
+/// 写了「覆盖 / 解除 / 撤销 …暂停 / 停止」的是恢复指示（r66 反馈 #56、r67 反馈 #66），不算停。
+pub fn stop_requested(text: &str) -> bool {
+    static STOP: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+        [
+            r"停止[^。；;\n]{0,16}?自动(?:返工|提交|升版)",
+            r"暂停[^。；;\n]{0,16}?自动(?:返工|提交|升版)",
+            r"禁止[^。；;\n]{0,12}?自动(?:返工|提交|升版)",
+            r"转(?:工作台)?维护",
+            r"仅收维护[^。；;\n]{0,8}?证据",
+            r"不运行旧返工入口",
+            r"维持[^。；;\n]{0,12}?停止(?:决定|要求)",
+        ]
+        .iter()
+        .map(|r| Regex::new(r).expect("正则"))
+        .collect()
+    });
+    // 本身就是否定式的停止说法，不再做否定判断
+    static STOP_NEG: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"不[^。；;\n]{0,8}?开启第?[^。；;\n]{0,4}?轮?普通返工").expect("正则")
+    });
+    static RESUME: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?:覆盖|解除|撤销|取消)[^。；;\n]{0,24}?(?:停止|暂停)").expect("正则")
+    });
+    if RESUME.is_match(text) {
+        return false;
+    }
+    STOP_NEG.is_match(text)
+        || STOP.iter().any(|re| {
+            re.find_iter(text).any(|m| {
+                let before: String = text[..m.start()]
+                    .chars()
+                    .rev()
+                    .take(4)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                !["不", "无需", "勿", "别", "非"]
+                    .iter()
+                    .any(|n| before.ends_with(n))
+            })
+        })
+}
+
+/// 自动返工的硬上限：最近一次派工 / 主编备忘之后，一小时内已被退回 [`REWORK_CAP`] 次，就不再自动返工，
+/// 等主编或维护方。文字没认出停止，也不能无限循环升版（10-10 r68 #796：25 分钟 6 版）。
+/// 主编再发一条恢复备忘或重新派工，就从头算。
+pub const REWORK_CAP: usize = 3;
+
+pub fn rework_cap_hit(detail: &TaskDetail, now: jiff::Timestamp) -> bool {
+    let task_ref = format!("task:{}", detail.task.id);
+    let at = |v: &serde_json::Value| -> Option<jiff::Timestamp> {
+        v.get("created_at")?.as_str()?.parse().ok()
+    };
+    // 最近一次「放行」：派工或本任务的主编备忘
+    let mut since = detail.dispatch.as_ref().and_then(at);
+    for f in &detail.feedback {
+        if f.get("object_ref").and_then(|v| v.as_str()) == Some(task_ref.as_str())
+            && let Some(t) = at(f)
+            && since.is_none_or(|s| t > s)
+        {
+            since = Some(t);
+        }
+    }
+    let hour_ago = now - jiff::SignedDuration::from_hours(1);
+    let n = detail
+        .deliverables
+        .iter()
+        .filter_map(|d| d.get("latest_review"))
+        .filter(|r| r.get("verdict").and_then(|v| v.as_str()) == Some("reject"))
+        .filter_map(at)
+        .filter(|t| *t >= hour_ago && since.is_none_or(|s| *t > s))
+        .count();
+    n >= REWORK_CAP
 }
 
 /// 主编**最新的**指示里有没有【工作台不接】。指示有三处：派工单、各版的退回意见、与本任务相关的主编备忘；
@@ -676,6 +758,65 @@ mod tests {
         ));
         assert!(!is_designation(
             "卡5 对照 https://www.instagram.com/p/AAAAA1/ 的写法"
+        ));
+    }
+
+    #[test]
+    fn 文字写明停止自动返工也让开_恢复指示不算() {
+        // 10-10 r68 反馈原文
+        assert!(stop_requested(
+            "r68 #796 v2/#1233未落实#1232校准，停止同一自动返工升版路径；转维护定位意见执行/呈现导出和对照元数据变化"
+        ));
+        assert!(stop_requested(
+            "只收维护实际执行证据，主编核证明确恢复前禁止下一版自动提交，不运行旧返工入口。"
+        ));
+        assert!(stop_requested(
+            "维持反馈82/83的停止决定；不因再次到件开启第五轮普通返工"
+        ));
+        assert!(stop_requested(
+            "v3/#1234不通过；维持反馈82停止同一自动返工路径，不开启第四轮普通返工。"
+        ));
+        // 恢复类原文（r66 #56、r67 #66、#69）
+        assert!(!stop_requested(
+            "主编同意恢复r66 #752工作台原轮次定点校准，以本最新指示覆盖feedback55暂停及旧隔离要求。"
+        ));
+        assert!(!stop_requested(
+            "10:13维护修复后本最新恢复指示覆盖1141及feedback63/64旧暂停；引擎returned不可重开，不需要重派。"
+        ));
+        assert!(!stop_requested(
+            "主编恢复r67原#763：沿原returned/v5任务、第126轮按维护12:05修复定点整理并交v6，不走人工打包"
+        ));
+        // 否定的不算
+        assert!(!stop_requested("此次不转维护，工作台照常返工"));
+    }
+
+    #[test]
+    fn 一小时内退回到上限就不再自动返工_恢复备忘重新计数() {
+        let mk = |fb: serde_json::Value| -> TaskDetail {
+            serde_json::from_value(serde_json::json!({
+                "task": {"id": 796, "run_id": 68, "stage_code": "intake", "dispatched_at": "x", "cur_version": 4, "status": "returned"},
+                "editor_note": "",
+                "dispatch": {"id": 1, "created_at": "2026-10-09T22:00:03Z"},
+                "deliverables": [
+                    {"id": 1232, "version": 1, "latest_review": {"verdict": "reject", "created_at": "2026-10-09T22:56:55Z"}},
+                    {"id": 1233, "version": 2, "latest_review": {"verdict": "reject", "created_at": "2026-10-09T23:00:23Z"}},
+                    {"id": 1234, "version": 3, "latest_review": {"verdict": "reject", "created_at": "2026-10-09T23:03:16Z"}}
+                ],
+                "feedback": fb
+            }))
+            .unwrap()
+        };
+        let now: jiff::Timestamp = "2026-10-09T23:04:00Z".parse().unwrap();
+        assert!(rework_cap_hit(&mk(serde_json::json!([])), now));
+        // 过了一小时就不算
+        let later: jiff::Timestamp = "2026-10-10T00:10:00Z".parse().unwrap();
+        assert!(!rework_cap_hit(&mk(serde_json::json!([])), later));
+        // 主编在第三次退回后录了恢复备忘：从头算
+        assert!(!rework_cap_hit(
+            &mk(
+                serde_json::json!([{"id": 90, "object_ref": "task:796", "quote": "恢复", "created_at": "2026-10-09T23:03:50Z"}])
+            ),
+            now
         ));
     }
 
