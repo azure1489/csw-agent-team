@@ -242,6 +242,10 @@ pub struct Features {
     pub mcp_for_hermes: bool,
     /// 深核白名单里加 fetch_page / xhs_search
     pub deepcheck_web_tools: bool,
+    /// 01 返工时从主编退回意见里解析**内容指示**（改档校准、停止、并入、代表图、旁注、点名重判）。
+    /// 默认关：2026-10-10 起 01 主编只核格式与材料，内容意见随通过意见交 02 / 03
+    ///（docs/情报收集员_01审核分工_20261010.md），01 返工只补材料、重新导出、不改判断。
+    pub rework_content_directives: bool,
     /// **逐张**算图片向量。默认关。
     ///
     /// 一期 1871 张图对 358 条候选，逐图算占掉向量化 GPU 时间的八成五，
@@ -448,6 +452,7 @@ impl Default for Config {
                 custom_collectors: false,
                 mcp_for_hermes: false,
                 deepcheck_web_tools: false,
+                rework_content_directives: false,
                 send_van_quotes_to_model: false,
                 send_draft_rules_to_model: true,
             },

@@ -1755,12 +1755,19 @@ pub async fn rework_in_place(
         .collect();
     // 三、挑要改的：退回意见点名的条目优先，再补推荐 / 备选选题的代表帖
     // 二·校准：主编定过去向的条目直接采用，不交给模型重判（09-30 r58：连退十几版的根因）
+    // 01 只核格式（2026-10-10）：默认不套任何内容指示——不改档、不停止、不并入、不重判
+    let content = cfg.features.rework_content_directives;
+    let calibrations: &[super::calibration::Calibration] = if content { calibrations } else { &[] };
     let calibrated: HashSet<String> =
         apply_calibrations(calibrations, &mut judgements, &mut topics);
     // 二·并入：主编要某条并进另一个事件的，挪进那个选题当成员；逐帖判断与图片不动，
     // 也不交模型重判——这是结构指示，不是重判要求（10-09 r67 v4：53e957 被点名重判，六维全变）
     let known: Vec<String> = judgements.iter().map(|j| j.candidate_key.clone()).collect();
-    let merges = super::calibration::merges_from_reviews(detail, &known);
+    let merges = if content {
+        super::calibration::merges_from_reviews(detail, &known)
+    } else {
+        Vec::new()
+    };
     let merged = apply_merges(&mut topics, &merges);
     for (s, t) in &merged {
         tracing::info!(条目 = %s, 并入 = %t, "返工：按退回意见并入另一个事件");
@@ -1839,7 +1846,7 @@ pub async fn rework_in_place(
     focus.truncate(REWORK_FOCUS_MAX.max(must));
     // 主编写明不重判的，点名条目也不交模型：只做代码口径与导出修复（10-01 r59 v7–v9：
     // 「不再自动重判/深核/升版」，e1cd9d 每版重判都在待核与推荐之间跳、缺口文字跟着变）
-    let rejudge_forbidden = forbids_rejudge(&review_raw);
+    let rejudge_forbidden = forbids_rejudge(&review_raw) || !content;
     if rejudge_forbidden && !focus.is_empty() {
         tracing::info!(
             条数 = focus.len(),
@@ -1882,7 +1889,11 @@ pub async fn rework_in_place(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_lowercase();
-    let stops = stop_words(&direction);
+    let stops = if content {
+        stop_words(&direction)
+    } else {
+        Stops::default()
+    };
     let mut stopped: Vec<String> = Vec::new();
     for j in judgements.iter_mut() {
         let acc = by_key
@@ -1920,11 +1931,12 @@ pub async fn rework_in_place(
             "实际移出主备选": stopped,
             "实际定点重判": focus,
             "意见写明不重判": rejudge_forbidden,
-            "旁注": super::calibration::side_notes_from_reviews(detail, &known)
+            "内容指示": if content { "按配置解析并执行" } else { "已关闭：01 只核格式，返工只补材料、重新导出，不改判断（2026-10-10 分工）" },
+            "旁注": (if content { super::calibration::side_notes_from_reviews(detail, &known) } else { Vec::new() })
                 .into_iter()
                 .map(|(k, t, src)| serde_json::json!({"条目键": k, "原话": t, "来源": src}))
                 .collect::<Vec<_>>(),
-            "代表图": super::calibration::preview_picks_from_reviews(detail, &known)
+            "代表图": (if content { super::calibration::preview_picks_from_reviews(detail, &known) } else { Vec::new() })
                 .into_iter()
                 .map(|(k, ns)| (k, serde_json::json!(ns)))
                 .collect::<serde_json::Map<_, _>>(),

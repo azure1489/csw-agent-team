@@ -1100,8 +1100,14 @@ async fn start_round(
             Some(v)
         })
         .unwrap_or_default();
-    let mut calib = calibration::from_reviews_with_keys(&detail, &known);
-    if in_place {
+    // 01 只核格式（2026-10-10）：默认不从意见里解析内容指示，返工只补材料、重新导出
+    let content = cfg.features.rework_content_directives;
+    let mut calib = if content {
+        calibration::from_reviews_with_keys(&detail, &known)
+    } else {
+        Vec::new()
+    };
+    if in_place && content {
         match engine.intake_trace(t.task.run_id).await {
             Ok(tr) => calibration::from_traces(&tr, "editor", &mut calib),
             Err(e) => tracing::warn!("读引擎条目流转失败，只按退回意见校准：{e:#}"),
@@ -1247,7 +1253,10 @@ async fn start_round(
                 })
                 .unwrap_or_default();
             // 有主编校准就按校准的条目排卡（主编「八键不换」）；没有才按点名找
-            let pinned: Vec<String> = if calib.is_empty() {
+            let pinned: Vec<String> = if !cfg.features.rework_content_directives {
+                // 01 只核格式：首批卡按工作台初判挑，不按意见里点到的条目重排
+                Vec::new()
+            } else if calib.is_empty() {
                 round::named_in_review(&review_text, &judgements, &fin.by_key)
             } else {
                 // 要不要另选补首批：哪一版意见说过都算（r68 写在 v1，之后几版只说故障）
@@ -1340,14 +1349,24 @@ async fn start_round(
                 // 主编重开再派工，工作台就接着在原轮次上返工
                 // 逐条说清哪几句意见没落地：只说「内容相同」，主编只能一遍遍重开（10-01 r59 连失败 5 次）
                 let left = unhandled_review_lines(&review_text, &judgements);
-                let why = format!(
-                    "按 v{v} 的退回意见在原轮次返工后，交付内容与已交的 v{v} 完全相同，没有重交。\
+                let why = if !cfg.features.rework_content_directives {
+                    format!(
+                        "按 01 只核格式与材料的分工（2026-10-10），工作台返工只补材料、重新导出：补采窗口缺的一段、\
+                         收回来源没给媒体的图文帖、重新登记与对账、按库里最新原文与译文重新导出。这次没有需要补的材料，\
+                         交付内容与已交的 v{v} 相同，没有重交。对内容的意见（档位、停止、同一件事、代表图、译名）请写在通过意见里，\
+                         引擎随 02 派工单交研究员采用；若是格式或材料问题，请写明五项清单的第几项与具体文件或条目",
+                        v = t.task.cur_version
+                    )
+                } else {
+                    format!(
+                        "按 v{v} 的退回意见在原轮次返工后，交付内容与已交的 v{v} 完全相同，没有重交。\
                      工作台返工能自动做的只有：按「条目键=待核/备选/停止/继续」改档、点名条目定点重判、\
                      补采窗口缺的一段、收回来源没给媒体的图文帖、成员正文或译文改过的选题重算综合、\
                      按库里最新原文与译文重新导出。{left}\
                      请改成「条目键=去向」写法，或交维护方处理；本地轮次保留，重开派工后接着返工，不重新采集",
-                    v = t.task.cur_version
-                );
+                        v = t.task.cur_version
+                    )
+                };
                 let idem = format!(
                     "fail-{}-v{}-unchanged-{}",
                     t.task.id,
