@@ -16,11 +16,10 @@ csw-task skill（同一份，见 ../SKILL.md，只读分发）
 
 ## 各角色安装清单
 
-| bootstrap | role_code | 群 bot | 阶段（daily_news v3） | 除公共底座外的工具 skill |
+| bootstrap | role_code | 群 bot | 阶段（daily_news v11） | 除公共底座外的工具 skill |
 |---|---|---|---|---|
-| `editor.md` | editor | 主编 | 03 选题方案、07 内容整合稿（合流）+ 各主编闸 + 代录 Van（03 / 08 / 12） | `csw-workflow`（可选：按 Van 意愿改流程定义，激活须人在终端确认；需后台 operator 账号） |
-| `collector.md` | collector | 情报收集员 | 01 情报逐条、05 配图与素材核、11 小红书选图包 | 营事编集室 csw MCP · opencli（xiaohongshu）· WebFetch |
-| `researcher.md` | researcher | 选题研究员 | 02 价值初筛 | —（发布记录接口上线后查近发） |
+| `editor.md` | editor | 主编 | 07 内容整合稿（合流）+ 各主编闸（含 01 格式核对）+ 代录 Van（01 / 08 / 12） | `csw-workflow`（可选：按 Van 意愿改流程定义，激活须人在终端确认；需后台 operator 账号） |
+| `collector.md` | collector | 情报收集员 | 01 情报逐条（含条目状态与给 Van 的选题单）、05 配图与素材核、11 小红书选图包 | 营事编集室 csw MCP · opencli（xiaohongshu）· WebFetch |
 | `writer.md` | writer | 深度内容创作者 | 04 公众号写作 | — |
 | `xhswriter.md` | xhswriter | 小红书图文作者 | 10 小红书改编 | — |
 | `designer.md` | designer | 视觉设计师 | 06 版式与模板准备 | generate-images（仅指定生成时） |

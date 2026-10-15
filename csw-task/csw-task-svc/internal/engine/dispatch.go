@@ -72,8 +72,8 @@ func (e *Engine) dispatchInternal(ctx context.Context, q *sqlite.Queries, task d
 	if editorNote == "" && task.ItemKey != "" {
 		editorNote = itemNote(ctx, q, task) // 逐条任务自动派工：派工意见写明条目与 Van 决定
 	}
-	// 上游各阶段主编通过时写的意见随派工单带下来：01 只审格式，主编对内容的意见写在通过意见里，
-	// 由 02 / 03 采用（2026-10-10 分工调整）。此前派工单只带上游链接，研究员读不到这些意见
+	// 上游各阶段主编通过时写的意见随派工单带下来：01 只审格式，主编对内容的意见写在通过意见里
+	// （2026-10-10 分工调整）。v10 由 02 / 03 采用；v11 起 Van 在 01 选题，06 等非逐条下游仍会带上
 	if task.ItemKey == "" {
 		if op := upstreamOpinions(ctx, q, task); op != "" {
 			editorNote = strings.TrimSpace(editorNote + "\n\n" + op)

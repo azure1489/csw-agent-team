@@ -54,6 +54,10 @@ func recordReviewFeedback(ctx context.Context, q *sqlite.Queries, run domain.Run
 // TaskFeedback 与任务相关的有效编辑反馈（按阶段、条目品牌匹配，至多 limit 条），任务详情随附。
 func TaskFeedback(ctx context.Context, q *sqlite.Queries, task domain.Task, limit int) ([]domain.FeedbackRecord, error) {
 	tags := []string{"stage:" + task.StageCode}
+	if task.StageCode == "intake" {
+		// daily_news v11 起 Van 在 01 选题；此前的选题原话打在 02 / 03 上，01 也要读得到
+		tags = append(tags, "stage:shortlist", "stage:topic")
+	}
 	if task.ItemKey != "" {
 		tags = append(tags, "item:"+task.ItemKey)
 		if it, err := q.GetItem(ctx, task.RunID, task.ItemKey); err == nil && it.Brand != "" {

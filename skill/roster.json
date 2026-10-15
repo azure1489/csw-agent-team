@@ -12,11 +12,6 @@
       "name": "情报收集员",
       "bot": "情报收集员"
     },
-    "researcher": {
-      "open_id": "ou_7fa42bf3cea7895a2aaffcdc78eaf321",
-      "name": "选题研究员",
-      "bot": "选题研究员"
-    },
     "writer": {
       "open_id": "ou_ba8367b7663d78f03fcc4caf687ce565",
       "name": "文案",

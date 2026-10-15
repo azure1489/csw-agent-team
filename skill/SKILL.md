@@ -1,7 +1,7 @@
 ---
 name: csw-task
-version: 3.11.0
-description: 营事编集室「任务流转服务」客户端 + 编辑部协作协议（v3：十三阶段、引擎单写群播报）。当 agent 需要在工作流里干活时使用：被群消息 @ 唤醒后查任务、接单、下载上游、干活并一步提交产出或补件；（主编）触发实例、派工、审核、定点编辑、录入授权、代录 Van 决定、取消与重开。封装运行面 HTTP API（bearer 鉴权 / 幂等 / 一步式上传提交），agent 不自己拼 HTTP。触发词：触发流程、开批次、我的任务、接单、提交产出、补件、派工、审核、退回、定点编辑、授权、任务进度、编辑部群、CSW 任务流转。
+version: 3.12.0
+description: 营事编集室「任务流转服务」客户端 + 编辑部协作协议（v3：daily_news v11 十一阶段、引擎单写群播报）。当 agent 需要在工作流里干活时使用：被群消息 @ 唤醒后查任务、接单、下载上游、干活并一步提交产出或补件；（主编）触发实例、派工、审核、定点编辑、录入授权、代录 Van 决定、取消与重开。封装运行面 HTTP API（bearer 鉴权 / 幂等 / 一步式上传提交），agent 不自己拼 HTTP。触发词：触发流程、开批次、我的任务、接单、提交产出、补件、派工、审核、退回、定点编辑、授权、任务进度、编辑部群、CSW 任务流转。
 ---
 
 # csw-task · 任务流转服务客户端 + 编辑部协作协议（v3）
@@ -50,7 +50,7 @@ description: 营事编集室「任务流转服务」客户端 + 编辑部协作�
 | run / timeline / progress | 各 agent | `GET /api/v1/runs/{id}` · `…/timeline` · `…/progress`（每个任务的真实卡点与下一步、条目与缺口） |
 | items | 参与角色 / 主编 | `GET /api/v1/runs/{id}/items` · `PUT /api/v1/runs/{id}/items` `{items:[{item_key,title,brand?,product?,source_url?,published_at?,status?,rank?,discovered_via?,fetched_at?,evidence_url?,dedup_note?,reason_code?,reason?}]}`（登记只能写 candidate 线索 / pending_check 待核 / shortlisted 成熟 / dropped 淘汰；成熟可带 rank=primary 主选 \| alt 备选；淘汰必须带 reason_code 与 reason） |
 | sweeps | 参与角色 / 主编 | `PUT /api/v1/runs/{id}/sweeps` `{sweeps:[{sweep_key,platform,source_key?,tool?,query?,started_at?,ended_at?,window_from?,window_to?,found,fetched_unique,reviewed,corroborated,unreviewed,in_window,registered,result,error?,paged_to_end?}]}`（上报采集轮；按 sweep_key 幂等，同键重报即更新；result=failed 必须写 error；单次最多 200 条。**found 是接口返回数，不是审阅量**：拿到多少条记 found / fetched_unique，真正读过正文或看过图的记 reviewed，只加载未展开的记 unreviewed——未审的如实记为未审，不得事后补成 dropped。**为核实线索去读的官方页、原始出处记 corroborated**（它们算已审但不作为候选登记，判据用「已审 − 佐证」与登记数对账）。每条条目必须填 published_at，拿不到确切日期的标 pending_check 并写明缺日期，不要留空） |
-| intake-trace | 参与角色 / 主编 | `GET /api/v1/runs/{id}/intake-trace`（采集轮 + 条目溯源 + 判断轨迹 + 来源覆盖；02 / 03 据此判断采集是否合理，不必解压交付物） |
+| intake-trace | 参与角色 / 主编 | `GET /api/v1/runs/{id}/intake-trace`（采集轮 + 条目溯源 + 判断轨迹 + 来源覆盖；主编与 Van 选题时据此判断采集是否合理，不必解压交付物） |
 | decide | 主编 | `POST /api/v1/runs/{id}/items/{item_key}/decision` `{decision, source_quote}`（approve_write / approve_research / defer / reject） |
 | close | 主编 | `POST /api/v1/runs/{id}/close` `{reason}`（接受整期缺口结束 run；要求全部任务终态且**至少一个通过**） |
 | abort | 主编 | `POST /api/v1/runs/{id}/abort` `{reason}`（作废 run：全部任务终态但**一个都没通过**时的收尾路径，状态落 `aborted` 而非 `done`，不计入完成统计） |
@@ -95,7 +95,7 @@ curl -fsS -X POST "$BASE/api/v1/tasks/$TASK_ID/deliverables" -H "Authorization: 
 
 - **定点编辑 `kind=edit`**：仅主编，见 §4.5。
 
-## 3. 执行者循环（情报收集员 / 选题研究员 / 文案 / 小红书图文作者 / 设计师 / 发布员）
+## 3. 执行者循环（情报收集员 / 文案 / 小红书图文作者 / 设计师 / 发布员）
 
 **铁律：群消息只是提示，引擎才是真相。没有引擎任务不开工。**
 
@@ -107,11 +107,11 @@ curl -fsS -X POST "$BASE/api/v1/tasks/$TASK_ID/deliverables" -H "Authorization: 
 6. **被退回**：`task <id>` 该版本的 `latest_review` 读方向 / 位置 / 意见 → 改 → 重交（版本自动 +1，从第一道闸重走）。
 7. **做不了就报失败**：`fail` 写清原因（来源全部失效 / 缺必要权限 / 版本过低…），不要沉默等待；主编会重开或取消。**中枢侧（主编）收到失败或退回后，须在同一轮里接出下一步**——重开 / 重派具体任务，或明确宣布本期停止；只发状态播报就结束这一轮会让整期静默停摆（引擎事件驱动，没有新事件就不会再唤醒你）。平台写阶段返回 `authorization_required` = 本期没有这项授权——停手报主编，不找别的办法进后台。
 
-**登记条目（情报收集员 / 选题研究员）**：每条情报在引擎登记为一个条目——`PUT /runs/{id}/items`，条目键 = 品牌英文或拼音小写 + 短横 + 原文链接 sha256 前 6 位（如 `hxo-3fa91c`），生成后不再改；研究员把采用与备选的条目标 `shortlisted`。批准、暂缓、否决只由主编按 Van 原话决定。
+**登记条目（情报收集员）**：每条情报在引擎登记为一个条目——`PUT /runs/{id}/items`，条目键 = 品牌英文或拼音小写 + 短横 + 原文链接 sha256 前 6 位（如 `hxo-3fa91c`），生成后不再改；v11 起条目状态由 01 落定：推荐 / 备选标 `shortlisted` 并写 `rank`（`primary` / `alt`），不推荐标 `dropped`，待核标 `pending_check`。批准、暂缓、否决只由主编按 Van 原话决定。
 
 **Instagram 查 csw MCP（情报收集员）**：时间窗是唯一入口——直接 `csw_posts_search` 用 `start`/`end`/`order=latest`/`limit` 按当期窗口取全量贴文并翻页取完。不要按 `account` 逐个搜、不要凭记忆猜账号名（猜出来的「零结果」只说明账号不在后台，不说明该品牌没发，不得记为已扫来源）。账号信息是贴文的附属：拿到贴文后需要了解来源背景时，才用 `csw_accounts_list` 查对应账号。
 
-**留采集与判断的痕迹（情报收集员 / 选题研究员）**：提交交付物前用 `PUT /runs/{id}/sweeps` 把本次全部采集轮一次报上去（每扫一个来源一条，含找到几条、窗口内几条、登记几条、成败与失败原因）——没有这条记录，主编无法区分「没找到」与「没去找」。每条条目写 `discovered_via`（对应的 sweep_key）、`fetched_at`、`evidence_url`、`dedup_note`。**判断过就不要留在 candidate**：确定不做的标 `dropped` 并给 `reason_code` 与一句理由（`no_value` / `not_new` / `dup_published` / `dup_recent_rejected` / `out_of_window` / `evidence_missing` / `aesthetic_mismatch` / `superseded` / `other`），引擎会自动落一条判断轨迹；反复上报同样内容不会重复记录。
+**留采集与判断的痕迹（情报收集员）**：提交交付物前用 `PUT /runs/{id}/sweeps` 把本次全部采集轮一次报上去（每扫一个来源一条，含找到几条、窗口内几条、登记几条、成败与失败原因）——没有这条记录，主编无法区分「没找到」与「没去找」。每条条目写 `discovered_via`（对应的 sweep_key）、`fetched_at`、`evidence_url`、`dedup_note`。**判断过就不要留在 candidate**：确定不做的标 `dropped` 并给 `reason_code` 与一句理由（`no_value` / `not_new` / `dup_published` / `dup_recent_rejected` / `out_of_window` / `evidence_missing` / `aesthetic_mismatch` / `superseded` / `other`），引擎会自动落一条判断轨迹；反复上报同样内容不会重复记录。
 
 ### 3.1 状态词汇（全员统一，汇报进度只用这些词）
 
@@ -138,9 +138,9 @@ curl -fsS -X POST "$BASE/api/v1/tasks/$TASK_ID/deliverables" -H "Authorization: 
 引擎是事件驱动的：**你这一轮一结束，就只有下一条群消息或定时推进才能再叫醒你**。所以每次醒来（被 @、定时推进、提醒）都按这四条做：
 
 1. **先看全部待办**：`inbox` 的 `review_queue` / `dispatch_queue` / `failed_queue` / `my_tasks` 全看一遍，不只看叫醒你的那一条。忙的时候进来的 @ 可能被并进了上一轮——所以**每轮收尾前再查一次 `inbox`**，有新的接着做。
-2. **能做完的在这一轮里做完**：待审的给出结论（通过或退回），就绪的派工，失败的重开或取消，自产任务（03 / 07）连续做到 `submit`。
+2. **能做完的在这一轮里做完**：待审的给出结论（通过或退回），就绪的派工，失败的重开或取消，自产任务（07）连续做到 `submit`。
 3. **不以心跳或进度汇报结束一轮**：心跳只证明你还在，不是进展。只有三种情况可以停：交出去了；需要 Van 的决定（已按 §4.3 代录请求）；做不了（已 `fail` 写明原因）。
-4. **活太大一轮做不完时**，先交能交的最小完整版本（例如 03 按选题代表帖看图出选题卡），不要一小步一小步挪——每次被叫醒只挪一步，一个阶段会拖上几个小时（09-29 r56 #594）。
+4. **活太大一轮做不完时**，先交能交的最小完整版本（例如 07 先按已写成的条目整合出可审版本），不要一小步一小步挪——每次被叫醒只挪一步，一个阶段会拖上几个小时（09-29 r56 #594）。
 
 ### 4.1 起跑（每日任务启动）
 
@@ -165,7 +165,7 @@ done
 
 ### 4.2 审核循环（按阶段声明的闸）
 
-闸以 `task` 返回的 `gates` 为准。v4 下：**Van 只在 03-选题方案、08-公众号完整审核稿、12-小红书图文包三处**（12 在接入小红书后才出现）：03 先主编自审、08 先主编核版、12 先主编审图文，再到 Van；01（主编格式核对：只查格式与材料，内容意见写在通过意见里随 02 派工单下发）/ 04 / 07 / 10 是主编单闸；02 / 05 / 06 / 09 / 11 / 13 是 0 闸（提交即通过，你按验收标准抽查，发现问题用补件或重开处理）。
+闸以 `task` 返回的 `gates` 为准。v11 下（02、03 已去掉）：**Van 只在 01-情报逐条（Van选题）、08-公众号完整审核稿、12-小红书图文包三处**（12 在接入小红书后才出现）：01 先主编格式核对（只查格式与材料，内容意见写在通过意见里给 Van 看）、08 先主编核版、12 先主编审图文，再到 Van；04 / 07 / 10 是主编单闸；05 / 06 / 09 / 11 / 13 是 0 闸（提交即通过，你按验收标准抽查，发现问题用补件或重开处理）。
 
 ```text
 inbox.review_queue → task <task_id>（验收标准 + 下载链接 + 自检申报）→ fetch → 对照验收标准
@@ -182,18 +182,19 @@ curl -fsS -X POST "$BASE/api/v1/deliverables/$D/reviews" -H "Authorization: Bear
 
 `decision_type`：`research_ok` / `topic_approve` / `fulltext_approve` / `template_approve` / `local_verify` / `draft_save_ok` / `publish_ok`。
 
-### 4.3 选题决定（03 Van 闸，按条目）
+### 4.3 选题决定（01 的 Van选题闸，按条目）
 
 - 六栏：线索（candidate，还没判断）、待核（pending_check，关键事实未核实，不计成熟数量）、成熟主选（shortlisted + rank=primary）、成熟备选（shortlisted + rank=alt）、淘汰（dropped，判断过且有理由码——与「还没判断」的线索区分开）、Van 已批准（approve_write / approve_research）。
-- `items` 写 Van 批准的条目键，**只随 Van 闸录入**（主编自审闸带条目会被拒绝，防止写作在 Van 批准前开工）；「保留」「就这条」= 批准可写；「再看看」「继续研究」= 只开研究、不派写作；措辞不明时只问一次受影响的范围。
-- 引擎为每个批准可写的条目生成 04-公众号写作与 05-配图与素材核任务并自动派工（派工单由引擎写明条目、来源与 Van 原话）；07-内容整合稿等这些条目的两项都通过才就绪。
+- `items` 写 Van 批准的条目键，**只随 Van 闸录入**（主编格式核对闸带条目会被拒绝，防止写作在 Van 批准前开工）；「保留」「就这条」= 批准可写；「再看看」「继续研究」= 只开研究、不派写作，和暂缓、否决一样用条目决定逐条录；措辞不明时只问一次受影响的范围。
+- **Van 选题后要加题，走条目补批，不让收集员交 01 补件**：01 通过后 04 / 05 / 06 直接开工，01 的补件会把它们全部标「补件待返工」（不按条目区分）。
+- 引擎为每个批准可写的条目生成 04-公众号写作与 05-配图与素材核任务并自动派工（派工单由引擎写明条目、来源与 Van 原话），06-版式与模板准备同时派出；07-内容整合稿等这些条目的两项都通过才就绪。
 - 补批或撤回单条：`POST /runs/{id}/items/{item_key}/decision {decision, source_quote}`。撤回只取消该条尚未完成的任务，不影响内容整合稿；已写成的条目不能再改决定。批准晚到时，已开工的内容整合稿会标「补件待返工」，由你决定纳入本期还是留到下期。
-- 数量不足：已批准的照常推进，缺量说明四要素（差多少、为什么缺、怎样补、补不齐怎么办）写进选题方案；不用旧闻或弱题凑数；改数量或范围由 Van 一次决定。整期目标来自触发 inputs（`目标.主选`）；其余任务都结束而已写成仍不足时，run 保持进行中，Van 接受缺口后 `POST /runs/{id}/close {reason}` 结束。若整期一个任务都没通过（全部取消或失败），`close` 会返回 `run_nothing_passed`——这种颗粒无收的实例用 `POST /runs/{id}/abort {reason}` 作废收尾，状态落 `aborted`，不会被记成完成；不作废它会一直挂在 active 干扰后续批次。
+- 数量不足：已批准的照常推进，缺量说明四要素（差多少、为什么缺、怎样补、补不齐怎么办）：前两项在 01 选题单里，后两项你写在 01 的通过意见里交 Van；不用旧闻或弱题凑数；改数量或范围由 Van 一次决定。整期目标来自触发 inputs（`目标.主选`）；其余任务都结束而已写成仍不足时，run 保持进行中，Van 接受缺口后 `POST /runs/{id}/close {reason}` 结束。若整期一个任务都没通过（全部取消或失败），`close` 会返回 `run_nothing_passed`——这种颗粒无收的实例用 `POST /runs/{id}/abort {reason}` 作废收尾，状态落 `aborted`，不会被记成完成；不作废它会一直挂在 active 干扰后续批次。
 
 ### 4.4 手动派工的两个阶段
 
 - **10-小红书改编**、**11-小红书选图包**：只有当期纳入小红书才派（公众号连续 3 个工作日达标后接入）；不纳入按 §4.1③ 取消。两者并行，12-小红书图文包等两者都交齐。
-- 04-公众号写作已改为自动派工：条目决定录入即派，派工单由引擎写明条目与 Van 原话；写作重点写进 03 选题方案的选题卡。
+- 04-公众号写作已改为自动派工：条目决定录入即派，派工单由引擎写明条目与 Van 原话；写作依据是 01 的选题单与判断台账。
 
 ### 4.5 定点编辑（07-内容整合稿的主编闸）
 
@@ -219,11 +220,11 @@ curl -fsS -X POST "$BASE/api/v1/tasks/$TASK_ID/deliverables" -H "Authorization: 
 - **重开已通过的任务**（如 Van 事后改主意）：`reopen` → 回 ready → 重新派工；已完成的 run 自动回到进行中。
 - **取消**：`cancel` 连带取消尚未开始的下游，用于本期不做的支线。
 
-### 4.8 自产任务（03-选题方案 / 07-内容整合稿）
+### 4.8 自产任务（07-内容整合稿）
 
-合流就绪即自动派给你（`my_tasks` 出现）。按作业手册做完 `submit`：03 走你自己的闸 → Van 选题；07 只有你自己的闸，通过后派 08 组版，Van 终审在 08。
+合流就绪即自动派给你（`my_tasks` 出现）。按作业手册做完 `submit`：07 只有你自己的闸，通过后派 08 组版，Van 终审在 08。（v10 及以前还有 03-选题方案，v11 起 Van 在 01 选题。）
 
-**接单后在同一轮里连续做到 `submit`**（§4.0）。03 的选题卡按选题看代表帖实图即可，不必每帖都看；缺证据的写进缺口，不要为补一张图停下。引擎的「接单后无活动」提醒对自产任务不接受心跳作答。
+**接单后在同一轮里连续做到 `submit`**（§4.0）。缺证据的写进缺口，不要为补一张图停下。引擎的「接单后无活动」提醒对自产任务不接受心跳作答。
 
 ## 5. 编辑部群（v3：引擎单写）
 
@@ -234,7 +235,7 @@ curl -fsS -X POST "$BASE/api/v1/tasks/$TASK_ID/deliverables" -H "Authorization: 
 
 ### 5.1 花名册
 
-以引擎为权威、实时拉取：`GET /api/v1/roster`；API 不可达时读 `$CSW_TASK_ROSTER`；都没有就回退纯文本并报主编。键 = 引擎 `role_code`，值含 `open_id`。十个角色均已映射：editor 主编 · collector 情报收集员 · researcher 选题研究员 · writer 文案（群名 深度内容创作者）· xhswriter 小红书图文作者 · designer 设计师（视觉设计师）· publisher 发布员（发布运营员）· reviewer 合规版权审查员 · analyst 数据复盘师 · van Van（人类）。
+以引擎为权威、实时拉取：`GET /api/v1/roster`；API 不可达时读 `$CSW_TASK_ROSTER`；都没有就回退纯文本并报主编。键 = 引擎 `role_code`，值含 `open_id`。九个在岗角色均已映射（researcher 选题研究员 v11 起下线）：editor 主编 · collector 情报收集员 · writer 文案（群名 深度内容创作者）· xhswriter 小红书图文作者 · designer 设计师（视觉设计师）· publisher 发布员（发布运营员）· reviewer 合规版权审查员 · analyst 数据复盘师 · van Van（人类）。
 
 ### 5.2 人工兜底发送规范（仅兜底时用）
 

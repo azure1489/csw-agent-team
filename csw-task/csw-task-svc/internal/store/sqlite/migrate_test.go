@@ -537,3 +537,74 @@ func TestDailyNewsV10Draft(t *testing.T) {
 		t.Fatal("02 少了读台账那一段")
 	}
 }
+
+// TestDailyNewsV11Draft 验证 0045：v11 去掉 02 / 03、01 加 Van 选题闸、只是 draft；REPLACE 对不上会静默不改，逐处兜住。
+func TestDailyNewsV11Draft(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	if err := Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	var wfID int64
+	var status, common string
+	if err := db.QueryRow(`SELECT id, status, common_acceptance FROM workflows WHERE wf_key='daily_news' AND version=11`).Scan(&wfID, &status, &common); err != nil {
+		t.Fatalf("v11: %v", err)
+	}
+	if status != "draft" {
+		t.Fatalf("v11 必须停在 draft，got %s", status)
+	}
+	if strings.Contains(common, "02-价值初筛") || strings.Contains(common, "03-选题方案") {
+		t.Fatal("v11 通用验收的阶段清单应去掉 02 / 03")
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM workflow_stages WHERE workflow_id=? AND code IN ('shortlist','topic')`, wfID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("v11 不应有 shortlist / topic：%d err=%v", n, err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM workflow_stages WHERE workflow_id=?`, wfID).Scan(&n); err != nil || n != 11 {
+		t.Fatalf("v11 应有 11 段：%d err=%v", n, err)
+	}
+	// 写作、配图、版式都依赖 01。
+	if err := db.QueryRow(`SELECT count(*) FROM workflow_stage_deps x
+		JOIN workflow_stages s ON s.id=x.stage_id JOIN workflow_stages d ON d.id=x.depends_on_id
+		WHERE x.workflow_id=? AND d.code='intake' AND s.code IN ('write','material','design_prep')`, wfID).Scan(&n); err != nil || n != 3 {
+		t.Fatalf("04 / 05 / 06 应依赖 01：%d err=%v", n, err)
+	}
+	var gates string
+	if err := db.QueryRow(`SELECT group_concat(g.reviewer_role || ':' || g.relayed_by_hub || ':' || g.name, ',') FROM
+		(SELECT g.* FROM workflow_gates g JOIN workflow_stages s ON s.id=g.stage_id WHERE g.workflow_id=? AND s.code='intake' ORDER BY g.gate_order) g`, wfID).Scan(&gates); err != nil {
+		t.Fatal(err)
+	}
+	if gates != "editor:0:主编格式核对,van:1:Van选题" {
+		t.Fatalf("01 闸应是 主编格式核对 → Van选题：%s", gates)
+	}
+	var instr, self, acc string
+	if err := db.QueryRow(`SELECT instructions, self_check_criteria, acceptance FROM workflow_stages WHERE workflow_id=? AND code='intake'`, wfID).Scan(&instr, &self, &acc); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"### 一次交齐（v11 起）", "### 条目状态由你落定", "### 给 Van 的选题单", "### 缺量说明", "历史选题决定（v11 起"} {
+		if !strings.Contains(instr, want) {
+			t.Fatalf("v11 的 01 作业内容少了「%s」", want)
+		}
+	}
+	for _, gone := range []string{"### 先交首批", "随 02 派工单", "03 阶段的历史决定"} {
+		if strings.Contains(instr, gone) {
+			t.Fatalf("v11 的 01 作业内容还留着「%s」", gone)
+		}
+	}
+	if !strings.Contains(self, "**一次交齐**") || !strings.Contains(acc, "## 验收标准（Van选题 · 主编代录）") || strings.Contains(acc, "02 派工单") {
+		t.Fatal("v11 的 01 自检 / 验收没改到")
+	}
+	var write, fulltext, ftSelf string
+	if err := db.QueryRow(`SELECT instructions FROM workflow_stages WHERE workflow_id=? AND code='write'`, wfID).Scan(&write); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT instructions, self_check_criteria FROM workflow_stages WHERE workflow_id=? AND code='fulltext'`, wfID).Scan(&fulltext, &ftSelf); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(write, "短名单") || strings.Contains(fulltext, "选题方案") || strings.Contains(ftSelf, "选题方案") {
+		t.Fatal("v11 的 04 / 07 还引用短名单或选题方案")
+	}
+}

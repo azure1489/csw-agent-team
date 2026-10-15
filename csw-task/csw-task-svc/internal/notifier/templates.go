@@ -139,7 +139,7 @@ func render(o domain.Outbox, r roster) (string, bool) {
 		line = fmt.Sprintf("【r%s·%s·任务#%s】%s 执行方（%s）派工 %s 分钟仍未接单，请改派、重开或取消", run, stage, task, to, p.s("assignee_role"), p.s("minutes"))
 	case domain.EvtTaskIdle:
 		if p.s("role_code") != "" && p.s("role_code") == hub {
-			// 中枢自己产出的（03 选题方案 / 07 整合稿）：心跳不算进展。给了「心跳」这个出口，
+			// 中枢自己产出的（07 整合稿；v10 及以前还有 03 选题方案）：心跳不算进展。给了「心跳」这个出口，
 			// 主编每次被叫醒就补一次心跳、看一张图就收尾，03 一步一步挪了一个下午（09-29 r56 #594）
 			line = fmt.Sprintf("【r%s·%s·任务#%s】%s 接单后 %s 分钟没有产物：请在这一轮里连续做到提交，只回心跳或进度不算进展；做不了就报告失败并写明原因", run, stage, task, to, p.s("minutes"))
 		} else {

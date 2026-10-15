@@ -109,6 +109,7 @@ func (s *Server) handleTaskDetail(c *gin.Context) {
 	}
 	// 选题前三段随附排重底稿：近 30 天已发（含群发）与最近几期被否决 / 暂缓的条目，开工即可对照，
 	// 不用等 Van 或主编逐次补链接。其余阶段不附，避免响应臃肿。
+	// daily_news v11 起只剩 intake；shortlist / topic 留给仍跑 v10 快照的旧期次。
 	if t.StageCode == "intake" || t.StageCode == "shortlist" || t.StageCode == "topic" {
 		body["recent_posts"] = recentPosts(ctx, s, 30, 40)
 		body["recent_rejected"] = recentRejected(ctx, s, 14, 20)

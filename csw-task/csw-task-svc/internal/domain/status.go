@@ -286,7 +286,7 @@ type ItemStatus string
 const (
 	ItemCandidate        ItemStatus = "candidate"         // 已登记的候选（线索）
 	ItemPendingCheck     ItemStatus = "pending_check"     // 待核：关键事实未核实，不计入成熟数量
-	ItemShortlisted      ItemStatus = "shortlisted"       // 研究员建议采用 / 备选
+	ItemShortlisted      ItemStatus = "shortlisted"       // 判断为采用 / 备选（v11 起由 01 落定，此前是 02 研究员）
 	ItemDropped          ItemStatus = "dropped"           // 判断后淘汰：与「还没判断」的 candidate 区分开
 	ItemApprovedWrite    ItemStatus = "approved_write"    // Van 批准可写：生成逐条任务
 	ItemApprovedResearch ItemStatus = "approved_research" // 只开研究，不派写作
