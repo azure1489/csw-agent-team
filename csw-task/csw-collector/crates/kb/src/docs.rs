@@ -28,7 +28,7 @@ pub enum KbKind {
     Example,
     /// 生成过文章的贴文
     GeneratedPost,
-    /// 03 阶段 Van 的决定（含原话）
+    /// Van 的选题决定（含原话；v10 及以前在 03，v11 起在 01 的 Van选题闸）
     Decision,
 }
 

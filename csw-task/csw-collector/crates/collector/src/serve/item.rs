@@ -181,7 +181,7 @@ pub async fn run_material(
 /// 跑一轮 11：整期一包，按资讯分组的原图。
 ///
 /// 条目清单从引擎来（`GET /runs/:id/items`），**只取 Van 批准可写的那几条**：
-/// 把「研究员建议」当成批准，会多做一批没人要的图。
+/// 把 01 登记的「成熟」（shortlisted）当成批准，会多做一批没人要的图。
 pub async fn run_xhs_pick(
     conn: &Connection,
     round: &Round,

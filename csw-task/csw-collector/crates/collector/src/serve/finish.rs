@@ -107,7 +107,7 @@ pub fn five_columns_section(f: &FiveColumns) -> String {
         "| {} | {} | {} | {} | {} |\n\n",
         f.leads, f.pending, f.mature_primary, f.mature_alt, f.van_approved
     ));
-    s.push_str("- 按独立事件（选题）计，各栏的事件键见 `trace/five_columns.json`。线索是工作台初判推荐 / 备选、未经主编校准的事件；主编定为继续评估的不算线索也不算成熟；成熟只认主编在引擎里定的，工作台不自定。\n");
+    s.push_str("- 按独立事件（选题）计，各栏的事件键见 `trace/five_columns.json`。成熟 = 本包登记成 shortlisted 的选题（推荐为主选、备选为备选），与引擎登记逐条一致；Van 在本阶段的 Van选题闸上直接按它选（daily_news v11 起没有 02 / 03）。待核含备选·待补证；主编定为继续评估的算线索，不算成熟。\n");
     s.push_str(&format!(
         "- 逐帖口径另列、不混进五栏：推荐 + 备选 {} 帖、待核 {} 帖；引擎登记的 shortlisted / 待核是条目数，也不等于五栏。\n",
         f.post_leads, f.post_pending
@@ -123,11 +123,7 @@ pub fn five_columns_section(f: &FiveColumns) -> String {
                 "- 为何：主编校准停止 {} 条、隔离待核 {} 条、继续评估 {} 条（继续评估不等于成熟）。\n",
                 f.calib_stop, f.calib_pending, f.calib_continue
             ));
-            s.push_str(&format!(
-                "- 现池如何补：首批另补 {} 张卡，来自本期全池排序（不重采、不 top K 替代全池），待主编校准。\n",
-                f.new_cards
-            ));
-            s.push_str("- 补不齐的取舍：校准后仍不足就如实报缺口，不把未校准的工作台推荐算成成熟，不换措辞包装弱题。\n");
+            s.push_str("- 现池如何补、补不齐怎么办：由主编在本阶段的通过意见里写给 Van；工作台不扩大窗口、不降低标准，不用旧闻或弱题凑数。\n");
         }
         None => s.push_str("- 本期派工没给目标数，缺口无法计算。\n"),
     }
@@ -738,7 +734,7 @@ pub fn build_deliverable(
     {
         body.insert_str(
             i + end,
-            "\n\n> 以上档位是工作台初判，未经主编首批校准，也不是 Van 采用；推荐 / 备选的总清单只作附件核对用。",
+            "\n\n> 以上是逐帖台账（附录）：档位是工作台判断，不是 Van 采用；Van 按最前面的选题单选，推荐 / 备选的总清单只作核对用。",
         );
     }
     // 窗口行后写补采记录：补过的一段扫了多少、窗口内多少，0 条照写（不是只改止点）
@@ -776,7 +772,7 @@ pub fn build_deliverable(
         .and_then(|v| v.get("代表图"))
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
-    // 首页先放 4–8 张独立首批卡（点名的优先），其余清单在后（09-30 r58 退回）
+    // 首页先放给 Van 的选题单（v11：成熟选题全部出卡，主选在前；点名的优先），其余清单在后
     let (cards, card_keys) = first_cards(
         conn,
         cfg,
@@ -787,7 +783,7 @@ pub fn build_deliverable(
         calib_labels,
         &picks,
     );
-    // 五栏与目标缺口紧跟首批卡：「首批另补几张」按实际挑出来的卡算
+    // 五栏与目标缺口紧跟选题单
     let five = five.map(|mut f| {
         f.new_cards = card_keys.iter().filter(|k| !pinned.contains(k)).count();
         f
@@ -900,7 +896,7 @@ pub fn build_deliverable(
     let sheet = contact_sheet(&sheet_rows);
     if sheet.is_some() && !legend.is_empty() {
         let section = format!(
-            "## 首批卡联系图\n\n打开 `preview/首批卡联系图.jpg`：一行一张卡，每行至多 3 张同帖图（按原帖图序，左起）。\n\n| 行 | 条目 | 格内图片（左→右） | 正文支持点 |\n|---|---|---|---|\n{legend}\n"
+            "## 选题单联系图\n\n打开 `preview/选题单联系图.jpg`：一行一张卡，每行至多 3 张同帖图（按原帖图序，左起）。\n\n| 行 | 条目 | 格内图片（左→右） | 正文支持点 |\n|---|---|---|---|\n{legend}\n"
         );
         body = match body.find("# 情报逐条 · 判断台账") {
             Some(i) => format!("{}{section}{}", &body[..i], &body[i..]),
@@ -1041,7 +1037,7 @@ pub fn build_deliverable(
     }
     entries.push(pack::Entry::text("trace/judgements.jsonl", jl));
     if let Some(bytes) = sheet {
-        entries.push(pack::Entry::binary("preview/首批卡联系图.jpg", bytes));
+        entries.push(pack::Entry::binary("preview/选题单联系图.jpg", bytes));
     }
     // 宽取的每一条落到哪儿、窗口内的每条判成什么登记成什么：主编要能从宽取的全部 ID
     // 按 first_seen_at 逐条复算到窗口内的那些（09-28 r56 退回：1431 → 128 只有两个数）
@@ -1313,7 +1309,7 @@ pub async fn reconcile(
     (report, lines, consistent)
 }
 
-/// 交给主编的摘要：各档条数、首批卡标题、自查没过的判据、台账链接。
+/// 交给主编的摘要：各档条数、选题单标题、自查没过的判据、台账链接。
 /// 随提交作 `self_check` 发出，引擎「待审」那条群消息里 @主编时原样带上——
 /// 每天 06:00 自动开期后，主编在群里就能看到这一期采到了什么（10-09 用户）
 fn review_summary(
@@ -1346,7 +1342,7 @@ fn review_summary(
         n(Tier::NotRecommend)
     );
     if !card_keys.is_empty() {
-        out.push_str(&format!("\n首批 {} 张：", card_keys.len()));
+        out.push_str(&format!("\n选题单 {} 张：", card_keys.len()));
         for (i, k) in card_keys.iter().enumerate() {
             let title = judgements
                 .iter()
@@ -1534,7 +1530,8 @@ fn registration_section(
     out
 }
 
-/// 首页的独立首批卡：点名的优先，再按推荐选题的代表帖补到 8 张；不足 4 张如实交实际数，不凑。
+/// 首页的「给 Van 的选题单」（v11）：点名的优先，再按登记成熟的选题出卡（主选在前、备选在后），
+/// 后接待核简表与不推荐的条数分布。
 /// 每张卡内联：完整原文、原始披露时间、首次入库、同帖图（至多 6 张）、真实查重依据、
 /// 能改变采用决定的缺口（09-30 r58 退回点名的卡片要素）。返回（正文, 上卡的条目键）。
 #[allow(clippy::too_many_arguments)]
@@ -1548,7 +1545,6 @@ fn first_cards(
     calib_labels: &HashMap<String, String>,
     picks: &HashMap<String, Vec<u32>>,
 ) -> (String, Vec<String>) {
-    const MAX: usize = 8;
     let by_j: HashMap<&str, &Judgement> = judgements
         .iter()
         .map(|j| (j.candidate_key.as_str(), j))
@@ -1560,72 +1556,54 @@ fn first_cards(
             .iter()
             .any(|t| t.primary_key != k && t.members.iter().any(|m| m == k))
     };
+    // v11 起这一节是给 Van 的选题单：Van 直接在 01 上选题（没有 02 / 03），所以**登记成熟的
+    // 选题全部出卡**，与 register::item_inputs_by_topic 同一口径——少一张，Van 就看不到一个
+    // 已登记的成熟条目。不再限 8 张、不再同品牌只取一张；重复与已写成的看卡里的查重行
+    let mature = |tier: Tier| {
+        topics
+            .iter()
+            .filter(move |t| t.tier == Some(tier))
+            .filter(|t| {
+                by_j.get(t.primary_key.as_str())
+                    .is_some_and(|j| !super::register::pending(j))
+            })
+            .map(|t| t.primary_key.clone())
+    };
     let mut keys: Vec<String> = pinned
         .iter()
         .filter(|k| by_j.contains_key(k.as_str()) && !merged_member(k))
-        .take(MAX)
         .cloned()
         .collect();
-    // 补位：同品牌只占一张（10-08 r66 v2：卡 7、卡 8 同是 cargocontainer）；
-    // 同事实无增量、或历史上已批准写作 / 已写成的不回流（卡 8 是 r62 写成的 MODULE X）
-    let brand = |k: &str| -> String {
-        by_key
-            .get(k)
-            .map(|c| {
-                c.account
-                    .chars()
-                    .filter(|ch| ch.is_ascii_alphanumeric())
-                    .collect::<String>()
-                    .to_lowercase()
-            })
-            .unwrap_or_default()
-    };
-    let mut brands: std::collections::HashSet<String> = keys
+    for k in mature(Tier::Recommend).chain(mature(Tier::Alternate)) {
+        if !keys.contains(&k) {
+            keys.push(k);
+        }
+    }
+    let primary_n = keys
         .iter()
-        .map(|k| brand(k))
-        .filter(|b| !b.is_empty())
-        .collect();
-    for t in topics.iter().filter(|t| t.tier == Some(Tier::Recommend)) {
-        if keys.len() >= MAX {
-            break;
-        }
-        let Some(j) = by_j.get(t.primary_key.as_str()) else {
-            continue;
-        };
-        if j.tier != Tier::Recommend || j.has_decision_gap() || keys.contains(&t.primary_key) {
-            continue;
-        }
-        if j.comparison.verdict == csw_collector_core::types::ComparisonVerdict::SameFactNoGain
-            || (j.comparison.note.contains("历史：r")
-                && (j.comparison.note.contains("已批准写作")
-                    || j.comparison.note.contains("已写成")))
-        {
-            continue;
-        }
-        let b = brand(&t.primary_key);
-        if !b.is_empty() && !brands.insert(b) {
-            continue;
-        }
-        keys.push(t.primary_key.clone());
-    }
-    if keys.is_empty() {
-        return (String::new(), keys);
-    }
+        .filter(|k| topic_tier(topics, k) == Some(Tier::Recommend))
+        .count();
     let mut s = format!(
-        "# 首批卡（{} 张{}）\n\n主编点名的优先，其余按推荐选题的代表帖；档位是工作台初判，待主编首批校准。\n\n",
-        keys.len(),
-        if keys.len() < 4 {
-            "，不足 4 张，如实交实际数"
-        } else {
-            ""
-        }
+        "# 给 Van 的选题单（主选 {} · 备选 {}）\n\n本阶段登记成熟的选题全部在这里，主选在前、备选在后，与引擎登记逐条一致；Van 在本阶段的 Van选题闸上按它选（主编代录，daily_news v11 起没有 02 / 03）。档位是工作台判断；主编格式核对只查格式与材料，内容意见在主编的通过意见里。\n\n",
+        primary_n,
+        keys.len() - primary_n,
     );
-    for (n, k) in keys.iter().enumerate() {
+    if keys.is_empty() {
+        s.push_str("> 本期没有成熟选题，见下方待核与缺量说明。\n\n");
+    }
+    let (mut np, mut na) = (0, 0);
+    for k in keys.iter() {
         let j = by_j[k.as_str()];
         let c = by_key.get(k);
+        let label = if topic_tier(topics, k) == Some(Tier::Recommend) {
+            np += 1;
+            format!("主选 {np}")
+        } else {
+            na += 1;
+            format!("备选 {na}")
+        };
         s.push_str(&format!(
-            "## 卡 {} ｜{}\n\n",
-            n + 1,
+            "## {label} ｜{}\n\n",
             if j.headline.is_empty() {
                 k.as_str()
             } else {
@@ -1636,7 +1614,7 @@ fn first_cards(
             "- 条目 `{k}` ｜档位：{}{}\n",
             intake::tier_name(j.tier),
             match calib_labels.get(k) {
-                Some(l) => format!("｜{l}；供 02 研究，不是 Van 采用"),
+                Some(l) => format!("｜{l}（主编校准）"),
                 None if pinned.contains(k) => "（主编点名）".to_string(),
                 None => String::new(),
             }
@@ -1758,7 +1736,111 @@ fn first_cards(
         }
         s.push_str("\n---\n\n");
     }
+    s.push_str(&rest_of_sheet(judgements, topics));
     (s, keys)
+}
+
+/// 选题档位（选题里组内最高的档）。
+fn topic_tier(topics: &[csw_collector_core::types::Topic], key: &str) -> Option<Tier> {
+    topics
+        .iter()
+        .find(|t| t.primary_key == key)
+        .and_then(|t| t.tier)
+}
+
+/// 选题单的后两块：待核只列一句缺什么，不推荐只给条数与分布（逐帖在台账附录里）。
+pub fn rest_of_sheet(
+    judgements: &[Judgement],
+    topics: &[csw_collector_core::types::Topic],
+) -> String {
+    let by_j: HashMap<&str, &Judgement> = judgements
+        .iter()
+        .map(|j| (j.candidate_key.as_str(), j))
+        .collect();
+    let pending: Vec<String> = topics
+        .iter()
+        .filter_map(|t| {
+            let j = by_j.get(t.primary_key.as_str())?;
+            let is_pending = match t.tier {
+                Some(Tier::PendingCheck) => true,
+                Some(Tier::Recommend | Tier::Alternate) => super::register::pending(j),
+                _ => false,
+            };
+            if !is_pending {
+                return None;
+            }
+            let what = j
+                .gaps
+                .iter()
+                .find(|g| g.level == csw_collector_core::types::GapLevel::Decision)
+                .map(|g| g.what.trim().to_string())
+                .filter(|w| !w.is_empty())
+                .unwrap_or_else(|| {
+                    if j.image_seen {
+                        "关键资料未读到".into()
+                    } else {
+                        "实图未读到".into()
+                    }
+                });
+            let title = if t.headline.trim().is_empty() {
+                j.headline.as_str()
+            } else {
+                t.headline.as_str()
+            };
+            Some(format!(
+                "- {}（`{}`）：缺 {what}",
+                if title.is_empty() {
+                    t.primary_key.as_str()
+                } else {
+                    title
+                },
+                t.primary_key
+            ))
+        })
+        .collect();
+    let mut s = format!(
+        "## 待核（{} 个选题，Van 不选；主编之后标继续研究或留到下期）\n\n",
+        pending.len()
+    );
+    if pending.is_empty() {
+        s.push_str("无。\n\n");
+    } else {
+        s.push_str(&pending.join("\n"));
+        s.push_str("\n\n");
+    }
+    let not_rec: Vec<&Judgement> = judgements
+        .iter()
+        .filter(|j| j.tier == Tier::NotRecommend)
+        .collect();
+    let mut dist: Vec<(String, usize)> = Vec::new();
+    for j in &not_rec {
+        let why = j
+            .lower_hits
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "价值或适配度不成立".into());
+        match dist.iter_mut().find(|(w, _)| *w == why) {
+            Some((_, n)) => *n += 1,
+            None => dist.push((why, 1)),
+        }
+    }
+    dist.sort_by_key(|d| std::cmp::Reverse(d.1));
+    s.push_str(&format!(
+        "## 不推荐（{} 帖，逐帖结论在下方台账）\n\n",
+        not_rec.len()
+    ));
+    if !dist.is_empty() {
+        s.push_str(
+            &dist
+                .iter()
+                .map(|(w, n)| format!("- {w}：{n} 帖"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        s.push('\n');
+    }
+    s.push_str("\n---\n\n");
+    s
 }
 
 /// 首批卡的联系图：一行一张卡，每行至多 3 张同帖图（按原帖图序），拼成一张 JPEG。
@@ -2076,6 +2158,35 @@ mod tests {
         j.image_seen = tier != Tier::PendingCheck;
         j.inputs_hash = "ih".into();
         j
+    }
+
+    #[test]
+    fn 选题单后接待核简表与不推荐分布() {
+        let mut gap = j("a2", Tier::Alternate);
+        gap.gaps.push(csw_collector_core::types::Gap {
+            what: "缺发售日期".into(),
+            level: GapLevel::Decision,
+            ..Default::default()
+        });
+        let mut n1 = j("n1", Tier::NotRecommend);
+        n1.lower_hits = vec!["只有新配色".into()];
+        let js = vec![
+            j("r1", Tier::Recommend),
+            gap,
+            j("p1", Tier::PendingCheck),
+            n1,
+            j("n2", Tier::NotRecommend),
+        ];
+        let topics = csw_collector_judge::topic::build(&[], &js);
+        let s = rest_of_sheet(&js, &topics);
+        // 备选·待补证与待核都进待核栏，写明缺什么；成熟的不在这里
+        assert!(s.contains("## 待核（2 个选题"), "{s}");
+        assert!(s.contains("`a2`）：缺 缺发售日期"), "{s}");
+        assert!(!s.contains("`r1`"), "{s}");
+        // 不推荐只给条数与分布
+        assert!(s.contains("## 不推荐（2 帖"), "{s}");
+        assert!(s.contains("- 只有新配色：1 帖"), "{s}");
+        assert!(s.contains("- 价值或适配度不成立：1 帖"), "{s}");
     }
 
     #[test]
@@ -2443,7 +2554,7 @@ mod five_columns_tests {
         assert!(s.contains("| 253 | 342 | 0 | 0 | 0 |"));
         assert!(s.contains("现差 6 主 2 备"));
         assert!(s.contains("停止 4 条、隔离待核 2 条、继续评估 2 条"));
-        assert!(s.contains("首批另补 4 张卡"));
+        assert!(s.contains("由主编在本阶段的通过意见里写给 Van"));
         assert!(s.contains("推荐 + 备选 245 帖、待核 344 帖"));
         assert!(s.contains("trace/five_columns.json"));
         assert!(five_columns_section(&FiveColumns::default()).contains("没给目标数"));

@@ -153,6 +153,9 @@ pub struct ItemInput {
     pub published_at: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub status: String,
+    /// primary 主选 / alt 备选，只随 shortlisted 发（daily_news v11 起由 01 落定，Van 在 01 选题）
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub rank: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub reason_code: String,
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -354,7 +357,7 @@ pub struct LedgerPosts {
 /// `GET /runs/:id/items` 里的一条。
 ///
 /// **`status` 是引擎的条目状态，不是我们的四档**：`approved_write` 才是
-/// 「Van 批准可写」，11 选图包只给这些条目配图。把 `shortlisted`（研究员建议）
+/// 「Van 批准可写」，11 选图包只给这些条目配图。把 `shortlisted`（01 判断成熟，v10 及以前是研究员建议）
 /// 当成批准会多做一批没人要的图。
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct RunItem {

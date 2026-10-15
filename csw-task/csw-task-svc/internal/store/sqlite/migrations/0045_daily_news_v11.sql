@@ -74,8 +74,8 @@ UPDATE workflow_stages SET instructions = REPLACE(REPLACE(REPLACE(instructions,
 登记条目时按判断结论写状态，Van 在本阶段的闸上直接按它选题：
 - 推荐 → `shortlisted`，rank = `primary`（主选）
 - 备选 → `shortlisted`，rank = `alt`（备选）
-- 不推荐 → `dropped`，给 reason_code（no_value 价值不足 / not_new 非新披露只是转发 / dup_published 近期已发同角度 / dup_recent_rejected 近期已被否决或暂缓 / out_of_window 不在窗口 / evidence_missing 证据或图片不足 / aesthetic_mismatch 审美或价值不符 / superseded 被同期更好的取代 / other 须写明）与一句理由
-- 待核 → `pending_check`，必须有「影响判断」级的缺口
+- 待核 → `pending_check`，必须有「影响判断」级的缺口；备选里还挂着影响判断的缺口的（备选·待补证）也登记成待核，不算成熟
+- 不推荐 → **不登记成条目**：逐帖结论与理由在判断台账里，那是「都判过了」的证据。之前登记过、这一版改判不推荐或被并入别的选题的，标 `dropped` 并给 reason_code（no_value 价值不足 / not_new 非新披露只是转发 / dup_published 近期已发同角度 / dup_recent_rejected 近期已被否决或暂缓 / out_of_window 不在窗口 / evidence_missing 证据或图片不足 / aesthetic_mismatch 审美或价值不符 / superseded 被同期更好的取代 / other 须写明）与一句理由
 不留 `candidate`——那是「还没判断」的意思。Van 已批准的条目重新登记不会被改回。
 
 ### 原 02 的三项，写进交付物
@@ -111,7 +111,7 @@ WHERE workflow_id = (SELECT id FROM workflows WHERE wf_key='daily_news' AND vers
 -- 01 自检：追加 v11 的几项。
 -- +goose StatementBegin
 UPDATE workflow_stages SET self_check_criteria = self_check_criteria || '
-- **条目状态已落定**：推荐为 shortlisted + primary、备选为 shortlisted + alt、不推荐为 dropped 并有 reason_code 与理由、待核为 pending_check 并有「影响判断」级缺口；没有留在 candidate 的。
+- **条目状态已落定**：推荐为 shortlisted + primary、备选为 shortlisted + alt、待核为 pending_check 并有「影响判断」级缺口；不推荐不登记（逐帖在台账里），此前登记过又改判的标了 dropped 并有 reason_code 与理由；没有留在 candidate 的。
 - **有报道潜力的待核已深核**：补得到的已重评定档；补不到的写明缺什么、谁处理、已尝试什么；其余待核写明缺什么，没有为它们拖住提交。
 - 主推条目查过近发并写了结论；相关编辑反馈写明引用了哪条；最近被否决或暂缓的同对象已标出。
 - **给 Van 的选题单在 index.md 最前面**：推荐逐张有标题、三句话、来源与时间、查重、缺口、代表图；待核与不推荐只列简表；五栏条数与引擎一致。

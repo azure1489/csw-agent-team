@@ -1354,7 +1354,7 @@ async fn start_round(
                         "按 01 只核格式与材料的分工（2026-10-10），工作台返工只补材料、重新导出：补采窗口缺的一段、\
                          收回来源没给媒体的图文帖、重新登记与对账、按库里最新原文与译文重新导出。这次没有需要补的材料，\
                          交付内容与已交的 v{v} 相同，没有重交。对内容的意见（档位、停止、同一件事、代表图、译名）请写在通过意见里，\
-                         引擎随 02 派工单交研究员采用；若是格式或材料问题，请写明五项清单的第几项与具体文件或条目",
+                         Van 选题时与选题单一起看；若是 Van 在 Van选题闸退回，请写明整单哪里不可用；若是格式或材料问题，请写明五项清单的第几项与具体文件或条目",
                         v = t.task.cur_version
                     )
                 } else {
@@ -1422,7 +1422,9 @@ async fn start_round(
 /// 水位是**上一轮派单轮的窗口终点**：上一轮晚开了两小时，这一轮就该多覆盖
 /// 两小时，不然中间那段没人看过。没有水位时退回一天（周一退回三天）。
 /// 判据全在 [`csw_collector_core::window`]，这里只负责把水位查出来。
-/// 五栏与目标缺口的数。成熟只认主编在引擎里亲手定的（最近一次状态变化是中枢改的 shortlisted）。
+/// 五栏与目标缺口的数。v11 起 02 / 03 去掉、Van 直接在 01 选题，成熟就是 01 自己登记的
+/// shortlisted（主选 / 备选），口径与 [`register::item_inputs_by_topic`] 逐条一致；
+/// 不读引擎回来的登记，免得登记还在发件箱里时五栏是空的。Van 批准仍以引擎为准。
 async fn five_columns(
     engine: &EngineClient,
     run_id: i64,
@@ -1433,9 +1435,9 @@ async fn five_columns(
     use csw_collector_core::types::Tier;
     let calibrated: std::collections::HashSet<&str> =
         calib.iter().map(|c| c.key.as_str()).collect();
-    let tier_of: HashMap<&str, Tier> = judgements
+    let judgement_of: HashMap<&str, &csw_collector_core::types::Judgement> = judgements
         .iter()
-        .map(|j| (j.candidate_key.as_str(), j.tier))
+        .map(|j| (j.candidate_key.as_str(), j))
         .collect();
     let mut f = finish::FiveColumns {
         post_leads: judgements
@@ -1461,12 +1463,27 @@ async fn five_columns(
         target: engine.run_target(run_id).await.ok().flatten(),
         ..Default::default()
     };
-    // 独立事件 = 选题；档位取代表帖的（主编校准过的已写进判断）
+    // 独立事件 = 选题。与登记同一口径：选题档位推荐 / 备选、代表帖没有影响判断的缺口 → 成熟；
+    // 代表帖待核或备选·待补证 → 待核。主编校准过「继续评估」的推荐 / 备选算线索，不算成熟
     for t in topics {
         let k = t.primary_key.as_str();
-        match tier_of.get(k).copied().or(t.tier) {
-            Some(Tier::Recommend | Tier::Alternate) if !calibrated.contains(k) => {
+        let Some(j) = judgement_of.get(k) else {
+            continue;
+        };
+        match t.tier {
+            Some(Tier::Recommend | Tier::Alternate) if register::pending(j) => {
+                f.pending_keys.push(k.to_string())
+            }
+            Some(Tier::Recommend | Tier::Alternate) if calibrated.contains(k) => {
                 f.lead_keys.push(k.to_string())
+            }
+            Some(tier @ (Tier::Recommend | Tier::Alternate)) => {
+                f.mature_keys.push(k.to_string());
+                if tier == Tier::Recommend {
+                    f.mature_primary += 1;
+                } else {
+                    f.mature_alt += 1;
+                }
             }
             Some(Tier::PendingCheck) => f.pending_keys.push(k.to_string()),
             _ => {}
@@ -1475,20 +1492,6 @@ async fn five_columns(
     f.leads = f.lead_keys.len();
     f.pending = f.pending_keys.len();
     if let Ok(tr) = engine.intake_trace(run_id).await {
-        let mut last: HashMap<String, String> = HashMap::new();
-        for t in tr
-            .get("traces")
-            .and_then(|v| v.as_array())
-            .into_iter()
-            .flatten()
-        {
-            if let (Some(k), Some(r)) = (
-                t.get("item_key").and_then(|v| v.as_str()),
-                t.get("actor_role").and_then(|v| v.as_str()),
-            ) {
-                last.insert(k.to_string(), r.to_string());
-            }
-        }
         for it in tr
             .get("items")
             .and_then(|v| v.as_array())
@@ -1496,17 +1499,11 @@ async fn five_columns(
             .flatten()
         {
             let key = it.get("item_key").and_then(|v| v.as_str()).unwrap_or("");
-            match it.get("status").and_then(|v| v.as_str()).unwrap_or("") {
-                "approved_write" | "written" => f.van_keys.push(key.to_string()),
-                "shortlisted" if last.get(key).is_some_and(|r| r == "editor") => {
-                    f.mature_keys.push(key.to_string());
-                    if it.get("rank").and_then(|v| v.as_str()) == Some("alt") {
-                        f.mature_alt += 1;
-                    } else {
-                        f.mature_primary += 1;
-                    }
-                }
-                _ => {}
+            if matches!(
+                it.get("status").and_then(|v| v.as_str()).unwrap_or(""),
+                "approved_write" | "written"
+            ) {
+                f.van_keys.push(key.to_string());
             }
         }
         f.van_approved = f.van_keys.len();
@@ -1546,7 +1543,7 @@ const SUBMITTED: &str = "已交状态:";
 const UNCHANGED: &str = "内容与上一版相同，未重交";
 /// 交付物 / 登记导出格式的修订号。**改了导出（字段、登记口径、包内文件）就改它**，
 /// 否则返工后内容指纹一样，修好的导出不会重交
-const EXPORT_REV: &str = "2026-10-10b";
+const EXPORT_REV: &str = "2026-10-16a"; // v11：给 Van 的选题单、登记带 rank、五栏按 01 登记算
 
 /// 引擎派的窗口止点是否已经过了。读不出来的当已过：不能因为格式问题永远不开工。
 fn window_closed(to: &str, now: jiff::Timestamp) -> bool {

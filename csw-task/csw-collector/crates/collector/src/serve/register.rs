@@ -196,6 +196,11 @@ pub fn item_inputs(js: &[Judgement], by_key: impl Fn(&str) -> Option<Candidate>)
 
 /// 按**选题**登记（09-22 反馈第五项）：同产品、同事件的多帖只占一个条目，
 /// 条目键取代表帖，其余帖子写进去重说明。逐帖判断照样全写进判断台账。
+/// 待核：档位本身是待核，或备选里还挂着影响选题判断的缺口（备选·待补证）。
+pub(crate) fn pending(j: &Judgement) -> bool {
+    j.tier == Tier::PendingCheck || j.has_decision_gap()
+}
+
 pub fn item_inputs_by_topic(
     js: &[Judgement],
     topics: &[Topic],
@@ -285,10 +290,19 @@ pub fn item_inputs_by_topic(
                 //（mock 不校验这个字段）。
                 // 备选里还挂着影响选题判断的缺口的（备选·待补证），**不算成熟**，登记成待核
                 //（09-28 r56 退回：「这些不能算成熟备选」）
-                status: if j.tier == Tier::PendingCheck || j.has_decision_gap() {
+                status: if pending(j) {
                     "pending_check".into()
                 } else {
                     "shortlisted".into()
+                },
+                // v11 起 02 / 03 去掉，Van 直接按 01 的登记选题：成熟的要分主选与备选。
+                // 按选题的档位分（代表帖的档位可能与选题合并后的不同）
+                rank: if pending(j) {
+                    String::new()
+                } else if t.tier == Some(Tier::Recommend) {
+                    "primary".into()
+                } else {
+                    "alt".into()
                 },
                 // 待核写明缺什么：主编看登记就知道为什么没成熟
                 reason: j
@@ -769,6 +783,10 @@ mod tests {
         assert_eq!(items[0].status, "shortlisted");
         assert_eq!(items[1].status, "shortlisted");
         assert_eq!(items[2].status, "pending_check");
+        // v11：Van 在 01 选题，成熟的要分主选与备选；待核不带 rank（引擎只许 shortlisted 带）
+        assert_eq!(items[0].rank, "primary");
+        assert_eq!(items[1].rank, "alt");
+        assert_eq!(items[2].rank, "");
         assert_eq!(items[0].title, "k1｜背板结构值得解释");
         assert_eq!(items[0].published_at, "2026-09-17T08:00:00Z");
     }
