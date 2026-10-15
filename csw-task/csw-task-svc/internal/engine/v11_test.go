@@ -64,6 +64,24 @@ func TestFullFlowV11(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert items: %v", err)
 	}
+	// 返工重登：备选升主选要跟着改，成熟改判待核要清掉 rank（引擎只许 shortlisted 带 rank）。
+	if _, err := e.UpsertItems(ctx, collector, collectorRole, runID, []ItemInput{
+		{Key: "nanga-d4e5f6", Status: "shortlisted", Rank: "primary"},
+		{Key: "snowpeak-0a0b0c", Status: "shortlisted", Rank: "alt"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.UpsertItems(ctx, collector, collectorRole, runID, []ItemInput{
+		{Key: "snowpeak-0a0b0c", Status: "pending_check", Reason: "待核：缺发售日期"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if it, _ := st.Q().GetItem(ctx, runID, "nanga-d4e5f6"); it.Rank != "primary" {
+		t.Fatalf("备选升主选后 rank 应是 primary：%q", it.Rank)
+	}
+	if it, _ := st.Q().GetItem(ctx, runID, "snowpeak-0a0b0c"); it.Status != "pending_check" || it.Rank != "" {
+		t.Fatalf("改判待核应清掉 rank：%s %q", it.Status, it.Rank)
+	}
 	out, err := e.Submit(ctx, collector, intake.ID, SubmitInput{DownloadURL: "http://x/intake", SelfCheck: "ok"})
 	if err != nil {
 		t.Fatalf("submit 01: %v", err)

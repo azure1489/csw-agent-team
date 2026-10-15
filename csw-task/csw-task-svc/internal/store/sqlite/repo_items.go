@@ -45,7 +45,11 @@ func (q *Queries) UpsertItem(ctx context.Context, it domain.RunItem) error {
 			source_url = COALESCE(excluded.source_url, run_items.source_url),
 			published_at = COALESCE(excluded.published_at, run_items.published_at),
 			status = CASE WHEN run_items.status IN ('candidate','pending_check','shortlisted','dropped') THEN excluded.status ELSE run_items.status END,
-			"rank" = COALESCE(excluded."rank", run_items."rank"),
+			-- 主选 / 备选只属于成熟条目：改判成待核或淘汰时清掉，免得 v11 下 Van 按 01 登记选题时看到残留的 rank
+			"rank" = CASE
+				WHEN run_items.status NOT IN ('candidate','pending_check','shortlisted','dropped') THEN run_items."rank"
+				WHEN excluded.status = 'shortlisted' THEN COALESCE(excluded."rank", run_items."rank")
+				ELSE NULL END,
 			discovered_via = COALESCE(excluded.discovered_via, run_items.discovered_via),
 			fetched_at = COALESCE(excluded.fetched_at, run_items.fetched_at),
 			evidence_url = COALESCE(excluded.evidence_url, run_items.evidence_url),
