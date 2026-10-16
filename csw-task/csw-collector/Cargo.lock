@@ -1191,13 +1191,17 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "csw-collector-core",
+ "csw-collector-harvest",
  "csw-collector-kb",
+ "reqwest 0.13.5",
  "rusqlite",
  "serde",
  "serde_json",
  "tempdir",
  "tokio",
  "tracing",
+ "url",
+ "wiremock",
 ]
 
 [[package]]

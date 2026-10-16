@@ -20,6 +20,7 @@ pub mod hires_match;
 pub mod http;
 pub mod item;
 pub mod kb_magazine;
+pub mod mcp_http;
 pub mod outbox_sender;
 pub mod register;
 pub mod round;
@@ -118,7 +119,9 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
         .merge(http::ops_router(app_state.clone()))
         .merge(http::api_router(app_state.clone(), auth.clone()))
         .merge(write::write_router(app_state, auth.clone()))
-        .merge(crate::bff::router(auth));
+        .merge(crate::bff::router(auth))
+        // 知识库 MCP 的远程入口（令牌鉴权，见 mcp_http）
+        .merge(mcp_http::router(cfg, svc.clone())?);
     let listener = tokio::net::TcpListener::bind(&cfg.listen)
         .await
         .with_context(|| format!("监听 {}", cfg.listen))?;

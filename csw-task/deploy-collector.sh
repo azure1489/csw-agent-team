@@ -290,6 +290,20 @@ server {
     proxy_send_timeout      300s;
     proxy_read_timeout      300s;
 
+    # 知识库 MCP 的远程入口（给其他机器上的 codex）。鉴权在服务端：Bearer 令牌 + 权限范围 + 限速，
+    # 令牌用 csw-collector mcp-token issue 签。只读；一次调用服务端最多等 60 秒
+    location = /mcp {
+        proxy_pass http://172.17.0.1:8090;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_read_timeout 120s;
+        proxy_set_header Host              \$host;
+        proxy_set_header X-Real-IP         \$remote_addr;
+        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        client_max_body_size 8m;
+    }
+
     # 工作台接口。每一个都要服务端会话，读接口也不例外
     location /api/ {
         proxy_pass http://172.17.0.1:8090;

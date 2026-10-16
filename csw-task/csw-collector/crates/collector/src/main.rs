@@ -74,6 +74,9 @@ enum Command {
     Kb(KbCommand),
     /// 以 stdio 方式跑本地 MCP 服务
     Mcp,
+    /// 远程 MCP（`POST /mcp`）的令牌：签发、列出、吊销
+    #[command(subcommand)]
+    McpToken(McpTokenCommand),
     /// 历史反馈回收（离线只读；**每次运行须单独取得同意**）
     ///
     /// 不给 `--who` 就是探查模式：只列出各库里有哪些人、各说了多少条，
@@ -289,6 +292,25 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum McpTokenCommand {
+    /// 签一枚令牌。**明文只打印这一次**，库里只存哈希
+    Issue {
+        /// 给谁用（人 / 机器），审计里按它记
+        name: String,
+        /// 权限范围，逗号分隔：magazine（杂志检索、以图搜图）、kb（参考库）。memory 不对外
+        #[arg(long, default_value = "magazine,kb")]
+        scopes: String,
+        /// 多少天后过期；不给就不过期，靠 revoke 失效
+        #[arg(long)]
+        days: Option<u32>,
+    },
+    /// 列出令牌（不显示令牌本身）
+    List,
+    /// 吊销，下一次请求就是 401
+    Revoke { id: i64 },
+}
+
+#[derive(Subcommand)]
 enum KbCommand {
     /// 从引擎与 csw 增量同步
     Sync {
@@ -417,6 +439,39 @@ async fn main() -> anyhow::Result<()> {
             let cfg =
                 csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
             mcp::run(&cfg).await
+        }
+        Command::McpToken(sub) => {
+            let cfg =
+                csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
+            let conn = csw_collector_core::store::open(&cfg.db_path())?;
+            use serve::mcp_http;
+            match sub {
+                McpTokenCommand::Issue { name, scopes, days } => {
+                    let (id, token) = mcp_http::issue(&conn, &name, &scopes, days)?;
+                    eprintln!(
+                        "签好了：#{id} {name}（{}，{}）。令牌只显示这一次，不要发群、不要写进文档：",
+                        mcp_http::parse_scopes(&scopes)?,
+                        days.map_or("不过期".to_string(), |d| format!("{d} 天后过期"))
+                    );
+                    println!("{token}");
+                    Ok(())
+                }
+                McpTokenCommand::List => {
+                    println!("id\t名字\t权限\t签发\t到期\t吊销\t最近使用");
+                    for r in mcp_http::list(&conn)? {
+                        println!("{}", r.join("\t"));
+                    }
+                    Ok(())
+                }
+                McpTokenCommand::Revoke { id } => {
+                    if mcp_http::revoke(&conn, id)? {
+                        eprintln!("#{id} 已吊销");
+                        Ok(())
+                    } else {
+                        anyhow::bail!("没有 #{id}，或它早已吊销")
+                    }
+                }
+            }
         }
         Command::P5 {
             profiles_dir,

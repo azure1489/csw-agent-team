@@ -24,10 +24,11 @@ const MIGRATIONS: &[(u32, &str)] = &[
         include_str!("../migrations/0007_submitted_state_patches.sql"),
     ),
     (8, include_str!("../migrations/0008_magazine.sql")),
+    (9, include_str!("../migrations/0009_mcp_tokens.sql")),
 ];
 
 /// 当前 schema 版本。与 `MIGRATIONS` 最后一项对齐。
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 pub fn open(path: &Path) -> Result<Connection> {
     if let Some(dir) = path.parent() {

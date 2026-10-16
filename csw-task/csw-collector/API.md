@@ -133,6 +133,24 @@ Jev 初评的概率只在服务端决定「先判哪条」，不出现在任何�
 | POST | `/api/replay` | operator | 用夹具回放一轮，不出网 |
 | GET | `/api/audit` | operator | 改档、改方案、手动开轮、登记采集器的留痕。`?limit=` |
 
+## 知识库 MCP（远程）
+
+给**其他机器上的** MCP 客户端（codex）用的只读入口，Streamable HTTP（2025-06-18）的最小子集。
+工具实现与本机 stdio 的 `csw-collector mcp` 是同一套。不走会话 cookie，走**令牌**。
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| POST | `/mcp` | `Authorization: Bearer cswkb_…` | 一条 JSON-RPC。请求回 `200 application/json`；通知 / 客户端回复回 `202` 空体；数组（批量）回 `400`；坏 JSON 回 `400` |
+| GET / DELETE | `/mcp` | —— | `405`：不提供服务端推送流，不维护会话（不发 `Mcp-Session-Id`） |
+
+- **令牌**：`csw-collector mcp-token issue <名字> [--scopes magazine,kb] [--days N]` 签发，明文只打印一次，库里只存 SHA-256；`list` / `revoke <id>`。没有、错、已吊销、已过期都回 `401` + `WWW-Authenticate: Bearer`。
+- **权限范围**：`magazine` → `kb_magazine_search`、`kb_image_search`；`kb` → `kb_search`、`kb_similar_selected`。`tools/list` 只列有权限的，越权调用回 `isError`。`memory_lookup`（Van 原话）不对外，签发时就拒；Van 原话恒不出。`web_search` / `fetch_page` 不装。
+- **以图搜图（远程版）**：参数 `image_url`（只许 https，过出网防护：封内网、回环与云元数据地址，≤10MB、15 秒）或 `image_base64`（解码后 ≤5MB，容许 data URL 前缀），二选一；不认 `path`。
+- **GPU 让卡**：`[schedule].gpu_quiet_from_utc`–`gpu_quiet_to_utc` 窗口里以图搜图回 `isError`「正式轮时段暂停」，文字检索不算查询向量、只走品牌与全文。向量客户端与工作台同一份，共用 GPU 锁。
+- **限速**：按令牌，每分钟 60 次，其中以图搜图 6 次；超出回 `429` + `Retry-After`。内存计数，重启清零。
+- **其他**：带 `Origin` 且不是 `[web].public_url` 的回 `403`（防浏览器跨站）；请求体 ≤8MB；单次调用最多等 60 秒，超时回 JSON-RPC 错误；排队满回 `503`。请求由一条专职线程顺序处理。
+- **审计**：每次请求一行 `mcp_calls`（含鉴权失败：`token_id` 为空、`method = auth_failed`），记工具名、查询词前 200 字（图片只记来源与大小）、成败、耗时；保留 90 天。与人工操作的 `audit` 表分开。
+
 ## 运维
 
 | 方法 | 路径 | 角色 | 说明 |

@@ -24,9 +24,20 @@ use csw_collector_kb::fts::Tokenizer;
 use csw_collector_kb::vectors::VectorStore;
 use csw_collector_mcpsrv::magazine::{KbImageSearch, KbMagazineSearch};
 use csw_collector_mcpsrv::server::Server;
-use csw_collector_mcpsrv::tools::{KbContext, KbSearch, KbSimilarSelected, MemoryLookup};
+use csw_collector_mcpsrv::tools::{
+    GpuPaused, KbContext, KbSearch, KbSimilarSelected, MemoryLookup,
+};
 
-pub async fn run(cfg: &Config) -> Result<()> {
+/// 知识库工具共用的家当：自己的库连接、向量库句柄、别名表、分词器。
+///
+/// stdio 与远程 HTTP 共用。`vector` 由调用方给：stdio 自己建，
+/// HTTP 用工作台那份的克隆（共用 GPU 锁）。
+pub async fn build_kb_context(
+    cfg: &Config,
+    vector: Option<VectorClient>,
+    send_van_quotes: bool,
+    gpu_paused: Option<GpuPaused>,
+) -> Result<Arc<KbContext>> {
     let conn = csw_collector_core::store::open(&cfg.db_path())
         .with_context(|| format!("打开本地库 {}", cfg.db_path().display()))?;
     let brands = BrandIndex::load(&conn).context("读别名表")?;
@@ -34,7 +45,35 @@ pub async fn run(cfg: &Config) -> Result<()> {
     let store = VectorStore::open(&cfg.lance_path(), crate::EMBED_DIM, &cfg.vector.embed_model)
         .await
         .context("打开向量库")?;
+    Ok(Arc::new(KbContext {
+        conn: Mutex::new(conn),
+        store,
+        brands,
+        tok,
+        vector,
+        send_van_quotes,
+        gpu_paused,
+    }))
+}
 
+/// 远程 HTTP 入口的 `Server`：只装知识库五件，**不装** `web_search` / `fetch_page`
+/// （要用模型网关的密钥、会替调用方出网）。Van 原话恒不出。
+/// 哪枚令牌能用哪几件，由传输层按权限范围过滤。
+pub async fn build_remote_server(
+    cfg: &Config,
+    vector: VectorClient,
+    gpu_paused: GpuPaused,
+) -> Result<Server> {
+    let ctx = build_kb_context(cfg, Some(vector), false, Some(gpu_paused)).await?;
+    Ok(Server::new("csw-kb", env!("CARGO_PKG_VERSION"))
+        .with(Box::new(KbSearch(ctx.clone())))
+        .with(Box::new(KbSimilarSelected(ctx.clone())))
+        .with(Box::new(MemoryLookup(ctx.clone())))
+        .with(Box::new(KbMagazineSearch(ctx.clone())))
+        .with(Box::new(KbImageSearch::remote(ctx)?)))
+}
+
+pub async fn run(cfg: &Config) -> Result<()> {
     // 向量服务不可达时照样起：品牌与全文两路还能查，比整个工具挂掉强
     let vector = VectorClient::new(VectorConfig {
         base_url: cfg.vector.base_url.clone(),
@@ -50,15 +89,7 @@ pub async fn run(cfg: &Config) -> Result<()> {
             None
         }
     };
-
-    let ctx = Arc::new(KbContext {
-        conn: Mutex::new(conn),
-        store,
-        brands,
-        tok,
-        vector,
-        send_van_quotes: cfg.features.send_van_quotes_to_model,
-    });
+    let ctx = build_kb_context(cfg, vector, cfg.features.send_van_quotes_to_model, None).await?;
 
     let web = Arc::new(Web {
         client: csw_collector_harvest::netguard::guarded_client(
@@ -77,7 +108,7 @@ pub async fn run(cfg: &Config) -> Result<()> {
         .with(Box::new(KbSimilarSelected(ctx.clone())))
         .with(Box::new(MemoryLookup(ctx.clone())))
         .with(Box::new(KbMagazineSearch(ctx.clone())))
-        .with(Box::new(KbImageSearch(ctx)))
+        .with(Box::new(KbImageSearch::local(ctx)))
         .with(Box::new(FetchPage(web.clone())))
         .with(Box::new(WebSearch(web)));
     tracing::info!(工具 = ?server.tool_names(), "本地 MCP 起来了（stdio）");

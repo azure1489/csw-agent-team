@@ -38,12 +38,34 @@ pub struct KbContext {
     /// `memory_lookup` 返回案例时带不带 Van 的原话。深核时这些工具的结果会进
     /// codex → 模型（csw-subapi，第三方）。见 `Features::send_van_quotes_to_model`，默认关。
     pub send_van_quotes: bool,
+    /// 现在要不要把 GPU 让给正式轮。返回 true 时**一律不碰向量服务**：
+    /// 文字检索只走品牌与全文，以图搜图直接暂停。
+    ///
+    /// stdio 版是 None（深核线程本来就在正式轮里跑，让不让由轮次自己定）；
+    /// 远程 HTTP 版接的是工作台的安静窗口，外人随手一查不该和正式轮抢卡。
+    pub gpu_paused: Option<GpuPaused>,
 }
 
+/// 见 [`KbContext::gpu_paused`]
+pub type GpuPaused = Arc<dyn Fn() -> bool + Send + Sync>;
+
 impl KbContext {
+    /// 现在可用的向量客户端：没配，或正在给正式轮让卡，都是 None。
+    pub fn vector_now(&self) -> Option<&VectorClient> {
+        if self.gpu_paused.as_ref().is_some_and(|f| f()) {
+            return None;
+        }
+        self.vector.as_ref()
+    }
+
+    /// 是不是正在给正式轮让卡
+    pub fn gpu_is_paused(&self) -> bool {
+        self.gpu_paused.as_ref().is_some_and(|f| f())
+    }
+
     /// 查询文本 → 向量。没有向量服务就返回 None，检索照样走品牌与全文两路。
     async fn embed(&self, text: &str) -> Option<Vec<f32>> {
-        let v = self.vector.as_ref()?;
+        let v = self.vector_now()?;
         let inputs = [csw_collector_core::vector::EmbedInput::Text(
             text.to_string(),
         )];
@@ -423,6 +445,7 @@ mod tests {
             // 不连向量服务：品牌与全文两路照样能检索
             vector: None,
             send_van_quotes,
+            gpu_paused: None,
         })
     }
 

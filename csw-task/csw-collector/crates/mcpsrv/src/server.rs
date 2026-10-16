@@ -88,6 +88,18 @@ impl Server {
 
     /// 处理一行。返回 None 表示这条是通知，不用回。
     pub async fn handle_line(&self, line: &str) -> Option<String> {
+        self.handle_line_scoped(line, &|_| true).await
+    }
+
+    /// 同 [`Server::handle_line`]，但只开放 `allow` 认可的工具：
+    /// `tools/list` 不列其余的，`tools/call` 调其余的回 `isError`（不是协议错误）。
+    ///
+    /// 远程 HTTP 入口按令牌的权限范围用它；stdio 走全开的 `handle_line`。
+    pub async fn handle_line_scoped(
+        &self,
+        line: &str,
+        allow: &(dyn Fn(&str) -> bool + Sync),
+    ) -> Option<String> {
         let v: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             // 连 JSON 都不是：按协议回 -32700，但没有 id 可回就只能丢掉
@@ -108,13 +120,13 @@ impl Server {
             })),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({
-                "tools": self.tools.values().map(|t| json!({
+                "tools": self.tools.values().filter(|t| allow(t.name())).map(|t| json!({
                     "name": t.name(),
                     "description": t.description(),
                     "inputSchema": t.input_schema(),
                 })).collect::<Vec<_>>()
             })),
-            "tools/call" => self.call_tool(&params).await,
+            "tools/call" => self.call_tool(&params, allow).await,
             other => Err(Fault::MethodNotFound(other.to_string())),
         };
 
@@ -125,7 +137,11 @@ impl Server {
         })
     }
 
-    async fn call_tool(&self, params: &Value) -> Result<Value, Fault> {
+    async fn call_tool(
+        &self,
+        params: &Value,
+        allow: &(dyn Fn(&str) -> bool + Sync),
+    ) -> Result<Value, Fault> {
         let name = params
             .get("name")
             .and_then(Value::as_str)
@@ -134,6 +150,12 @@ impl Server {
         let Some(tool) = self.tools.get(name) else {
             return Err(Fault::BadParams(format!("没有这个工具：{name}")));
         };
+        if !allow(name) {
+            return Ok(json!({
+                "content": [{"type": "text", "text": format!("这枚令牌没有 {name} 的权限")}],
+                "isError": true
+            }));
+        }
         // 工具自己的错误**不是协议错误**：按 MCP 的约定回 isError 的正常结果，
         // 让模型看见「这次没查到，原因是什么」，而不是让客户端以为协议坏了
         Ok(match tool.call(&args).await {
@@ -153,6 +175,20 @@ enum Fault {
 
 fn err_line(id: Value, code: i64, message: &str) -> String {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}).to_string()
+}
+
+/// 一条 JSON-RPC 消息里的 `method` 与 `tools/call` 的工具名（不是这个方法就是空串）。
+/// 给传输层做限速与审计用，不改变处理结果。
+pub fn peek(v: &Value) -> (&str, &str) {
+    let method = v.get("method").and_then(Value::as_str).unwrap_or_default();
+    let tool = if method == "tools/call" {
+        v.pointer("/params/name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+    } else {
+        ""
+    };
+    (method, tool)
 }
 
 #[cfg(test)]
@@ -266,6 +302,43 @@ mod tests {
         )
         .await;
         assert_eq!(r["error"]["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn 按范围只开放部分工具() {
+        let s = server();
+        let deny = |n: &str| n != "echo";
+        let r: Value = serde_json::from_str(
+            &s.handle_line_scoped(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#, &deny)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(r["result"]["tools"].as_array().unwrap().is_empty(), "{r}");
+        let r: Value = serde_json::from_str(
+            &s.handle_line_scoped(
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"text":"x"}}}"#,
+                &deny,
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(r["result"]["isError"], true, "{r}");
+        assert!(
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("没有 echo 的权限")
+        );
+    }
+
+    #[test]
+    fn peek取方法与工具名() {
+        let v = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo"}});
+        assert_eq!(peek(&v), ("tools/call", "echo"));
+        let v = json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"name":"echo"}});
+        assert_eq!(peek(&v), ("tools/list", ""));
     }
 
     #[tokio::test]
