@@ -70,7 +70,24 @@ pub fn put(conn: &Connection, s: &TaskSnapshot) -> Result<()> {
 ///
 /// **预取轮据此判断**：拿不到就用空标准跑一遍——那样结论复用不上，
 /// 但描述与向量仍然省下来了，这是「缓存不是前置条件」的意思。
+///
+/// 最近那一单被退回过的话，镜像里的标准末尾带着「主编退回意见」一节；次日新派的单没有这一节。
+/// 带着它预取，指纹与正式轮永远对不上，复用全落空、正式轮多判四十分钟（10-16 r75 / r77 查出），
+/// 所以这里去掉那一节——它只属于那一单的返工。
 pub fn latest_work_standard(conn: &Connection, stage_code: &str) -> Result<Option<String>> {
+    Ok(latest_work_standard_raw(conn, stage_code)?.map(|s| without_return_note(&s)))
+}
+
+/// 去掉作业标准末尾的「主编退回意见」一节（各节以空行 + 【节名】分隔，退回意见总在最后）。
+pub fn without_return_note(s: &str) -> String {
+    const MARK: &str = "【主编退回意见（这一次要改的）】";
+    match s.find(MARK) {
+        Some(i) => s[..i].trim_end().to_string(),
+        None => s.to_string(),
+    }
+}
+
+fn latest_work_standard_raw(conn: &Connection, stage_code: &str) -> Result<Option<String>> {
     let raw: Option<String> = conn
         .query_row(
             "SELECT instructions_json FROM task_mirror

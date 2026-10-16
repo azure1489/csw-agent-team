@@ -3893,6 +3893,11 @@ mod tests {
         back.latest_review =
             Some(serde_json::json!({"verdict": "returned", "comment": "缺 images"}));
         assert!(work_standard(&back).contains("【主编退回意见（这一次要改的）】\n缺 images"));
+        // 预取轮用「最近一单」的标准：去掉退回意见后必须与新派单逐字相同，否则指纹对不上、复用全落空
+        assert_eq!(
+            csw_collector_core::mirror::without_return_note(&work_standard(&back)),
+            s
+        );
         assert!(s.contains("【作业内容】\n每条都判，不设 top K"));
         assert!(s.contains("【自检】"));
         assert!(s.contains("【派工单备注】"));
