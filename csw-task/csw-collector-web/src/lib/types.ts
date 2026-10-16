@@ -541,3 +541,27 @@ export interface PulledList {
   prelim: number
   rows: PulledRow[]
 }
+
+/** 远程 MCP 令牌（列表里**没有令牌本身**） */
+export interface McpToken {
+  id: number
+  name: string
+  scopes: string[]
+  created_at: string
+  expires_at: string | null
+  revoked_at: string | null
+  last_used_at: string | null
+  /** 近 7 天的调用次数（含失败） */
+  calls_7d: number
+  /** 没吊销、没过期 */
+  active: boolean
+}
+
+/** 签发的响应：`token` 只出现这一次 */
+export interface McpTokenIssued {
+  id: number
+  name: string
+  scopes: string[]
+  days: number | null
+  token: string
+}

@@ -24,6 +24,8 @@ import type {
   KbStatus,
   MagazineItem,
   MagazineSearchResult,
+  McpToken,
+  McpTokenIssued,
   MemoryCase,
   MemoryRule,
   PendingRow,
@@ -344,6 +346,37 @@ export function useRestoreExcluded(roundId?: number) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['round-exclusions'] })
       void qc.invalidateQueries({ queryKey: ['judgements'] })
+      void qc.invalidateQueries({ queryKey: ['audit'] })
+    },
+  })
+}
+
+// ─────────────────────────── 远程 MCP 令牌 ───────────────────────────
+
+/** 只给超级管理员；列表里没有令牌本身 */
+export const useMcpTokens = () =>
+  useQuery({ queryKey: ['mcp-tokens'], queryFn: () => get<McpToken[]>('/mcp-tokens') })
+
+/** 签发。返回里的 `token` 是唯一一次能看到明文的地方 */
+export function useIssueMcpToken() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (v: { name: string; scopes: string[]; days: number | null }) =>
+      (await api.post<McpTokenIssued>('/mcp-tokens', v)).data,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['mcp-tokens'] })
+      void qc.invalidateQueries({ queryKey: ['audit'] })
+    },
+  })
+}
+
+/** 吊销：立即生效，下一次请求就是 401 */
+export function useRevokeMcpToken() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api.post(`/mcp-tokens/${id}/revoke`, {}),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['mcp-tokens'] })
       void qc.invalidateQueries({ queryKey: ['audit'] })
     },
   })

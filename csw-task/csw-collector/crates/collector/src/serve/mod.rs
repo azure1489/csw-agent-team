@@ -21,6 +21,7 @@ pub mod http;
 pub mod item;
 pub mod kb_magazine;
 pub mod mcp_http;
+pub mod mcp_tokens_api;
 pub mod outbox_sender;
 pub mod register;
 pub mod round;
@@ -118,7 +119,11 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
     let app = axum::Router::new()
         .merge(http::ops_router(app_state.clone()))
         .merge(http::api_router(app_state.clone(), auth.clone()))
-        .merge(write::write_router(app_state, auth.clone()))
+        .merge(write::write_router(app_state.clone(), auth.clone()))
+        .merge(mcp_tokens_api::router(write::WriteState {
+            app: app_state,
+            auth: auth.clone(),
+        }))
         .merge(crate::bff::router(auth))
         // 知识库 MCP 的远程入口（令牌鉴权，见 mcp_http）
         .merge(mcp_http::router(cfg, svc.clone())?);

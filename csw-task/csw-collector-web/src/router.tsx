@@ -10,6 +10,7 @@ import { Kb } from '@/pages/Kb'
 import { MagazineItem } from '@/pages/MagazineItem'
 import { Ledger } from '@/pages/Ledger'
 import { Login } from '@/pages/Login'
+import { McpTokens } from '@/pages/McpTokens'
 import { Memory } from '@/pages/Memory'
 import { Metrics } from '@/pages/Metrics'
 import { Overview } from '@/pages/Overview'
@@ -67,6 +68,14 @@ export const router = createBrowserRouter([
         element: (
           <Guard need="operator">
             <Settings />
+          </Guard>
+        ),
+      },
+      {
+        path: 'mcp-tokens',
+        element: (
+          <Guard need="superadmin">
+            <McpTokens />
           </Guard>
         ),
       },

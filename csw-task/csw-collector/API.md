@@ -143,6 +143,7 @@ Jev 初评的概率只在服务端决定「先判哪条」，不出现在任何�
 | POST | `/mcp` | `Authorization: Bearer cswkb_…` | 一条 JSON-RPC。请求回 `200 application/json`；通知 / 客户端回复回 `202` 空体；数组（批量）回 `400`；坏 JSON 回 `400` |
 | GET / DELETE | `/mcp` | —— | `405`：不提供服务端推送流，不维护会话（不发 `Mcp-Session-Id`） |
 
+- **后台管理**（会话 + CSRF，**只给 superadmin**；页面「MCP 令牌」）：`GET /api/mcp-tokens` 列出（不含令牌，带近 7 天调用数与是否可用）；`POST /api/mcp-tokens` `{name, scopes: ["magazine","kb"], days: null|N}` 签发，响应里的 `token` 是唯一一次明文（`Cache-Control: no-store`）；`POST /api/mcp-tokens/:id/revoke` 吊销（早已吊销回 409）。签发、吊销都进 `audit`（`mcp_token_issue` / `mcp_token_revoke`），不记令牌。
 - **令牌**：`csw-collector mcp-token issue <名字> [--scopes magazine,kb] [--days N]` 签发，明文只打印一次，库里只存 SHA-256；`list` / `revoke <id>`。没有、错、已吊销、已过期都回 `401` + `WWW-Authenticate: Bearer`。
 - **权限范围**：`magazine` → `kb_magazine_search`、`kb_image_search`；`kb` → `kb_search`、`kb_similar_selected`。`tools/list` 只列有权限的，越权调用回 `isError`。`memory_lookup`（Van 原话）不对外，签发时就拒；Van 原话恒不出。`web_search` / `fetch_page` 不装。
 - **以图搜图（远程版）**：参数 `image_url`（只许 https，过出网防护：封内网、回环与云元数据地址，≤10MB、15 秒）或 `image_base64`（解码后 ≤5MB，容许 data URL 前缀），二选一；不认 `path`。

@@ -292,4 +292,6 @@ const ACTION_CN: Record<string, string> = {
   van_mark_remove: '撤掉勾选',
   manual_round: '手动开轮',
   rerun: '重跑',
+  mcp_token_issue: '签发 MCP 令牌',
+  mcp_token_revoke: '吊销 MCP 令牌',
 }

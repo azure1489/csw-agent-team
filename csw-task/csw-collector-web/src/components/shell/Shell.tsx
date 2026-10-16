@@ -3,7 +3,7 @@ import { NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '@/lib/auth'
 import type { Role } from '@/lib/auth'
 
-/** 十一页。`need` 是最低角色；`van` 只看得到给她的那一页。 */
+/** 十二页。`need` 是最低角色；`van` 只看得到给她的那一页。 */
 const NAV: { to: string; label: string; need: Role; vanOnly?: boolean }[] = [
   { to: '/van', label: 'Van 模式', need: 'viewer', vanOnly: true },
   { to: '/', label: '今日总览', need: 'viewer' },
@@ -15,6 +15,7 @@ const NAV: { to: string; label: string; need: Role; vanOnly?: boolean }[] = [
   { to: '/rubric', label: '判断框架', need: 'viewer' },
   { to: '/metrics', label: '指标', need: 'viewer' },
   { to: '/settings', label: '运行与设置', need: 'operator' },
+  { to: '/mcp-tokens', label: 'MCP 令牌', need: 'superadmin' },
 ]
 
 const RANK: Record<Role, number> = { viewer: 0, van: 0, operator: 1, superadmin: 2 }
