@@ -1543,7 +1543,7 @@ const SUBMITTED: &str = "已交状态:";
 const UNCHANGED: &str = "内容与上一版相同，未重交";
 /// 交付物 / 登记导出格式的修订号。**改了导出（字段、登记口径、包内文件）就改它**，
 /// 否则返工后内容指纹一样，修好的导出不会重交
-const EXPORT_REV: &str = "2026-10-16a"; // v11：给 Van 的选题单、登记带 rank、五栏按 01 登记算
+const EXPORT_REV: &str = "2026-10-16c"; // v11 选题单表格与附录、不推荐并长尾；窗口口径说明改现行；图片来源对应清单
 
 /// 引擎派的窗口止点是否已经过了。读不出来的当已过：不能因为格式问题永远不开工。
 fn window_closed(to: &str, now: jiff::Timestamp) -> bool {

@@ -2013,7 +2013,7 @@ pub async fn rework_in_place(
             // 查询文字写本期窗口：旧的写的是开工时刻的止点（主编 #615：query 仍是旧止点）
             sw.query = format!(
                 "工作台按平台贴文时间 posted_at 筛（缺失按首次入库）：{} ~ {}，左闭右开；接口按发布时间取宽，取回 {} 条、去重 {} 条；\
-                 派工单现行口径为 first_seen_at（首次入库），posted_at 优先是代码执行事实；{}",
+                 派工单现行口径为原始披露时间（posted_at 优先、缺失按首次入库），与代码执行一致；{}",
                 prev.window_start,
                 win_end,
                 sw.found,

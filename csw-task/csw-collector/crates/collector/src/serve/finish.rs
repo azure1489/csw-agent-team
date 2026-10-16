@@ -773,7 +773,7 @@ pub fn build_deliverable(
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
     // 首页先放给 Van 的选题单（v11：成熟选题全部出卡，主选在前；点名的优先），其余清单在后
-    let (cards, card_keys) = first_cards(
+    let (cards, card_appendix, card_keys) = first_cards(
         conn,
         cfg,
         judgements,
@@ -792,7 +792,8 @@ pub fn build_deliverable(
         .as_ref()
         .and_then(|f| serde_json::to_string_pretty(f).ok());
     let five = five.as_ref().map(five_columns_section).unwrap_or_default();
-    body = format!("{cards}{five}{body}");
+    // 选题单（表 + 待核 + 不推荐）→ 五栏 → 选题卡全文附录 → 逐帖台账
+    body = format!("{cards}{five}{card_appendix}{body}");
     // 口径冲突单独说明，不混进红灯
     if let Some((_, lines)) = reconciled
         && let Some(c) = lines.iter().find(|l| l.starts_with("规则口径冲突"))
@@ -858,7 +859,7 @@ pub fn build_deliverable(
         }
     }
     if !image_index.is_empty() {
-        body.push_str("\n## 随包图片（按条目，`_N` 是原帖第 N 张）\n\n");
+        body.push_str("\n## 随包图片（按条目，`_N` 是原帖第 N 张）\n\n每张图的原帖图序、来源地址、像素、字节、SHA-256 与包内文件的对应见 `trace/images_manifest.jsonl`；取图失败的也逐条记在那里。\n\n");
         for (k, files) in &image_index {
             body.push_str(&format!("- `{k}`：{}\n", files.join("、")));
         }
@@ -1091,6 +1092,13 @@ pub fn build_deliverable(
             "trace/engine_reconcile.json",
             serde_json::to_string_pretty(r)?,
         ));
+    }
+
+    // 图片来源对应清单（10-15 r74、10-16 r75 退回第 4 项：缺「原帖图序 → 来源地址 → 像素 / 字节 / SHA
+    // → 包内文件」）。逐张对包内实际字节算，来源字段取本地 media 表；取图失败的也逐条写出
+    let manifest = images_manifest(conn, &entries);
+    if !manifest.is_empty() {
+        entries.push(pack::Entry::text("trace/images_manifest.jsonl", manifest));
     }
 
     let name = format!(
@@ -1544,7 +1552,7 @@ fn first_cards(
     pinned: &[String],
     calib_labels: &HashMap<String, String>,
     picks: &HashMap<String, Vec<u32>>,
-) -> (String, Vec<String>) {
+) -> (String, String, Vec<String>) {
     let by_j: HashMap<&str, &Judgement> = judgements
         .iter()
         .map(|j| (j.candidate_key.as_str(), j))
@@ -1591,6 +1599,18 @@ fn first_cards(
     if keys.is_empty() {
         s.push_str("> 本期没有成熟选题，见下方待核与缺量说明。\n\n");
     }
+    // 选题单是一行一题的表（10-16 用户定：r75 演练 48 个成熟选题、48 张全卡 3900 行，Van 读不过来；
+    // 判断框架同档不排先后，不能截成前 6+2）。完整卡片挪到附录，表里写卡号对得上
+    let head = std::mem::take(&mut s);
+    let mut rows: Vec<String> = Vec::new();
+    let cell = |x: &str, max: usize| -> String {
+        let x = x.trim().replace(['\n', '\r'], " ").replace('|', "｜");
+        if x.chars().count() > max {
+            format!("{}…", x.chars().take(max).collect::<String>())
+        } else {
+            x
+        }
+    };
     let (mut np, mut na) = (0, 0);
     for k in keys.iter() {
         let j = by_j[k.as_str()];
@@ -1602,6 +1622,36 @@ fn first_cards(
             na += 1;
             format!("备选 {na}")
         };
+        {
+            let gaps: Vec<&str> = j
+                .gaps
+                .iter()
+                .filter(|g| g.level == csw_collector_core::types::GapLevel::Production)
+                .map(|g| g.what.as_str())
+                .collect();
+            let img = shown_previews(conn, cfg, k, picks)
+                .first()
+                .map(|p| format!("[图](images/{}.jpg)", p.candidate_key))
+                .unwrap_or_else(|| "—".into());
+            rows.push(format!(
+                "| {label} | {} | {} | {} | {} | {img} |",
+                cell(
+                    if j.headline.is_empty() {
+                        k
+                    } else {
+                        &j.headline
+                    },
+                    40
+                ),
+                cell(&j.three_sentences.why_worth, 60),
+                intake::comparison_name(j.comparison.verdict),
+                if gaps.is_empty() {
+                    "无".to_string()
+                } else {
+                    cell(&gaps.join("；"), 30)
+                },
+            ));
+        }
         s.push_str(&format!(
             "## {label} ｜{}\n\n",
             if j.headline.is_empty() {
@@ -1736,8 +1786,87 @@ fn first_cards(
         }
         s.push_str("\n---\n\n");
     }
-    s.push_str(&rest_of_sheet(judgements, topics));
-    (s, keys)
+    let cards = std::mem::take(&mut s);
+    let mut sheet = head;
+    if !rows.is_empty() {
+        sheet.push_str("| # | 选题 | 为什么值得看 | 查重 | 影响成稿的缺口 | 代表图 |\n|---|---|---|---|---|---|\n");
+        sheet.push_str(&rows.join("\n"));
+        sheet.push_str("\n\n完整卡片（三句话、来源与时间、深核证据、原文译文、全部同帖图）见附录「选题卡全文」，卡号与表中一致。\n\n");
+    }
+    sheet.push_str(&rest_of_sheet(judgements, topics));
+    let appendix = if cards.is_empty() {
+        String::new()
+    } else {
+        format!("# 附录 · 选题卡全文（{} 张）\n\n{cards}", keys.len())
+    };
+    (sheet, appendix, keys)
+}
+
+/// 包内每张图的来源对应：包内文件 → 条目与原帖图序 → 来源地址、下载时间 → 像素 / 字节 / SHA-256。
+/// 像素与 SHA 按包内实际字节算（不信库里记的）；同条目取图失败的另起一行写明。
+/// 01 用的是 csw 来源库存的版本，原帖最高档在 05 配图时经 hires-service 取，这里如实写，不冒充原图。
+fn images_manifest(conn: &Connection, entries: &[pack::Entry]) -> String {
+    const VERSION_NOTE: &str = "csw 来源库存档版本（来源库只存这一档，01 不另取原帖最高档；原图在 05 配图时经 hires-service 取）";
+    let mut lines = Vec::new();
+    let mut keys: Vec<String> = Vec::new();
+    for e in entries.iter().filter(|e| e.path.starts_with("images/")) {
+        let file = e.path.trim_start_matches("images/");
+        let stem = file.rsplit_once('.').map(|(a, _)| a).unwrap_or(file);
+        let (key, n) = match stem
+            .rsplit_once('_')
+            .and_then(|(k, n)| Some((k, n.parse::<i64>().ok()?)))
+        {
+            Some(x) => x,
+            None => (stem, 0),
+        };
+        if !keys.iter().any(|k| k == key) {
+            keys.push(key.to_string());
+        }
+        let row: Option<(String, Option<String>)> = conn
+            .query_row(
+                "SELECT url, downloaded_at FROM media WHERE candidate_key = ?1 AND ordinal = ?2",
+                params![key, n - 1],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        let (w, h) = image::load_from_memory(&e.bytes)
+            .map(|i| (i.width(), i.height()))
+            .unwrap_or((0, 0));
+        lines.push(serde_json::json!({
+            "file": e.path,
+            "candidate_key": key,
+            "post_image_no": n,
+            "source_url": row.as_ref().map(|r| r.0.clone()),
+            "downloaded_at": row.as_ref().and_then(|r| r.1.clone()),
+            "width": w,
+            "height": h,
+            "bytes": e.bytes.len(),
+            "sha256": super::slots::sha256_hex(&e.bytes),
+            "version": VERSION_NOTE,
+            "status": if row.is_some() { "ok" } else { "包内有图、本地媒体表查不到来源记录（多为前几版包归档的原图）" },
+        }));
+    }
+    for key in &keys {
+        let Ok(mut st) = conn.prepare(
+            "SELECT ordinal, url FROM media WHERE candidate_key = ?1 AND failed = 1 ORDER BY ordinal",
+        ) else {
+            continue;
+        };
+        let failed: Vec<(i64, String)> = st
+            .query_map(params![key], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map(|it| it.filter_map(Result::ok).collect())
+            .unwrap_or_default();
+        for (ordinal, url) in failed {
+            lines.push(serde_json::json!({
+                "file": null,
+                "candidate_key": key,
+                "post_image_no": ordinal + 1,
+                "source_url": url,
+                "status": "取图或识别失败，未进包",
+            }));
+        }
+    }
+    lines.iter().map(|l| l.to_string() + "\n").collect()
 }
 
 /// 选题档位（选题里组内最高的档）。
@@ -1829,14 +1958,29 @@ pub fn rest_of_sheet(
         "## 不推荐（{} 帖，逐帖结论在下方台账）\n\n",
         not_rec.len()
     ));
-    if !dist.is_empty() {
-        s.push_str(
-            &dist
-                .iter()
-                .map(|(w, n)| format!("- {w}：{n} 帖"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        );
+    // 「降低优先级」是自由文本，几乎一条一类（r75 演练：61 帖分成 40 多类）。只列帖数最多的
+    // 几类，其余并成一行，否则这一节比选题单还长、也看不出分布
+    const TOP: usize = 6;
+    let mut lines: Vec<String> = dist
+        .iter()
+        .filter(|(_, n)| *n >= 2)
+        .take(TOP)
+        .map(|(w, n)| format!("- {w}：{n} 帖"))
+        .collect();
+    let shown: usize = dist
+        .iter()
+        .filter(|(_, n)| *n >= 2)
+        .take(TOP)
+        .map(|(_, n)| n)
+        .sum();
+    if not_rec.len() > shown {
+        lines.push(format!(
+            "- 其他理由（各不相同，见台账）：{} 帖",
+            not_rec.len() - shown
+        ));
+    }
+    if !lines.is_empty() {
+        s.push_str(&lines.join("\n"));
         s.push('\n');
     }
     s.push_str("\n---\n\n");
@@ -2031,7 +2175,7 @@ fn window_ids(
             "before_window": TraceOutcome::BeforeWindow.cn(),
             "after_window": TraceOutcome::AfterWindow.cn(),
             "no_time": TraceOutcome::NoTime.cn(),
-            "判定次序": "先去重，再筛图文，再按 posted_at（平台贴文时间）优先、缺失按首次入库，落在 [起, 止) 左闭右开（代码事实）；派工单口径为 first_seen_at，两口径逐键差异见「实际筛选依据」",
+            "判定次序": "先去重，再筛图文，再按原始披露时间（posted_at，平台贴文时间）、缺失才按首次入库，落在 [起, 止) 左闭右开；与现行派工单口径一致（daily_news v10 起窗口按原始披露时间，首次入库只作抓取证据），按首次入库的逐键差异见「实际筛选依据」",
         },
     });
     Ok((out, summary))
@@ -2109,7 +2253,7 @@ fn window_basis(
         "窗口": format!("{from} ~ {to}（UTC，左闭右开）"),
         "实际过滤字段": "posted_at（csw 接口 postedAt，平台贴文时间）优先；posted_at 缺失时用 ingested_at（csw 首次入库）",
         "代码位置": "csw-collector crates/harvest/src/pipeline.rs window_outcome / in_window：c.posted_at.or(c.ingested_at) 落在 [起, 止) 内",
-        "说明": "现行派工单（daily_news v9）与反馈 22 的入窗口径是 first_seen_at（首次入库）；工作台实际执行的是 posted_at 优先，这是代码事实如实记录，不代表现行规则。posted_at 只是平台贴文时间，不是另行核实过的首次披露——独立核到的首次披露另列在卡片上。定义 v10 草稿把口径改为原始披露，激活前以派工单为准",
+        "说明": "现行派工单（daily_news v10 起，v11 沿用）的入窗口径是原始披露时间：平台上的发布时间决定这条属于哪一期，首次入库只作抓取证据，没有披露时间的才按首次入库判。工作台按 posted_at 优先、缺失按 ingested_at 执行，与现行口径一致。posted_at 是平台贴文时间，独立核到的首次披露另列在卡片上；下面三组是与「按首次入库」相比的逐键差异，只作对照",
         "first_seen_at 入口": "csw 接口 ingestedAt（贴文首次进入来源库的时间），逐条写在 trace/items.jsonl 与 trace/window_ids.jsonl 的 first_seen_at；两口径的逐键差异列在下面三组",
         "两口径结论": if only_posted.is_empty() && only_seen.is_empty() && fallback.is_empty() {
             "按原始披露与按首次入库筛出的集合相同（差异 0 条）；本期按哪个口径结果一致".to_string()
@@ -2161,6 +2305,46 @@ mod tests {
     }
 
     #[test]
+    fn 选题单是一行一题的表_全文在附录() {
+        let conn = csw_collector_core::store::open_in_memory().unwrap();
+        let mut r1 = j("r1", Tier::Recommend);
+        r1.headline = "品牌A 背包｜侧袋结构值得讲".into();
+        r1.three_sentences.why_worth = "侧袋改成|可拆".into();
+        let js = vec![r1, j("a1", Tier::Alternate), j("p1", Tier::PendingCheck)];
+        let topics = csw_collector_judge::topic::build(&[], &js);
+        let (sheet, appendix, keys) = first_cards(
+            &conn,
+            &Config::default(),
+            &js,
+            &topics,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        // 成熟的都进表，主选在前；待核不进表
+        assert_eq!(keys, ["r1", "a1"]);
+        assert!(
+            sheet.starts_with("# 给 Van 的选题单（主选 1 · 备选 1）"),
+            "{sheet}"
+        );
+        assert!(
+            sheet.contains("| 主选 1 | 品牌A 背包｜侧袋结构值得讲 | 侧袋改成｜可拆 |"),
+            "{sheet}"
+        );
+        assert!(sheet.contains("| 备选 1 |"), "{sheet}");
+        // 表里不放完整卡片，卡片在附录且卡号一致
+        assert!(!sheet.contains("## 主选 1"), "{sheet}");
+        assert!(
+            appendix.starts_with("# 附录 · 选题卡全文（2 张）"),
+            "{appendix}"
+        );
+        assert!(appendix.contains("## 主选 1 ｜品牌A 背包"), "{appendix}");
+        // 待核与不推荐跟在表后
+        assert!(sheet.contains("## 待核（1 个选题"), "{sheet}");
+    }
+
+    #[test]
     fn 选题单后接待核简表与不推荐分布() {
         let mut gap = j("a2", Tier::Alternate);
         gap.gaps.push(csw_collector_core::types::Gap {
@@ -2185,8 +2369,68 @@ mod tests {
         assert!(!s.contains("`r1`"), "{s}");
         // 不推荐只给条数与分布
         assert!(s.contains("## 不推荐（2 帖"), "{s}");
-        assert!(s.contains("- 只有新配色：1 帖"), "{s}");
-        assert!(s.contains("- 价值或适配度不成立：1 帖"), "{s}");
+        // 只有一帖的理由不单列，并进「其他」
+        assert!(!s.contains("- 只有新配色"), "{s}");
+        assert!(s.contains("- 其他理由（各不相同，见台账）：2 帖"), "{s}");
+    }
+
+    #[test]
+    fn 图片清单逐张对上来源与字节_失败的也列出() {
+        let conn = csw_collector_core::store::open_in_memory().unwrap();
+        let cand = Candidate {
+            candidate_key: "hxo-a1b2c3".into(),
+            platform: csw_collector_core::types::Platform::Instagram,
+            source_id: "1".into(),
+            collector: "csw_window".into(),
+            account: "hxo".into(),
+            url: "https://www.instagram.com/p/X/".into(),
+            text: String::new(),
+            translated: String::new(),
+            posted_at: None,
+            ingested_at: None,
+            likes: None,
+            comments: None,
+            followers: None,
+            heat_ratio: None,
+            content_type: "Carousel".into(),
+            media: vec![],
+            tags: vec![],
+            hashtags: vec![],
+        };
+        csw_collector_core::ledger::upsert_candidate(&conn, &cand).unwrap();
+        for (b3, ord, url, failed) in [
+            ("b0", 0, "https://cdn.example/hxo/0.jpg", 0),
+            ("b1", 1, "https://cdn.example/hxo/1.jpg", 1),
+        ] {
+            conn.execute(
+                "INSERT INTO media(blake3, candidate_key, ordinal, kind, url, failed) VALUES (?1,'hxo-a1b2c3',?2,'photo',?3,?4)",
+                params![b3, ord, url, failed],
+            )
+            .unwrap();
+        }
+        let entries = vec![
+            pack::Entry::binary("images/hxo-a1b2c3_1.jpg", vec![1, 2, 3]),
+            pack::Entry::text("index.md", "x"),
+        ];
+        let m = images_manifest(&conn, &entries);
+        let rows: Vec<serde_json::Value> = m
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 2, "{m}");
+        assert_eq!(rows[0]["file"], "images/hxo-a1b2c3_1.jpg");
+        assert_eq!(rows[0]["post_image_no"], 1);
+        assert_eq!(rows[0]["source_url"], "https://cdn.example/hxo/0.jpg");
+        assert_eq!(rows[0]["bytes"], 3);
+        assert_eq!(
+            rows[0]["sha256"],
+            super::super::slots::sha256_hex(&[1, 2, 3])
+        );
+        assert!(rows[0]["version"].as_str().unwrap().contains("来源库"));
+        // 取图失败的第 2 张没进包，也要记一行
+        assert!(rows[1]["file"].is_null());
+        assert_eq!(rows[1]["post_image_no"], 2);
+        assert_eq!(rows[1]["status"], "取图或识别失败，未进包");
     }
 
     #[test]
