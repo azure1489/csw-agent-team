@@ -32,6 +32,7 @@ export function McpTokens() {
   const [issued, setIssued] = useState<McpTokenIssued | null>(null)
   const [copied, setCopied] = useState(false)
   const [toRevoke, setToRevoke] = useState<McpToken | null>(null)
+  const [promptCopied, setPromptCopied] = useState(false)
 
   const toggle = (k: string) =>
     setScopes((s) => (s.includes(k) ? s.filter((x) => x !== k) : [...s, k]))
@@ -65,6 +66,23 @@ export function McpTokens() {
         title="MCP 令牌"
         desc="给其他机器上的 codex 查知识库用。只读；令牌明文只在签发后显示一次。"
       />
+
+      <H2>接入说明</H2>
+      <div className="flex flex-wrap items-center gap-2 rounded-[var(--r)] border border-rule bg-surface p-3">
+        <code className="mono select-all text-[12.5px]">{SETUP_URL}</code>
+        <button
+          onClick={() => void navigator.clipboard.writeText(SETUP_PROMPT).then(() => setPromptCopied(true))}
+          className="rounded-[var(--r-sm)] border border-rule bg-surface px-2.5 py-1 text-[12.5px]"
+        >
+          {promptCopied ? '已复制' : '复制给智能体的话'}
+        </button>
+        <a href="/mcp-setup.md" target="_blank" rel="noreferrer" className="text-[12.5px]">
+          打开看看
+        </a>
+        <span className="w-full text-[12.5px] text-muted">
+          把这段话发给对方的 codex / Claude Code，它会照说明装好，再向对方要令牌。令牌另外私下给，不放进这段话里。
+        </span>
+      </div>
 
       <H2>签发</H2>
       <div className="space-y-2.5 rounded-[var(--r)] border border-rule bg-surface p-3">
@@ -241,6 +259,10 @@ export function McpTokens() {
     </section>
   )
 }
+
+const SETUP_URL = 'https://collector.aworld.ltd/mcp-setup.md'
+
+const SETUP_PROMPT = `请读取 ${SETUP_URL} ，按里面的说明在本机给你自己接上 csw-kb 知识库 MCP。装好后向我要令牌（CSW_KB_TOKEN），设好后按第 6 步验证并告诉我结果。不要在输出里回显令牌。`
 
 const CLIENT_TOML = `# ~/.codex/config.toml
 [mcp_servers.csw-kb]

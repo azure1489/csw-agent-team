@@ -304,6 +304,15 @@ server {
         client_max_body_size 8m;
     }
 
+    # 给智能体照着装 csw-kb 的接入说明（前端 public/ 下的静态文件，不含任何令牌）。
+    # 单开一段只为把类型标成 UTF-8 的 markdown：默认 mime 表没有 .md，会被当成二进制下载
+    location = /mcp-setup.md {
+        root /usr/share/nginx/html/csw-collector-web;
+        types { }
+        default_type "text/markdown; charset=utf-8";
+        add_header Cache-Control "no-cache";
+    }
+
     # 工作台接口。每一个都要服务端会话，读接口也不例外
     location /api/ {
         proxy_pass http://172.17.0.1:8090;
