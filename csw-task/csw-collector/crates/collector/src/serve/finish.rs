@@ -859,7 +859,7 @@ pub fn build_deliverable(
         }
     }
     if !image_index.is_empty() {
-        body.push_str("\n## 随包图片（按条目，`_N` 是原帖第 N 张）\n\n每张图的原帖图序、来源地址、像素、字节、SHA-256 与包内文件的对应见 `trace/images_manifest.jsonl`；取图失败的也逐条记在那里。\n\n");
+        body.push_str("\n## 随包图片（按条目，`_N` 是原帖第 N 张）\n\n`images/` 是预览（向图床请求缩放转码后的字节），`source_images/` 是来源库原文件（导出时按原地址原样取回、未重编码）。每张图两份的地址、像素、字节、SHA-256、转换参数与原帖图序见 `trace/images_manifest.jsonl`；取图失败的也逐条记在那里。\n\n");
         for (k, files) in &image_index {
             body.push_str(&format!("- `{k}`：{}\n", files.join("、")));
         }
@@ -1096,7 +1096,9 @@ pub fn build_deliverable(
 
     // 图片来源对应清单（10-15 r74、10-16 r75 退回第 4 项：缺「原帖图序 → 来源地址 → 像素 / 字节 / SHA
     // → 包内文件」）。逐张对包内实际字节算，来源字段取本地 media 表；取图失败的也逐条写出
-    let manifest = images_manifest(conn, &entries);
+    let (manifest, originals) =
+        images_manifest(conn, cfg.csw.thumb_width, &entries, &fetch_originals);
+    entries.extend(originals);
     if !manifest.is_empty() {
         entries.push(pack::Entry::text("trace/images_manifest.jsonl", manifest));
     }
@@ -1802,12 +1804,90 @@ fn first_cards(
     (sheet, appendix, keys)
 }
 
-/// 包内每张图的来源对应：包内文件 → 条目与原帖图序 → 来源地址、下载时间 → 像素 / 字节 / SHA-256。
-/// 像素与 SHA 按包内实际字节算（不信库里记的）；同条目取图失败的另起一行写明。
+/// 取来源库原文件：按地址批量取，返回 地址 → 字节或失败原因。线上走 [`fetch_originals`]，测试注入假的。
+pub type FetchOriginals<'a> = &'a dyn Fn(&[String]) -> HashMap<String, Result<Vec<u8>, String>>;
+
+/// 线上取原文件：在当前运行时里并发取（8 路），每张 30 秒超时。没有运行时（如单测）就一张都不取。
+pub fn fetch_originals(urls: &[String]) -> HashMap<String, Result<Vec<u8>, String>> {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return urls
+            .iter()
+            .map(|u| (u.clone(), Err("没有运行时，未取".into())))
+            .collect();
+    };
+    let urls = urls.to_vec();
+    tokio::task::block_in_place(move || {
+        handle.block_on(async move {
+            let client = match reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    return urls
+                        .iter()
+                        .map(|u| (u.clone(), Err(format!("建客户端失败：{e}"))))
+                        .collect();
+                }
+            };
+            let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
+            let mut set = tokio::task::JoinSet::new();
+            for u in urls {
+                let (client, sem) = (client.clone(), sem.clone());
+                set.spawn(async move {
+                    let _permit = sem.acquire_owned().await;
+                    let r = async {
+                        let resp = client
+                            .get(&u)
+                            .send()
+                            .await
+                            .map_err(|e| format!("请求失败：{e}"))?;
+                        let status = resp.status();
+                        if !status.is_success() {
+                            return Err(format!("HTTP {status}"));
+                        }
+                        resp.bytes()
+                            .await
+                            .map(|b| b.to_vec())
+                            .map_err(|e| format!("读取失败：{e}"))
+                    }
+                    .await;
+                    (u, r)
+                });
+            }
+            let mut out = HashMap::new();
+            while let Some(Ok((u, r))) = set.join_next().await {
+                out.insert(u, r);
+            }
+            out
+        })
+    })
+}
+
+/// 包内每张图的来源对应（10-15 r74、10-16 r75 / r77 退回第 4 / 5 项）。
+///
+/// 包里的 `images/` 是**预览**：下载器向图床请求「原地址 + x-oss-process 缩放转码」得到的字节，
+/// 尺寸与原文件相同时字节也不同。所以每张图列两份：
+/// - 原文件：来源库原地址按原样取回、**不重编码**放进 `source_images/`，列字节、SHA-256、像素、取得时间；
+/// - 预览：实际请求地址与转换参数、字节、SHA-256、像素、当时的下载时间。
+///
+/// 包内文件 → 条目与原帖图序按内容哈希对（media 以下载字节的 blake3 为主键），对不上再按文件名图序。
 /// 01 用的是 csw 来源库存的版本，原帖最高档在 05 配图时经 hires-service 取，这里如实写，不冒充原图。
-fn images_manifest(conn: &Connection, entries: &[pack::Entry]) -> String {
+fn images_manifest(
+    conn: &Connection,
+    thumb_width: u32,
+    entries: &[pack::Entry],
+    fetch: FetchOriginals<'_>,
+) -> (String, Vec<pack::Entry>) {
     const VERSION_NOTE: &str = "csw 来源库存档版本（来源库只存这一档，01 不另取原帖最高档；原图在 05 配图时经 hires-service 取）";
-    let mut lines = Vec::new();
+    struct Row {
+        path: String,
+        key: String,
+        n: i64,
+        src: Option<(String, Option<String>)>,
+        bytes: Vec<u8>,
+    }
+    let mut rows = Vec::new();
     let mut keys: Vec<String> = Vec::new();
     for e in entries.iter().filter(|e| e.path.starts_with("images/")) {
         let file = e.path.trim_start_matches("images/");
@@ -1822,29 +1902,119 @@ fn images_manifest(conn: &Connection, entries: &[pack::Entry]) -> String {
         if !keys.iter().any(|k| k == key) {
             keys.push(key.to_string());
         }
-        let row: Option<(String, Option<String>)> = conn
+        let b3 = blake3::hash(&e.bytes).to_hex().to_string();
+        let by_content: Option<(i64, String, Option<String>)> = conn
             .query_row(
-                "SELECT url, downloaded_at FROM media WHERE candidate_key = ?1 AND ordinal = ?2",
-                params![key, n - 1],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                "SELECT ordinal, url, downloaded_at FROM media WHERE blake3 = ?1",
+                params![b3],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .ok();
-        let (w, h) = image::load_from_memory(&e.bytes)
+        let (n, src) = match by_content {
+            Some((ord, url, at)) => (ord + 1, Some((url, at))),
+            None => (
+                n,
+                conn.query_row(
+                    "SELECT url, downloaded_at FROM media WHERE candidate_key = ?1 AND ordinal = ?2",
+                    params![key, n - 1],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .ok(),
+            ),
+        };
+        rows.push(Row {
+            path: e.path.clone(),
+            key: key.to_string(),
+            n,
+            src,
+            bytes: e.bytes.clone(),
+        });
+    }
+    // 原文件按地址去重后一次取（「每条一张预览」与它对应的那张轮播图是同一个地址）
+    let mut urls: Vec<String> = rows
+        .iter()
+        .filter_map(|r| r.src.as_ref().map(|s| s.0.clone()))
+        .collect();
+    urls.sort();
+    urls.dedup();
+    let fetched_at = jiff::Timestamp::now().to_string();
+    let originals = if urls.is_empty() {
+        HashMap::new()
+    } else {
+        fetch(&urls)
+    };
+    let dims = |b: &[u8]| {
+        image::load_from_memory(b)
             .map(|i| (i.width(), i.height()))
-            .unwrap_or((0, 0));
-        lines.push(serde_json::json!({
-            "file": e.path,
-            "candidate_key": key,
-            "post_image_no": n,
-            "source_url": row.as_ref().map(|r| r.0.clone()),
-            "downloaded_at": row.as_ref().and_then(|r| r.1.clone()),
-            "width": w,
-            "height": h,
-            "bytes": e.bytes.len(),
-            "sha256": super::slots::sha256_hex(&e.bytes),
+            .unwrap_or((0, 0))
+    };
+    let mut extra = Vec::new();
+    let mut placed: HashMap<String, String> = HashMap::new();
+    let mut lines = Vec::new();
+    for r in &rows {
+        let (pw, ph) = dims(&r.bytes);
+        let mut line = serde_json::json!({
+            "file": r.path,
+            "candidate_key": r.key,
+            "post_image_no": r.n,
             "version": VERSION_NOTE,
-            "status": if row.is_some() { "ok" } else { "包内有图、本地媒体表查不到来源记录（多为前几版包归档的原图）" },
-        }));
+            "preview": {
+                "file": r.path,
+                "bytes": r.bytes.len(),
+                "sha256": super::slots::sha256_hex(&r.bytes),
+                "width": pw,
+                "height": ph,
+                "downloaded_at": r.src.as_ref().and_then(|s| s.1.clone()),
+            },
+        });
+        match &r.src {
+            None => {
+                line["status"] =
+                    "包内有图，本地媒体表按内容与图序都查不到来源记录（如前几版包归档的旧图）"
+                        .into();
+            }
+            Some((url, _)) => {
+                let fetched_url = csw_collector_harvest::download::sized_url(url, thumb_width);
+                line["source_url"] = url.clone().into();
+                line["preview"]["fetched_url"] = fetched_url.clone().into();
+                line["preview"]["transform"] = if fetched_url == *url {
+                    "无：请求的就是原地址，预览即原文件".into()
+                } else {
+                    format!("图床按请求参数处理后的响应：resize 宽 {thumb_width}（不足不放大）、转 JPEG q80；用 fetched_url 重取可得同样字节").into()
+                };
+                match originals.get(url) {
+                    Some(Ok(raw)) => {
+                        let (sw, sh) = dims(raw);
+                        let source_file = placed.entry(url.clone()).or_insert_with(|| {
+                            let name =
+                                format!("source_images/{}", r.path.trim_start_matches("images/"));
+                            extra.push(pack::Entry::binary(&name, raw.clone()));
+                            name
+                        });
+                        line["source"] = serde_json::json!({
+                            "file": source_file,
+                            "url": url,
+                            "bytes": raw.len(),
+                            "sha256": super::slots::sha256_hex(raw),
+                            "width": sw,
+                            "height": sh,
+                            "fetched_at": fetched_at,
+                            "note": "导出时按原地址原样取回，未重编码",
+                        });
+                        line["status"] = "ok".into();
+                    }
+                    Some(Err(why)) => {
+                        line["source"] =
+                            serde_json::json!({"url": url, "fetched_at": fetched_at, "error": why});
+                        line["status"] = format!("原文件导出时取不到：{why}；预览照常随包").into();
+                    }
+                    None => {
+                        line["status"] = "原文件未取".into();
+                    }
+                }
+            }
+        }
+        lines.push(line);
     }
     for key in &keys {
         let Ok(mut st) = conn.prepare(
@@ -1866,7 +2036,7 @@ fn images_manifest(conn: &Connection, entries: &[pack::Entry]) -> String {
             }));
         }
     }
-    lines.iter().map(|l| l.to_string() + "\n").collect()
+    (lines.iter().map(|l| l.to_string() + "\n").collect(), extra)
 }
 
 /// 选题档位（选题里组内最高的档）。
@@ -2408,29 +2578,75 @@ mod tests {
             )
             .unwrap();
         }
+        // 「每条一张预览」的文件名不带 _N：按内容哈希对到原帖第 3 张
+        let preview = vec![7u8, 7, 7];
+        conn.execute(
+            "INSERT INTO media(blake3, candidate_key, ordinal, kind, url, failed) VALUES (?1,'hxo-a1b2c3',2,'photo','https://cdn.example/hxo/2.jpg',0)",
+            params![blake3::hash(&preview).to_hex().to_string()],
+        )
+        .unwrap();
         let entries = vec![
             pack::Entry::binary("images/hxo-a1b2c3_1.jpg", vec![1, 2, 3]),
+            pack::Entry::binary("images/hxo-a1b2c3.jpg", preview),
             pack::Entry::text("index.md", "x"),
         ];
-        let m = images_manifest(&conn, &entries);
+        // 原文件：第 1 张取得到（与预览字节不同），第 3 张取不到
+        let fetch = |urls: &[String]| -> HashMap<String, Result<Vec<u8>, String>> {
+            urls.iter()
+                .map(|u| {
+                    let r = if u.ends_with("/0.jpg") {
+                        Ok(vec![9u8, 9, 9, 9])
+                    } else {
+                        Err("HTTP 404 Not Found".to_string())
+                    };
+                    (u.clone(), r)
+                })
+                .collect()
+        };
+        let (m, extra) = images_manifest(&conn, 768, &entries, &fetch);
         let rows: Vec<serde_json::Value> = m
             .lines()
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
-        assert_eq!(rows.len(), 2, "{m}");
+        assert_eq!(rows.len(), 3, "{m}");
+        // 预览与原文件两份，各自的字节与 SHA；预览写明实际请求地址与转换
         assert_eq!(rows[0]["file"], "images/hxo-a1b2c3_1.jpg");
         assert_eq!(rows[0]["post_image_no"], 1);
         assert_eq!(rows[0]["source_url"], "https://cdn.example/hxo/0.jpg");
-        assert_eq!(rows[0]["bytes"], 3);
+        assert_eq!(rows[0]["preview"]["bytes"], 3);
         assert_eq!(
-            rows[0]["sha256"],
+            rows[0]["preview"]["sha256"],
             super::super::slots::sha256_hex(&[1, 2, 3])
         );
-        assert!(rows[0]["version"].as_str().unwrap().contains("来源库"));
+        assert_eq!(
+            rows[0]["preview"]["fetched_url"],
+            "https://cdn.example/hxo/0.jpg?x-oss-process=image/resize,w_768/format,jpg/quality,q_80"
+        );
+        assert_eq!(rows[0]["source"]["bytes"], 4);
+        assert_eq!(
+            rows[0]["source"]["sha256"],
+            super::super::slots::sha256_hex(&[9, 9, 9, 9])
+        );
+        assert_eq!(rows[0]["source"]["file"], "source_images/hxo-a1b2c3_1.jpg");
+        assert_eq!(rows[0]["status"], "ok");
+        // 原文件原样进包，不重编码
+        assert_eq!(extra.len(), 1);
+        assert_eq!(extra[0].path, "source_images/hxo-a1b2c3_1.jpg");
+        assert_eq!(extra[0].bytes, vec![9u8, 9, 9, 9]);
+        // 不带 _N 的预览按内容哈希对到原帖第 3 张；原文件取不到如实写原因
+        assert_eq!(rows[1]["file"], "images/hxo-a1b2c3.jpg");
+        assert_eq!(rows[1]["post_image_no"], 3);
+        assert_eq!(rows[1]["source"]["error"], "HTTP 404 Not Found");
+        assert!(
+            rows[1]["status"]
+                .as_str()
+                .unwrap()
+                .starts_with("原文件导出时取不到")
+        );
         // 取图失败的第 2 张没进包，也要记一行
-        assert!(rows[1]["file"].is_null());
-        assert_eq!(rows[1]["post_image_no"], 2);
-        assert_eq!(rows[1]["status"], "取图或识别失败，未进包");
+        assert!(rows[2]["file"].is_null());
+        assert_eq!(rows[2]["post_image_no"], 2);
+        assert_eq!(rows[2]["status"], "取图或识别失败，未进包");
     }
 
     #[test]
