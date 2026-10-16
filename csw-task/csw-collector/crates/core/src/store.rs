@@ -63,9 +63,13 @@ fn migrate(conn: &Connection) -> Result<()> {
     let current: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? as u32;
     for (v, sql) in MIGRATIONS {
         if *v > current {
-            conn.execute_batch(sql)
+            // 一条迁移连同版本号在**一个事务**里：10-16 发版时进程在建表之后、写版本号之前被停掉，
+            // 表建了一半、版本没升，之后每次启动都撞「table already exists」起不来
+            let tx = conn.unchecked_transaction()?;
+            tx.execute_batch(sql)
                 .with_context(|| format!("迁移 {v} 失败"))?;
-            conn.pragma_update(None, "user_version", *v as i64)?;
+            tx.pragma_update(None, "user_version", *v as i64)?;
+            tx.commit().with_context(|| format!("迁移 {v} 提交失败"))?;
         }
     }
     Ok(())
@@ -81,6 +85,23 @@ mod tests {
             .unwrap();
         let rows = st.query_map([], |r| r.get::<_, String>(0)).unwrap();
         rows.filter_map(Result::ok).collect()
+    }
+
+    #[test]
+    fn 迁移失败不留半截() {
+        // 模拟：库在 8，迁移 9 的第一张表建成后语句出错——表要回滚、版本仍是 8
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        conn.pragma_update(None, "user_version", 8).unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        let r = tx.execute_batch("CREATE TABLE half (x INTEGER); CREATE TABLE half (x INTEGER);");
+        assert!(r.is_err());
+        drop(tx);
+        assert!(!tables(&conn).contains(&"half".to_string()));
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 8);
     }
 
     #[test]
