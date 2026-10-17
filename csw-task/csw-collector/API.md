@@ -146,7 +146,16 @@ Jev 初评的概率只在服务端决定「先判哪条」，不出现在任何�
 - **后台管理**（会话 + CSRF，**只给 superadmin**；页面「MCP 令牌」）：`GET /api/mcp-tokens` 列出（不含令牌，带近 7 天调用数与是否可用）；`POST /api/mcp-tokens` `{name, scopes: ["magazine","kb"], days: null|N}` 签发，响应里的 `token` 是唯一一次明文（`Cache-Control: no-store`）；`POST /api/mcp-tokens/:id/revoke` 吊销（早已吊销回 409）。签发、吊销都进 `audit`（`mcp_token_issue` / `mcp_token_revoke`），不记令牌。
 - **令牌**：`csw-collector mcp-token issue <名字> [--scopes magazine,kb] [--days N]` 签发，明文只打印一次，库里只存 SHA-256；`list` / `revoke <id>`。没有、错、已吊销、已过期都回 `401` + `WWW-Authenticate: Bearer`。
 - **权限范围**：`magazine` → `kb_magazine_search`、`kb_image_search`；`kb` → `kb_search`、`kb_similar_selected`。`tools/list` 只列有权限的，越权调用回 `isError`。`memory_lookup`（Van 原话）不对外，签发时就拒；Van 原话恒不出。`web_search` / `fetch_page` 不装。
-- **以图搜图（远程版）**：参数 `image_url`（只许 https，过出网防护：封内网、回环与云元数据地址，≤10MB、15 秒）或 `image_base64`（解码后 ≤5MB，容许 data URL 前缀），二选一；不认 `path`。
+- **以图搜图（远程版）**：图三选一，不认 `path`：
+  - `image_url`：只许 https，过出网防护（封内网、回环与云元数据地址），≤10MB、15 秒。
+  - `upload_id`：见下面的 `POST /mcp/upload`。
+  - `image_base64`：直接传时受请求体 8MB 所限，容许 data URL 前缀。
+- **`POST /mcp/upload`**（同一枚令牌，要有 `magazine` 权限）：
+  - 请求体就是图片（jpg / png / webp，按头几个字节认，≤10MB），回 `{upload_id, bytes, format, expires_in_secs: 600}`。
+  - 图只放在内存里，10 分钟过期，只认同一枚令牌；每枚令牌同时最多 5 张，全部合计最多 100MB。
+  - `kb_image_search` 带 `upload_id` 时，传输层先换成图片内容再交给工具；ID 不存在或过期时回 `isError`。
+  - 计入每分钟 60 次的总限速；审计记 `method = upload`，只记字节数和格式。
+  - 出错时：不是图片回 400，没权限回 403，超过张数回 429。
 - **GPU 让卡**：`[schedule].gpu_quiet_from_utc`–`gpu_quiet_to_utc` 窗口里以图搜图回 `isError`「正式轮时段暂停」，文字检索不算查询向量、只走品牌与全文。向量客户端与工作台同一份，共用 GPU 锁。
 - **限速**：按令牌，每分钟 60 次，其中以图搜图 6 次；超出回 `429` + `Retry-After`。内存计数，重启清零。
 - **其他**：带 `Origin` 且不是 `[web].public_url` 的回 `403`（防浏览器跨站）；请求体 ≤8MB；单次调用最多等 60 秒，超时回 JSON-RPC 错误；排队满回 `503`。请求由一条专职线程顺序处理。

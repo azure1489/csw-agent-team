@@ -12,6 +12,9 @@
 //! - **限速**：按令牌，每分钟 60 次，其中以图搜图 6 次。内存计数，重启清零。
 //! - **审计**：每次请求一行 `mcp_calls`（含鉴权失败），与人工操作的 `audit` 表分开，保留 90 天。
 //! - **无状态**：不发 `Mcp-Session-Id`，不提供 GET 推送流；批量请求回 400。
+//! - **传图**：`POST /mcp/upload` 收一张图（请求体就是图片，≤10MB），回一个 10 分钟有效的
+//!   `upload_id`；`kb_image_search` 带 `upload_id` 时，这里先换成图片内容再交给专职线程。
+//!   MCP 的工具参数是模型写出来的，本机图片没法塞进去——上传这一步由智能体用 shell 的 curl 做。
 //!
 //! 令牌与审计用**自己的一个库连接**，不去抢工作台页面那一个。
 
@@ -55,6 +58,13 @@ const KEEP_DAYS: u32 = 90;
 const PRUNE_EVERY: Duration = Duration::from_secs(24 * 3600);
 /// 令牌前缀
 const PREFIX: &str = "cswkb_";
+/// 上传的图最大多少
+const MAX_UPLOAD: usize = 10 << 20;
+/// 上传的图留多久
+const UPLOAD_TTL: Duration = Duration::from_secs(600);
+/// 每枚令牌同时留着的上传最多几张；全部加起来最多多大
+const UPLOADS_PER_TOKEN: usize = 5;
+const UPLOADS_TOTAL_BYTES: usize = 100 << 20;
 
 /// 可签的权限范围与各自开放的工具。`memory` 不在这里：选题准则卡里是 Van 的原话，不对外。
 pub const SCOPES: &[(&str, &[&str])] = &[
@@ -80,6 +90,14 @@ pub struct McpHttp {
     rate: std::sync::Mutex<HashMap<(i64, bool), VecDeque<Instant>>>,
     touched: std::sync::Mutex<HashMap<i64, Instant>>,
     pruned: std::sync::Mutex<Option<Instant>>,
+    /// 上传的图：`upload_id` → 图。只在内存里，重启即丢，10 分钟过期
+    uploads: std::sync::Mutex<HashMap<String, Upload>>,
+}
+
+struct Upload {
+    token_id: i64,
+    bytes: Arc<Vec<u8>>,
+    at: Instant,
 }
 
 /// 生产用：开自己的库连接，起专职线程（向量客户端克隆工作台那份，共用 GPU 锁），
@@ -112,10 +130,16 @@ pub fn build(db: Connection, origin: &str, factory: ServerFactory) -> Router {
         rate: Default::default(),
         touched: Default::default(),
         pruned: Default::default(),
+        uploads: Default::default(),
     });
     Router::new()
         .route("/mcp", post(handle).get(not_allowed).delete(not_allowed))
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY))
+        .merge(
+            Router::new()
+                .route("/mcp/upload", post(upload))
+                .layer(axum::extract::DefaultBodyLimit::max(MAX_UPLOAD)),
+        )
         .with_state(st)
 }
 
@@ -190,50 +214,203 @@ impl Authed {
     }
 }
 
-async fn handle(State(st): State<Arc<McpHttp>>, headers: HeaderMap, body: Bytes) -> Response {
-    let started = Instant::now();
-    let ip = headers
+fn client_ip(headers: &HeaderMap) -> String {
+    headers
         .get("x-real-ip")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
-        .to_string();
+        .to_string()
+}
 
-    // 浏览器跨站调用：带了 Origin 又不是工作台自己的，拒。codex 这类客户端不带 Origin
-    if let Some(o) = headers.get(header::ORIGIN)
-        && o.to_str().ok().map(|s| s.trim_end_matches('/')) != Some(st.origin.as_str())
-    {
-        st.audit(None, &ip, "origin_denied", "", "", false, started)
-            .await;
-        return (StatusCode::FORBIDDEN, "Origin 不被允许").into_response();
+impl McpHttp {
+    /// Origin 校验 + 令牌鉴权。失败时已记审计，直接回给客户端。
+    async fn authenticate(
+        &self,
+        headers: &HeaderMap,
+        ip: &str,
+        started: Instant,
+    ) -> Result<Authed, Box<Response>> {
+        // 浏览器跨站调用：带了 Origin 又不是工作台自己的，拒。codex 这类客户端不带 Origin
+        if let Some(o) = headers.get(header::ORIGIN)
+            && o.to_str().ok().map(|s| s.trim_end_matches('/')) != Some(self.origin.as_str())
+        {
+            self.audit(None, ip, "origin_denied", "", "", false, started)
+                .await;
+            return Err(Box::new(
+                (StatusCode::FORBIDDEN, "Origin 不被允许").into_response(),
+            ));
+        }
+        let token = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| {
+                v.strip_prefix("Bearer ")
+                    .or_else(|| v.strip_prefix("bearer "))
+            })
+            .map(str::trim)
+            .unwrap_or("");
+        let authed = {
+            let db = self.db.lock().await;
+            verify(&db, token).unwrap_or_else(|e| {
+                tracing::warn!(原因 = %format!("{e:#}"), "MCP 令牌校验查库失败");
+                None
+            })
+        };
+        let Some(authed) = authed else {
+            self.audit(None, ip, "auth_failed", "", "", false, started)
+                .await;
+            return Err(Box::new(
+                (
+                    StatusCode::UNAUTHORIZED,
+                    [(header::WWW_AUTHENTICATE, "Bearer")],
+                    "令牌无效、已吊销或已过期",
+                )
+                    .into_response(),
+            ));
+        };
+        self.touch(&authed).await;
+        Ok(authed)
     }
 
-    let token = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| {
-            v.strip_prefix("Bearer ")
-                .or_else(|| v.strip_prefix("bearer "))
-        })
-        .map(str::trim)
-        .unwrap_or("");
-    let authed = {
-        let db = st.db.lock().await;
-        verify(&db, token).unwrap_or_else(|e| {
-            tracing::warn!(原因 = %format!("{e:#}"), "MCP 令牌校验查库失败");
-            None
-        })
+    /// 收下一张上传的图，回 `upload_id`。超出张数或总量时回 Err（给客户端看的话）。
+    fn put_upload(&self, token_id: i64, bytes: Vec<u8>) -> Result<String, (StatusCode, String)> {
+        let mut m = self.uploads.lock().unwrap_or_else(|e| e.into_inner());
+        m.retain(|_, u| u.at.elapsed() < UPLOAD_TTL);
+        if m.values().filter(|u| u.token_id == token_id).count() >= UPLOADS_PER_TOKEN {
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                format!("这枚令牌已有 {UPLOADS_PER_TOKEN} 张图在等搜索，用掉或 10 分钟过期后再传"),
+            ));
+        }
+        let total: usize = m.values().map(|u| u.bytes.len()).sum();
+        if total + bytes.len() > UPLOADS_TOTAL_BYTES {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "上传的图太多，稍后再试".into(),
+            ));
+        }
+        const T: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+        let mut rng = rand::rng();
+        let id: String = (0..24)
+            .map(|_| T[rng.random_range(0..T.len())] as char)
+            .collect();
+        let id = format!("up_{id}");
+        m.insert(
+            id.clone(),
+            Upload {
+                token_id,
+                bytes: Arc::new(bytes),
+                at: Instant::now(),
+            },
+        );
+        Ok(id)
+    }
+
+    /// 取上传的图：只认本令牌传的、没过期的
+    fn get_upload(&self, token_id: i64, id: &str) -> Option<Arc<Vec<u8>>> {
+        let m = self.uploads.lock().unwrap_or_else(|e| e.into_inner());
+        m.get(id)
+            .filter(|u| u.token_id == token_id && u.at.elapsed() < UPLOAD_TTL)
+            .map(|u| u.bytes.clone())
+    }
+}
+
+/// 看头几个字节认图片格式：只收 jpg / png / webp
+fn image_kind(b: &[u8]) -> Option<&'static str> {
+    if b.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("jpeg")
+    } else if b.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if b.len() >= 12 && &b[..4] == b"RIFF" && &b[8..12] == b"WEBP" {
+        Some("webp")
+    } else {
+        None
+    }
+}
+
+/// `POST /mcp/upload`：请求体就是一张图（jpg / png / webp，≤10MB）。
+/// 回 `{"upload_id", "bytes", "format", "expires_in_secs"}`；拿 `upload_id` 去调 `kb_image_search`。
+async fn upload(State(st): State<Arc<McpHttp>>, headers: HeaderMap, body: Bytes) -> Response {
+    let started = Instant::now();
+    let ip = client_ip(&headers);
+    let authed = match st.authenticate(&headers, &ip, started).await {
+        Ok(a) => a,
+        Err(r) => return *r,
     };
-    let Some(authed) = authed else {
-        st.audit(None, &ip, "auth_failed", "", "", false, started)
+    let fail = |code: StatusCode, msg: String| json_reply(code, json!({"error": msg}));
+    if !authed.allow().contains("kb_image_search") {
+        st.audit(
+            Some(authed.id),
+            &ip,
+            "upload",
+            "",
+            "没有 magazine 权限",
+            false,
+            started,
+        )
+        .await;
+        return fail(
+            StatusCode::FORBIDDEN,
+            "这枚令牌没有以图搜图（magazine）的权限".into(),
+        );
+    }
+    if let Some(wait) = st.rate_check(authed.id, false) {
+        st.audit(Some(authed.id), &ip, "upload", "", "限速", false, started)
             .await;
         return (
-            StatusCode::UNAUTHORIZED,
-            [(header::WWW_AUTHENTICATE, "Bearer")],
-            "令牌无效、已吊销或已过期",
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, wait.to_string())],
+            "请求太频繁，稍后再试",
         )
             .into_response();
+    }
+    let Some(kind) = image_kind(&body) else {
+        st.audit(
+            Some(authed.id),
+            &ip,
+            "upload",
+            "",
+            &format!("{} 字节，不是图片", body.len()),
+            false,
+            started,
+        )
+        .await;
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "请求体要是一张 jpg / png / webp 图片（curl --data-binary @文件）".into(),
+        );
     };
-    st.touch(&authed).await;
+    let n = body.len();
+    let brief = format!("{n} 字节 {kind}");
+    match st.put_upload(authed.id, body.to_vec()) {
+        Ok(id) => {
+            st.audit(Some(authed.id), &ip, "upload", "", &brief, true, started)
+                .await;
+            json_reply(
+                StatusCode::OK,
+                json!({
+                    "upload_id": id,
+                    "bytes": n,
+                    "format": kind,
+                    "expires_in_secs": UPLOAD_TTL.as_secs(),
+                }),
+            )
+        }
+        Err((code, msg)) => {
+            st.audit(Some(authed.id), &ip, "upload", "", &brief, false, started)
+                .await;
+            fail(code, msg)
+        }
+    }
+}
+
+async fn handle(State(st): State<Arc<McpHttp>>, headers: HeaderMap, body: Bytes) -> Response {
+    let started = Instant::now();
+    let ip = client_ip(&headers);
+    let authed = match st.authenticate(&headers, &ip, started).await {
+        Ok(a) => a,
+        Err(r) => return *r,
+    };
 
     let v: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
@@ -278,9 +455,43 @@ async fn handle(State(st): State<Arc<McpHttp>>, headers: HeaderMap, body: Bytes)
     }
 
     let id = v.get("id").cloned().unwrap_or(Value::Null);
+    let mut v = v;
+    // 以图搜图带 upload_id：换成图片内容再交给工具（工具本身不认 upload_id）
+    let up = v
+        .pointer("/params/arguments/upload_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .map(str::to_string);
+    if tool == "kb_image_search"
+        && let Some(up) = up
+    {
+        let Some(bytes) = st.get_upload(authed.id, &up) else {
+            st.audit(Some(authed.id), &ip, &method, &tool, &brief, false, started)
+                .await;
+            return json_reply(
+                StatusCode::OK,
+                json!({"jsonrpc": "2.0", "id": id, "result": {
+                    "content": [{"type": "text", "text": format!(
+                        "upload_id {up} 不存在或已过期（10 分钟有效，且只认同一枚令牌上传的）。请重新 POST /mcp/upload"
+                    )}],
+                    "isError": true
+                }}),
+            );
+        };
+        if let Some(a) = v
+            .pointer_mut("/params/arguments")
+            .and_then(Value::as_object_mut)
+        {
+            a.remove("upload_id");
+            a.insert(
+                "image_base64".into(),
+                Value::String(csw_collector_harvest::recognize::b64(&bytes)),
+            );
+        }
+    }
     let (reply_tx, reply_rx) = oneshot::channel();
     let job = Job {
-        line: String::from_utf8_lossy(&body).into_owned(),
+        line: v.to_string(),
         allow: authed.allow(),
         reply: reply_tx,
     };
@@ -344,6 +555,12 @@ fn args_brief(v: &Value) -> String {
         return format!(
             "image_url {}",
             s("image_url").chars().take(200).collect::<String>()
+        );
+    }
+    if !s("upload_id").is_empty() {
+        return format!(
+            "upload_id {}",
+            s("upload_id").chars().take(40).collect::<String>()
         );
     }
     if !s("image_base64").is_empty() {
@@ -588,8 +805,13 @@ mod tests {
                 if let Some(ms) = args.get("sleep_ms").and_then(Value::as_u64) {
                     tokio::time::sleep(Duration::from_millis(ms)).await;
                 }
+                let b64 = args
+                    .get("image_base64")
+                    .and_then(Value::as_str)
+                    .map(|b| format!("|b64={b}"))
+                    .unwrap_or_default();
                 Ok(format!(
-                    "{}:{}",
+                    "{}:{}{b64}",
                     self.0,
                     args.get("query").and_then(Value::as_str).unwrap_or("")
                 ))
@@ -958,10 +1180,119 @@ mod tests {
         }
     }
 
+    fn upload_req(token: &str, body: Vec<u8>) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/mcp/upload")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "image/jpeg")
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    fn jpeg(tag: u8) -> Vec<u8> {
+        vec![0xFF, 0xD8, 0xFF, 0xE0, tag, tag, tag]
+    }
+
+    #[tokio::test]
+    async fn 上传后用upload_id以图搜图() {
+        let (app, p, _d) = app();
+        let c = db(&p);
+        let (_, t) = issue(&c, "甲", "magazine", None).unwrap();
+        let (_, other) = issue(&c, "乙", "magazine", None).unwrap();
+        let (_, kb_only) = issue(&c, "丙", "kb", None).unwrap();
+
+        // 不是图片 400；没令牌 401；没有 magazine 权限 403
+        assert_eq!(
+            send(&app, upload_req(&t, b"hello".to_vec())).await.0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            send(&app, upload_req("cswkb_nope", jpeg(1))).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            send(&app, upload_req(&kb_only, jpeg(1))).await.0,
+            StatusCode::FORBIDDEN
+        );
+
+        let (s, _, b) = send(&app, upload_req(&t, jpeg(7))).await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+        let v: Value = serde_json::from_str(&b).unwrap();
+        assert_eq!(v["format"], "jpeg");
+        assert_eq!(v["expires_in_secs"], 600);
+        let up = v["upload_id"].as_str().unwrap().to_string();
+        assert!(up.starts_with("up_"));
+
+        // 工具收到的是图片内容（base64），不是 upload_id
+        let (s, _, b) = send(
+            &app,
+            req(
+                Some(&t),
+                &call(1, "kb_image_search", json!({"upload_id": up})),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let want = csw_collector_harvest::recognize::b64(&jpeg(7));
+        assert!(b.contains(&format!("|b64={want}")), "{b}");
+
+        // 别的令牌拿同一个 upload_id 不行；不存在的也不行——都是 isError，不是协议错误
+        for (tok, id) in [(&other, up.as_str()), (&t, "up_nope")] {
+            let (s, _, b) = send(
+                &app,
+                req(
+                    Some(tok),
+                    &call(2, "kb_image_search", json!({"upload_id": id})),
+                ),
+            )
+            .await;
+            assert_eq!(s, StatusCode::OK);
+            let v: Value = serde_json::from_str(&b).unwrap();
+            assert_eq!(v["result"]["isError"], true, "{b}");
+            assert!(b.contains("不存在或已过期"), "{b}");
+        }
+
+        // 审计：上传记字节数与格式，不记内容
+        let briefs: Vec<String> = c
+            .prepare("SELECT args_brief FROM mcp_calls WHERE method='upload' AND ok=1")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(briefs, ["7 字节 jpeg"]);
+    }
+
+    #[tokio::test]
+    async fn 每枚令牌最多同时留5张() {
+        let (app, p, _d) = app();
+        let (_, t) = issue(&db(&p), "甲", "magazine", None).unwrap();
+        for i in 0..UPLOADS_PER_TOKEN {
+            assert_eq!(
+                send(&app, upload_req(&t, jpeg(i as u8))).await.0,
+                StatusCode::OK
+            );
+        }
+        let (s, _, b) = send(&app, upload_req(&t, jpeg(9))).await;
+        assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "{b}");
+    }
+
+    #[test]
+    fn 认图片格式() {
+        assert_eq!(image_kind(&[0xFF, 0xD8, 0xFF, 0xDB]), Some("jpeg"));
+        assert_eq!(image_kind(b"\x89PNG\r\n\x1a\nxxxx"), Some("png"));
+        assert_eq!(image_kind(b"RIFF\0\0\0\0WEBPVP8 "), Some("webp"));
+        assert_eq!(image_kind(b"GIF89a"), None);
+        assert_eq!(image_kind(b""), None);
+    }
+
     #[test]
     fn 审计摘要不记图片内容() {
         let v = json!({"params":{"arguments":{"image_base64": "A".repeat(1000)}}});
         assert_eq!(args_brief(&v), "image_base64 1000 字符");
+        let v = json!({"params":{"arguments":{"upload_id": "up_abc"}}});
+        assert_eq!(args_brief(&v), "upload_id up_abc");
         let v = json!({"params":{"arguments":{"query": "字".repeat(300)}}});
         assert_eq!(args_brief(&v).chars().count(), 200);
     }

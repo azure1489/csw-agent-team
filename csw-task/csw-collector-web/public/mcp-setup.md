@@ -18,7 +18,7 @@
 | 工具 | 用途 | 主要参数 |
 |---|---|---|
 | `kb_magazine_search` | 杂志背景库：GO OUT 等日文户外杂志的中文译文、商品、裁图，按文字检索 | `query`（必填），`book_key`、`limit`（≤12） |
-| `kb_image_search` | 以图搜图：在杂志裁图里找外观相近的 | `image_url`（https）或 `image_base64`（≤5MB），二选一；`limit` |
+| `kb_image_search` | 以图搜图：在杂志裁图里找外观相近的 | 图三选一：`image_url`（公网 https）、`upload_id`（本机图片，见第 8 节）、`image_base64`（只适合很小的图）；`limit` |
 | `kb_search` | 判断参考库：已发布条目、范例、成文贴文、03 决定 | `query`，`limit` |
 | `kb_similar_selected` | 只看被采用过的相似条目 | `query`，`limit` |
 
@@ -120,5 +120,28 @@ curl -sS https://collector.aworld.ltd/mcp \
 | 工具列表里少了几件 | 令牌权限只开了一部分，属正常；要更多权限请用户找管理员重签 |
 | HTTP 429 | 超出限速：每枚令牌每分钟 60 次，其中以图搜图 6 次。按 `Retry-After` 等一会儿再试 |
 | 以图搜图回「正式轮时段暂停」 | 每天北京时间约 05:55–07:00 让 GPU 给编辑部正式轮，过了这段再试；文字检索照常可用 |
-| `image_url 被拒` | 只收 https 公网地址，内网和本机地址会被拦；改用 `image_base64` |
+| `image_url 被拒` | 只收 https 公网地址，内网和本机地址会被拦；改用第 8 节的上传 |
+| `upload_id … 不存在或已过期` | 上传 10 分钟有效，且只认同一枚令牌上传的；重新上传一次 |
+| 上传回 400 | 请求体不是 jpg / png / webp，或忘了 `--data-binary @` 的 `@` |
 | HTTP 403 | 请求带了浏览器的 `Origin` 头；从命令行或客户端调用不会带 |
+
+## 8. 用本机图片以图搜图
+
+MCP 的工具参数是模型写出来的，没法把本机文件直接塞进去。所以分两步走，**第一步用 shell 执行**：
+
+```bash
+# 1) 上传：请求体就是图片本身（jpg / png / webp，≤10MB）
+curl -sS -X POST https://collector.aworld.ltd/mcp/upload \
+  -H "Authorization: Bearer $CSW_KB_TOKEN" \
+  -H 'Content-Type: application/octet-stream' \
+  --data-binary @/path/to/图片.jpg
+# 返回 {"upload_id":"up_…","bytes":…,"format":"jpeg","expires_in_secs":600}
+```
+
+```text
+2) 调 csw-kb 的 kb_image_search，参数 {"upload_id": "up_…", "limit": 6}
+```
+
+- `upload_id` 10 分钟内有效，只能用同一枚令牌；同一枚令牌同时最多留 5 张。
+- 图片有公网 https 地址的话，直接传 `image_url`，不用上传。
+- 不要把图片转成 base64 填进工具参数：图稍大一点就要写几十万个字符。

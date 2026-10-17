@@ -304,6 +304,18 @@ server {
         client_max_body_size 8m;
     }
 
+    # 以图搜图传本机图片：请求体就是图片（≤10MB），回 upload_id。鉴权同 /mcp
+    location = /mcp/upload {
+        proxy_pass http://172.17.0.1:8090;
+        proxy_http_version 1.1;
+        proxy_read_timeout 60s;
+        proxy_set_header Host              \$host;
+        proxy_set_header X-Real-IP         \$remote_addr;
+        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        client_max_body_size 11m;
+    }
+
     # 给智能体照着装 csw-kb 的接入说明（前端 public/ 下的静态文件，不含任何令牌）。
     # 单开一段只为把类型标成 UTF-8 的 markdown：默认 mime 表没有 .md，会被当成二进制下载
     location = /mcp-setup.md {

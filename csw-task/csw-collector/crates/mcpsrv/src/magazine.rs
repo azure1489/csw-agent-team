@@ -115,8 +115,9 @@ impl Tool for KbMagazineSearch {
 
 /// 远程版：`image_url` 拉图的上限
 const MAX_URL_BYTES: usize = 10 << 20;
-/// 远程版：`image_base64` 解码后的上限
-const MAX_B64_BYTES: usize = 5 << 20;
+/// 远程版：`image_base64` 解码后的上限。直接传受 HTTP 请求体 8MB 所限（约 6MB 的图）；
+/// 走 `upload_id` 时传输层把上传的图（≤10MB）换成 base64 交进来，所以这里放到 10MB
+const MAX_B64_BYTES: usize = 10 << 20;
 /// 远程版：拉图限时
 const URL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -165,6 +166,10 @@ impl KbImageSearch {
             s("path").is_empty(),
             "远程调用不接受 path，请给 image_url 或 image_base64"
         );
+        anyhow::ensure!(
+            s("upload_id").is_empty(),
+            "upload_id 没有被换成图片：请经 https://collector.aworld.ltd/mcp 调用，并先 POST /mcp/upload"
+        );
         let (u, b) = (s("image_url"), s("image_base64"));
         match (u.is_empty(), b.is_empty()) {
             (false, true) => fetch_image(http, &u, false).await,
@@ -174,17 +179,17 @@ impl KbImageSearch {
                 // 解码前先按长度粗拦：base64 每 4 字符 3 字节
                 anyhow::ensure!(
                     raw.len() / 4 * 3 <= MAX_B64_BYTES + 3,
-                    "图太大，image_base64 解码后上限 5MB"
+                    "图太大，image_base64 解码后上限 10MB"
                 );
                 let bytes = b64_decode(raw).context("image_base64 不是合法的 base64")?;
                 anyhow::ensure!(
                     bytes.len() <= MAX_B64_BYTES,
-                    "图太大（{} 字节），image_base64 解码后上限 5MB",
+                    "图太大（{} 字节），image_base64 解码后上限 10MB",
                     bytes.len()
                 );
                 Ok(bytes)
             }
-            (true, true) => anyhow::bail!("要给 image_url 或 image_base64 其中一个"),
+            (true, true) => anyhow::bail!("要给 image_url、upload_id 或 image_base64 其中一个"),
             (false, false) => anyhow::bail!("image_url 与 image_base64 只能给一个"),
         }
     }
@@ -270,8 +275,11 @@ impl Tool for KbImageSearch {
     }
     fn description(&self) -> &'static str {
         if self.remote.is_some() {
-            "以图搜图：给一张图片（image_url 为 https 地址，或 image_base64），在杂志背景库的裁图里\
-             找外观相近的，返回所在杂志条目。占向量服务，一次约一秒；每天正式轮时段暂停。只读。"
+            "以图搜图：在杂志背景库的裁图里找外观相近的，返回所在杂志条目。图三选一：\
+             image_url（公网 https 地址）；upload_id（本机图片先用 shell 执行 \
+             curl -X POST https://collector.aworld.ltd/mcp/upload -H \"Authorization: Bearer $CSW_KB_TOKEN\" \
+             --data-binary @图片文件，拿返回的 upload_id，10 分钟有效）；image_base64（只适合很小的图）。\
+             占向量服务，一次约一秒；每天正式轮时段暂停。只读。"
         } else {
             "以图搜图：给一张本机图片的路径，在杂志背景库的裁图里找外观相近的，返回所在杂志条目。\
              占向量服务，一次约一秒。只读。"
@@ -284,7 +292,8 @@ impl Tool for KbImageSearch {
                 "type": "object",
                 "properties": {
                     "image_url": {"type": "string", "description": "图片的 https 地址（jpg / png / webp，≤10MB）"},
-                    "image_base64": {"type": "string", "description": "图片内容的 base64（≤5MB），与 image_url 二选一"},
+                    "upload_id": {"type": "string", "description": "POST /mcp/upload 上传本机图片后拿到的 ID（up_ 开头，10 分钟有效）"},
+                    "image_base64": {"type": "string", "description": "图片内容的 base64，只适合很小的图；本机图片请用 upload_id"},
                     "limit": limit
                 }
             })
@@ -454,9 +463,12 @@ mod tests {
             let r = t.image_bytes(&json!({"image_url": u})).await;
             assert!(r.is_err(), "{u} 该被拦");
         }
-        let big = csw_collector_harvest::recognize::b64(&vec![0u8; (5 << 20) + 10]);
+        let big = csw_collector_harvest::recognize::b64(&vec![0u8; (10 << 20) + 10]);
         let r = t.image_bytes(&json!({"image_base64": big})).await;
-        assert!(format!("{:#}", r.unwrap_err()).contains("上限 5MB"));
+        assert!(format!("{:#}", r.unwrap_err()).contains("上限 10MB"));
+        // 没被传输层换掉的 upload_id 如实报，不当成没给图
+        let r = t.image_bytes(&json!({"upload_id": "up_x"})).await;
+        assert!(format!("{:#}", r.unwrap_err()).contains("没有被换成图片"));
         let ok = csw_collector_harvest::recognize::b64(b"hello");
         let r = t
             .image_bytes(&json!({"image_base64": format!("data:image/jpeg;base64,{ok}")}))
