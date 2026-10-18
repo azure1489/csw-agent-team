@@ -135,3 +135,37 @@ func TestFullFlowV11(t *testing.T) {
 		}
 	}
 }
+
+// TestMergeCancelledKeepsRunActive 合流阶段被取消是中枢止损暂停，不是做完了：整期保持进行中（停滞提醒照发），
+// 中枢重开或显式 close 才结束（10-18 r80：07–09 取消等 Van 定配图例外，其余素材交齐后被记成完成）。
+func TestMergeCancelledKeepsRunActive(t *testing.T) {
+	e, st := setup(t)
+	ctx := context.Background()
+	buildFlow(t, st, "auto", []fxStage{
+		{code: "a", role: "collector"},
+		{code: "m", role: "editor", merge: true, deps: []string{"a"}, gates: []fxGate{{reviewer: "editor"}}},
+	})
+	editor, editorRole := who(t, st, "editor")
+	collector, _ := who(t, st, "collector")
+	res, err := e.Trigger(ctx, editor, editorRole, "t_flow", "s1", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := res.Run.ID
+	if _, err := e.Submit(ctx, collector, taskByCode(t, st, runID, "a").ID, SubmitInput{DownloadURL: "http://x/a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Cancel(ctx, editor, editorRole, taskByCode(t, st, runID, "m").ID, "等 Van 定配图例外"); err != nil {
+		t.Fatal(err)
+	}
+	run, _ := st.Q().GetRun(ctx, runID)
+	if run.Status != domain.RunActive {
+		t.Fatalf("合流阶段被取消，整期应保持进行中，got %s", run.Status)
+	}
+	if _, err := e.CloseRun(ctx, editor, editorRole, runID, "接受本期不出稿"); err != nil {
+		t.Fatalf("中枢显式 close 应可收尾：%v", err)
+	}
+	if run, _ = st.Q().GetRun(ctx, runID); run.Status != domain.RunDone {
+		t.Fatalf("close 后应完成，got %s", run.Status)
+	}
+}

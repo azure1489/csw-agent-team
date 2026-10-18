@@ -104,8 +104,12 @@ func (e *Engine) recomputeReady(ctx context.Context, q *sqlite.Queries, runID in
 	return e.checkRunDone(ctx, q, runID)
 }
 
-// checkRunDone run 完成判定：全部任务处于终态（passed / cancelled）且至少一个 passed。
-// 依赖就绪判定仍只认 passed——取消的上游不会放行下游。
+// checkRunDone run 完成判定：全部任务处于终态（passed / cancelled）且至少一个 passed，
+// 且没有被取消的合流阶段。依赖就绪判定仍只认 passed——取消的上游不会放行下游。
+//
+// 合流阶段（如 07 内容整合稿）是整期产出的汇合点：它被取消通常是中枢止损暂停，不是「这期做完了」。
+// 10-18 r80 主编取消 07–09 等 Van 定配图例外，其余素材交齐后引擎把整期记成完成，停滞提醒随之停发，
+// 卡点在群里看不见了。现在保持进行中，由中枢重开，或显式 close / abort 收尾。
 func (e *Engine) checkRunDone(ctx context.Context, q *sqlite.Queries, runID int64) error {
 	run, err := q.GetRun(ctx, runID)
 	if err != nil {
@@ -125,6 +129,9 @@ func (e *Engine) checkRunDone(ctx context.Context, q *sqlite.Queries, runID int6
 		}
 		if t.Status == domain.TaskPassed {
 			anyPassed = true
+		}
+		if t.IsMerge && t.Status == domain.TaskCancelled {
+			return nil
 		}
 	}
 	if !anyPassed {
