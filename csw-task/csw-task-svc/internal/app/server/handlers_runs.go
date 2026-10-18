@@ -345,6 +345,29 @@ func (s *Server) handleAbortRun(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"run": gin.H{"id": run.ID, "status": string(run.Status), "target_count": run.TargetCount}})
 }
 
+// POST /runs/:id/notices —— 中枢按角色发群消息，引擎用花名册真 @ 收件人。body: {to:[角色…], text}
+func (s *Server) handleHubNotice(c *gin.Context) {
+	id, err := pathID(c, "id")
+	if err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	var req struct {
+		To   []string `json:"to"`
+		Text string   `json:"text"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		s.renderErr(c, domain.BadRequest("bad_body", "请求体非法："+err.Error()))
+		return
+	}
+	agent, role := mwAgent(c)
+	if err := s.eng.HubNotice(c.Request.Context(), agent, role, id, req.To, req.Text); err != nil {
+		s.renderErr(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"queued": true, "to": req.To})
+}
+
 func (s *Server) handleCloseRun(c *gin.Context) {
 	id, err := pathID(c, "id")
 	if err != nil {

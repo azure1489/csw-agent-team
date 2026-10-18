@@ -68,7 +68,8 @@ func or(s, def string) string {
 
 // vanAllowed 白名单：只有「待 Van 闸审核」与「待审升级」的通知才能主送 Van；其余一律降级给中枢。
 func vanAllowed(eventType string, p payload) bool {
-	if eventType == domain.EvtReviewEscalated {
+	// 中枢点名发给 Van 的（请决定、确认、终审）也主送 Van：主编自己 @ 不到人，只能由这里代发
+	if eventType == domain.EvtReviewEscalated || eventType == domain.EvtHubNotice {
 		return true
 	}
 	return (eventType == domain.EvtSubmitted || eventType == domain.EvtGatePassed) && p.s("next_reviewer") == "van"
@@ -154,6 +155,19 @@ func render(o domain.Outbox, r roster) (string, bool) {
 		}
 	case domain.EvtReviewEscalated:
 		line = fmt.Sprintf("【r%s·%s·v%s】%s 待审已 %s 分钟（%s），已提醒审核方 %s 次仍无动作，请过问；交付物#%s", run, stage, ver, to, p.s("minutes"), or(p.s("gate_name"), "当前闸"), p.s("reminded"), p.s("deliverable_id"))
+	case domain.EvtHubNotice:
+		// 收件人全部写在开头（不是「抄送」），正文原样
+		ats := []string{to}
+		for _, c := range cc {
+			a, _ := r.at(c)
+			ats = append(ats, a)
+		}
+		cc = nil
+		hubName := "主编"
+		if m, ok := r[hub]; ok && m.Name != "" {
+			hubName = m.Name
+		}
+		line = fmt.Sprintf("【r%s·%s】%s %s", run, hubName, strings.Join(ats, " "), p.s("text"))
 	case domain.EvtRunStalled:
 		// run 级事件没有 task / stage，单独成句：整期还活着却没人在动，要中枢接出下一步。
 		line = fmt.Sprintf("【r%s·整期停滞】%s 本期已 %s 分钟没有任何人在动，还没走完：%s。\n报失败或收到退回后要在同一轮接出下一步——重开/重派具体任务，或明确宣布本期停止；只发状态播报不算处置",

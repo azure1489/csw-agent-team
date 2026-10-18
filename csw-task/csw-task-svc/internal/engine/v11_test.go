@@ -169,3 +169,31 @@ func TestMergeCancelledKeepsRunActive(t *testing.T) {
 		t.Fatalf("close 后应完成，got %s", run.Status)
 	}
 }
+
+// TestHubNotice 中枢按角色发群消息：只有中枢能发，角色要存在，写 outbox 主送第一个、其余抄送。
+func TestHubNotice(t *testing.T) {
+	e, st := setupVersion(t, 11)
+	ctx := context.Background()
+	editor, editorRole := who(t, st, "editor")
+	collector, collectorRole := who(t, st, "collector")
+	res, err := e.Trigger(ctx, editor, editorRole, "daily_news", "2026-10-18", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := res.Run.ID
+	wantCode(t, e.HubNotice(ctx, collector, collectorRole, runID, []string{"van"}, "x"), "not_hub")
+	wantCode(t, e.HubNotice(ctx, editor, editorRole, runID, []string{"nobody"}, "x"), "unknown_role")
+	wantCode(t, e.HubNotice(ctx, editor, editorRole, runID, nil, "x"), "to_required")
+	wantCode(t, e.HubNotice(ctx, editor, editorRole, runID, []string{"van"}, "  "), "text_required")
+	if err := e.HubNotice(ctx, editor, editorRole, runID, []string{"van", "collector", "van"}, "请确认两图例外"); err != nil {
+		t.Fatal(err)
+	}
+	var target, cc, payload string
+	if err := st.DB().QueryRow(`SELECT target_role, cc_roles, payload_json FROM outbox WHERE event_type=? AND run_id=?`,
+		domain.EvtHubNotice, runID).Scan(&target, &cc, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if target != "van" || cc != "collector" || !strings.Contains(payload, "请确认两图例外") {
+		t.Fatalf("outbox: target=%s cc=%s payload=%s", target, cc, payload)
+	}
+}

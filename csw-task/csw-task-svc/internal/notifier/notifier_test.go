@@ -406,3 +406,19 @@ func TestIdleTextForHubOwnTask(t *testing.T) {
 		t.Fatalf("执行者的提醒照旧：%s", text)
 	}
 }
+
+// TestHubNoticeAtsAllRecipientsIncludingVan 中枢点名的群消息：Van 可主送，收件人全部真 @ 在开头，正文原样。
+func TestHubNoticeAtsAllRecipientsIncludingVan(t *testing.T) {
+	r := roster{"editor": {OpenID: openEditor, Name: "主编"}, "van": {OpenID: openVan, Name: "Van"},
+		"collector": {OpenID: openCollector, Name: "情报收集员"}}
+	o := domain.Outbox{EventType: domain.EvtHubNotice, TargetRole: "van", CCRoles: "collector",
+		PayloadJSON: `{"run_id":80,"hub_role":"editor","text":"请确认风林火山是否接受两图例外"}`}
+	text, down := render(o, r)
+	if down {
+		t.Fatal("中枢点名发给 Van 的不应降级给中枢")
+	}
+	want := `【r80·主编】<at user_id="` + openVan + `">Van</at> <at user_id="` + openCollector + `">情报收集员</at> 请确认风林火山是否接受两图例外`
+	if text != want {
+		t.Fatalf("got  %q\nwant %q", text, want)
+	}
+}

@@ -142,6 +142,7 @@ const (
 	EvtAckEscalated = "ack_escalated" // 未接单超过阈值 × AckEscalateFactor：升级中枢处置
 	EvtTaskIdle     = "task_idle"     // 接单后超过阈值没有心跳或产物：提醒执行者、抄送中枢
 	EvtRunStalled   = "run_stalled"   // 整期还活着却无人在动（无任何已派工/进行中任务，仍有未走完阶段）：提醒中枢
+	EvtHubNotice    = "hub_notice"    // 中枢按角色发的群消息（引擎用花名册真 @，主编机器人自己 @ 不到人）
 
 	DefaultAckMinutes  = 5
 	DefaultIdleMinutes = 10
