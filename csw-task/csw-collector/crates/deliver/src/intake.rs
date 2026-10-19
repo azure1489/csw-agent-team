@@ -80,22 +80,45 @@ pub fn topics_section(
     if shown.is_empty() {
         return String::new();
     }
+    // 与引擎登记同一口径：代表帖待核或缺影响判断的材料（如没看到实图），登记的是待核，
+    // 这里也按待核列、不进推荐 / 备选计数（10-19 r81 / r82：山と道判推荐、登记待核，一览写成「推荐 16 题」被退）
+    let effective = |t: &Topic| -> Option<Tier> {
+        let pending = js
+            .iter()
+            .find(|j| j.candidate_key == t.primary_key)
+            .is_some_and(|j| j.tier == Tier::PendingCheck || j.has_decision_gap());
+        if pending {
+            Some(Tier::PendingCheck)
+        } else {
+            t.tier
+        }
+    };
     let posts = |t: Tier| js.iter().filter(|j| j.tier == t).count();
-    let tps = |t: Tier| shown.iter().filter(|x| x.tier == Some(t)).count();
+    let tps = |t: Tier| shown.iter().filter(|x| effective(x) == Some(t)).count();
+    let held = tps(Tier::PendingCheck);
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "## 选题一览（推荐 {} 题 / {} 帖，备选 {} 题 / {} 帖）\n",
+        "## 选题一览（推荐 {} 题 / {} 帖，备选 {} 题 / {} 帖{}）\n",
         tps(Tier::Recommend),
         posts(Tier::Recommend),
         tps(Tier::Alternate),
-        posts(Tier::Alternate)
+        posts(Tier::Alternate),
+        if held > 0 {
+            format!("；另 {held} 题判了推荐或备选、缺影响判断的材料，登记待核")
+        } else {
+            String::new()
+        }
     );
     for t in shown {
         let _ = writeln!(
             s,
             "### 【{}】{}\n",
-            t.tier.map(tier_name).unwrap_or(""),
+            match (t.tier, effective(t)) {
+                (Some(orig), Some(Tier::PendingCheck)) if orig != Tier::PendingCheck =>
+                    format!("待核 · 原判{}", tier_name(orig)),
+                (_, e) => e.map(tier_name).unwrap_or("").to_string(),
+            },
             if t.headline.is_empty() {
                 &t.topic_key
             } else {
@@ -810,5 +833,32 @@ mod tests {
         assert!(s.contains("同题 `b`"));
         assert!(s.contains("与其余帖子重复"));
         assert!(topics_section(&[], &js, |_| None).is_empty());
+    }
+
+    // 10-19 r82：判推荐、但代表帖缺影响判断的材料（没看到实图），登记的是待核，一览也按待核列、不进推荐计数
+    #[test]
+    fn 选题一览缺决定性材料的推荐按待核列() {
+        let mut p = j("p", Tier::Recommend, false);
+        p.gaps.push(csw_collector_core::types::Gap {
+            level: csw_collector_core::types::GapLevel::Decision,
+            ..Default::default()
+        });
+        let js = vec![j("a", Tier::Recommend, true), p];
+        let tp = |k: &str| Topic {
+            topic_key: k.into(),
+            primary_key: k.into(),
+            members: vec![k.into()],
+            tier: Some(Tier::Recommend),
+            headline: format!("{k}｜理由"),
+            ..Default::default()
+        };
+        let s = topics_section(&[tp("a"), tp("p")], &js, |k| Some(cand(k)));
+        assert!(s.contains("推荐 1 题 / 2 帖"), "{s}");
+        assert!(
+            s.contains("另 1 题判了推荐或备选、缺影响判断的材料，登记待核"),
+            "{s}"
+        );
+        assert!(s.contains("### 【待核 · 原判推荐】p｜理由"), "{s}");
+        assert!(s.contains("### 【推荐】a｜理由"), "{s}");
     }
 }

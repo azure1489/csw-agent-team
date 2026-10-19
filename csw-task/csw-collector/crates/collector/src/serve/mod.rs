@@ -1561,7 +1561,7 @@ const SUBMITTED: &str = "已交状态:";
 const UNCHANGED: &str = "内容与上一版相同，未重交";
 /// 交付物 / 登记导出格式的修订号。**改了导出（字段、登记口径、包内文件）就改它**，
 /// 否则返工后内容指纹一样，修好的导出不会重交
-const EXPORT_REV: &str = "2026-10-19a"; // trace/items.jsonl 改为引擎登记快照，逐帖摘要改名 candidates.jsonl（此前：v11 选题单表格与附录、不推荐并长尾；窗口口径说明改现行；图片清单：原文件入 source_images/、预览与原文件两份对应）
+const EXPORT_REV: &str = "2026-10-19b"; // 选题一览按登记口径列待核；trace/items.jsonl 改为引擎登记快照，逐帖摘要改名 candidates.jsonl（此前：v11 选题单表格与附录、不推荐并长尾；窗口口径说明改现行；图片清单：原文件入 source_images/、预览与原文件两份对应）
 
 /// 引擎派的窗口止点是否已经过了。读不出来的当已过：不能因为格式问题永远不开工。
 fn window_closed(to: &str, now: jiff::Timestamp) -> bool {
