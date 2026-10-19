@@ -1288,6 +1288,14 @@ async fn start_round(
             // 返工补采可能改了窗口止点：页头时间、台账窗口按库里的最新值（09-30 r58 v2 还写着 06:00:12）
             let r = rounds::get(conn, r.id)?.unwrap_or(r);
             let five = five_columns(engine, t.task.run_id, &judgements, &fin.topics, &calib).await;
+            // 登记已发完：按引擎里的最终登记导出 trace/items.jsonl
+            let engine_items = match engine.run_items_raw(t.task.run_id).await {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(任务 = t.task.id, 原因 = %format!("{e:#}"), "读不到引擎条目登记，items.jsonl 按本地登记导出");
+                    None
+                }
+            };
             let built = finish::build_deliverable(
                 conn,
                 &r,
@@ -1302,6 +1310,7 @@ async fn start_round(
                 &pinned,
                 &calib_labels,
                 Some(five),
+                engine_items.as_ref(),
             )?;
             // 这一版的内容指纹：判断与选题（不含版本号）。返工算完与已交的一样就不重交——
             // 主编明说「修复前不重复整包重交相同缺陷」（09-28 r56 v4 退回后 30 秒交了一样的 v5）
@@ -1359,9 +1368,10 @@ async fn start_round(
                 let left = unhandled_review_lines(&review_text, &judgements);
                 let why = if !cfg.features.rework_content_directives {
                     format!(
-                        "按 01 只核格式与材料的分工（2026-10-10），工作台返工只补材料、重新导出：补采窗口缺的一段、\
-                         收回来源没给媒体的图文帖、重新登记与对账、按库里最新原文与译文重新导出。这次没有需要补的材料，\
-                         交付内容与已交的 v{v} 相同，没有重交。对内容的意见（档位、停止、同一件事、代表图、译名）请写在通过意见里，\
+                        "按 01 只核格式与材料的分工（2026-10-10），工作台返工是自动程序，只会补材料、重新导出：补采窗口缺的一段、\
+                         收回来源没给媒体的图文帖、重新登记与对账、按库里最新原文与译文重新导出；不读派工单、不提交别人做好的包。\
+                         这次照做后交付内容与已交的 v{v} 相同，没有重交。若退回要的是导出器做不出来的改动（文件格式、字段、版式），\
+                         这是工作台维护方的事：请 @Van 转维护方，重开重派只会得到同样结果；格式问题不影响 Van 选题的，也可以通过并写在通过意见里。对内容的意见（档位、停止、同一件事、代表图、译名）请写在通过意见里，\
                          Van 选题时与选题单一起看；若是 Van 在 Van选题闸退回，请写明整单哪里不可用；若是格式或材料问题，请写明五项清单的第几项与具体文件或条目",
                         v = t.task.cur_version
                     )
@@ -1551,7 +1561,7 @@ const SUBMITTED: &str = "已交状态:";
 const UNCHANGED: &str = "内容与上一版相同，未重交";
 /// 交付物 / 登记导出格式的修订号。**改了导出（字段、登记口径、包内文件）就改它**，
 /// 否则返工后内容指纹一样，修好的导出不会重交
-const EXPORT_REV: &str = "2026-10-16d"; // v11 选题单表格与附录、不推荐并长尾；窗口口径说明改现行；图片清单：原文件入 source_images/、预览与原文件两份对应
+const EXPORT_REV: &str = "2026-10-19a"; // trace/items.jsonl 改为引擎登记快照，逐帖摘要改名 candidates.jsonl（此前：v11 选题单表格与附录、不推荐并长尾；窗口口径说明改现行；图片清单：原文件入 source_images/、预览与原文件两份对应）
 
 /// 引擎派的窗口止点是否已经过了。读不出来的当已过：不能因为格式问题永远不开工。
 fn window_closed(to: &str, now: jiff::Timestamp) -> bool {

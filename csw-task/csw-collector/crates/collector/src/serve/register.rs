@@ -587,6 +587,48 @@ fn all_bodies(conn: &Connection, round_id: i64, kind: &str) -> Vec<serde_json::V
         .unwrap_or_default()
 }
 
+/// `trace/items.jsonl`：引擎条目登记的逐键快照，一行一条、字段与 `GET /runs/{id}/items` 同名同值，按条目键排序。
+/// 引擎读不到时退回本地历次登记按键合并（后登记的字段覆盖前面的）。
+///（10-19 r81 退回：items.jsonl 须是 38 条最终登记快照，不是 80 帖候选摘要；摘要改名 candidates.jsonl）
+pub fn items_snapshot_jsonl(
+    conn: &Connection,
+    round_id: i64,
+    engine_items: Option<&serde_json::Value>,
+) -> String {
+    let mut by_key: std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>> =
+        Default::default();
+    let mut merge = |it: &serde_json::Value| {
+        let (Some(obj), Some(key)) = (it.as_object(), it.get("item_key").and_then(|v| v.as_str()))
+        else {
+            return;
+        };
+        let e = by_key.entry(key.to_string()).or_default();
+        for (k, v) in obj {
+            e.insert(k.clone(), v.clone());
+        }
+    };
+    match engine_items
+        .and_then(|v| v.get("items"))
+        .and_then(|v| v.as_array())
+    {
+        Some(items) => items.iter().for_each(&mut merge),
+        None => {
+            for body in all_bodies(conn, round_id, "items") {
+                body.get("items")
+                    .and_then(|v| v.as_array())
+                    .into_iter()
+                    .flatten()
+                    .for_each(&mut merge);
+            }
+        }
+    }
+    by_key
+        .values()
+        .filter_map(|m| serde_json::to_string(m).ok())
+        .map(|l| l + "\n")
+        .collect()
+}
+
 /// 这一轮最后一次登记给引擎的采集轮，一行一条，字段与引擎接口同名同值。没登记过返回 None。
 pub fn registered_sweeps_jsonl(conn: &Connection, round_id: i64) -> Option<String> {
     let body = last_body(conn, round_id, "sweeps")?;
@@ -653,6 +695,24 @@ fn kind_slug(k: OutboxKind) -> &'static str {
 mod tests {
     use super::*;
     use csw_collector_core::types::{Dim, MediaKind, MediaRef, Platform};
+
+    // 10-19 r81：items.jsonl 是引擎条目登记快照，一行一条、按键排序、字段原样
+    #[test]
+    fn items_snapshot_from_engine_sorted_verbatim() {
+        let conn = csw_collector_core::store::open_in_memory().unwrap();
+        let v = serde_json::json!({"items": [
+            {"item_key": "b-2", "status": "pending_check", "rank": ""},
+            {"item_key": "a-1", "status": "shortlisted", "rank": "primary", "dedup_note": "无重复"},
+        ]});
+        let out = items_snapshot_jsonl(&conn, 1, Some(&v));
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines[0].contains("\"item_key\":\"a-1\"") && lines[0].contains("\"rank\":\"primary\"")
+        );
+        assert!(lines[1].contains("\"status\":\"pending_check\""));
+        assert!(out.ends_with('\n'));
+    }
 
     fn cand(key: &str) -> Candidate {
         Candidate {

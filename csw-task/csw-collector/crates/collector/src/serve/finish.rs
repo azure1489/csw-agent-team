@@ -705,6 +705,7 @@ pub fn build_deliverable(
     pinned: &[String],
     calib_labels: &HashMap<String, String>,
     five: Option<FiveColumns>,
+    engine_items: Option<&serde_json::Value>,
 ) -> Result<pack::Built> {
     let step = rounds::begin_step(conn, round.id, StepCode::Build, &round.instructions_hash)?;
     let lookup = |k: &str| by_key.get(k).cloned();
@@ -1022,8 +1023,13 @@ pub fn build_deliverable(
             Some(s) => s,
             None => trace::to_jsonl(&sweep_lines)?,
         },
-        trace::items_jsonl(judgements, lookup)?,
+        crate::serve::register::items_snapshot_jsonl(conn, round.id, engine_items),
     );
+    // 逐帖候选摘要（台账顺序）：原先放在 items.jsonl，10-19 起改名，items.jsonl 只放引擎登记快照
+    entries.push(pack::Entry::text(
+        "trace/candidates.jsonl",
+        trace::items_jsonl(judgements, lookup)?,
+    ));
     for (path, bytes) in archived {
         entries.push(pack::Entry::binary(&path, bytes));
     }
@@ -2424,7 +2430,7 @@ fn window_basis(
         "实际过滤字段": "posted_at（csw 接口 postedAt，平台贴文时间）优先；posted_at 缺失时用 ingested_at（csw 首次入库）",
         "代码位置": "csw-collector crates/harvest/src/pipeline.rs window_outcome / in_window：c.posted_at.or(c.ingested_at) 落在 [起, 止) 内",
         "说明": "现行派工单（daily_news v10 起，v11 沿用）的入窗口径是原始披露时间：平台上的发布时间决定这条属于哪一期，首次入库只作抓取证据，没有披露时间的才按首次入库判。工作台按 posted_at 优先、缺失按 ingested_at 执行，与现行口径一致。posted_at 是平台贴文时间，独立核到的首次披露另列在卡片上；下面三组是与「按首次入库」相比的逐键差异，只作对照",
-        "first_seen_at 入口": "csw 接口 ingestedAt（贴文首次进入来源库的时间），逐条写在 trace/items.jsonl 与 trace/window_ids.jsonl 的 first_seen_at；两口径的逐键差异列在下面三组",
+        "first_seen_at 入口": "csw 接口 ingestedAt（贴文首次进入来源库的时间），逐条写在 trace/candidates.jsonl 与 trace/window_ids.jsonl 的 first_seen_at；两口径的逐键差异列在下面三组",
         "两口径结论": if only_posted.is_empty() && only_seen.is_empty() && fallback.is_empty() {
             "按原始披露与按首次入库筛出的集合相同（差异 0 条）；本期按哪个口径结果一致".to_string()
         } else {

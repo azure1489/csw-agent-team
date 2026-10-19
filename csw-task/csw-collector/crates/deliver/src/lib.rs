@@ -1,7 +1,7 @@
 //! 交付物生成与提交。
 //!
 //! 形态：`index.md`（YAML 元信息头 + 正文内联）+ `images/`（每条一张预览）
-//! + `trace/`（`sweeps.jsonl`、`items.jsonl`），打包成同名 zip 一步式提交。
+//! + `trace/`（`sweeps.jsonl`、`items.jsonl` 引擎登记快照、`candidates.jsonl` 逐帖摘要），打包成同名 zip 一步式提交。
 //!
 //! 三种正文：`intake` 是 01 的判断台账，`material` 是 05 的图位与素材核，
 //! 11 的选图包也在 `material` 里——它与 05 做的是同一件事的两半。

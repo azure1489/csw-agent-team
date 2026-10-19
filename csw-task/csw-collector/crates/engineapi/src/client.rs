@@ -247,6 +247,11 @@ impl EngineClient {
         self.get(&format!("/runs/{run_id}/items")).await
     }
 
+    /// 这一期的条目登记原样（全部字段，与接口同名同值）。01 交付包 `trace/items.jsonl` 用它。
+    pub async fn run_items_raw(&self, run_id: i64) -> Result<serde_json::Value, EngineError> {
+        self.get(&format!("/runs/{run_id}/items")).await
+    }
+
     /// 这一期引擎里的判断台账（逐条）。对账用。
     pub async fn intake_judgements(&self, run_id: i64) -> Result<serde_json::Value, EngineError> {
         self.get(&format!("/runs/{run_id}/intake-judgements")).await
