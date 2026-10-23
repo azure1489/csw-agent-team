@@ -482,6 +482,30 @@ pub fn set_translation(conn: &Connection, key: &str, translated: &str) -> Result
     Ok(())
 }
 
+/// 把生成模型的用量记录落 `model_calls`。round_id 留空：一次调用属于哪一轮，网关客户端不知道，
+/// 按日统计看 created_at 即可。
+pub fn save_model_usage(conn: &Connection, rows: &[crate::model::UsageRow]) -> Result<usize> {
+    let mut st = conn.prepare_cached(
+        "INSERT INTO model_calls(round_id, purpose, provider, model, input_tokens, output_tokens,
+                                 latency_ms, attempts, status, error, created_at)
+         VALUES (NULL, ?1, 'csw-subapi', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )?;
+    for r in rows {
+        st.execute(rusqlite::params![
+            r.purpose,
+            r.model,
+            r.input_tokens,
+            r.output_tokens,
+            r.latency_ms as i64,
+            r.attempts,
+            r.status,
+            r.error,
+            r.at
+        ])?;
+    }
+    Ok(rows.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

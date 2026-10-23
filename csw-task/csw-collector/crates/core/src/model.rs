@@ -109,6 +109,23 @@ impl Part {
     }
 }
 
+/// 一次调用的用量记录，攒在内存里，由工作台主循环落 `model_calls`。
+///（10-24：这张表从建库起一笔都没写过，取消预取轮前后的 token 没法比）
+#[derive(Debug, Clone)]
+pub struct UsageRow {
+    /// 调用用途，取 schema 名（csw_judge、csw_topic、csw_translate……）
+    pub purpose: String,
+    pub model: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub latency_ms: u64,
+    pub attempts: u32,
+    /// ok | retried | failed
+    pub status: &'static str,
+    pub error: String,
+    pub at: String,
+}
+
 #[derive(Clone)]
 pub struct ModelClient {
     cfg: ModelConfig,
@@ -117,6 +134,8 @@ pub struct ModelClient {
     gate: Arc<Semaphore>,
     /// 录制回放。`None` 等同直连。
     rec: Option<Arc<crate::record::Recorder>>,
+    /// 还没落库的用量记录。克隆共用同一份。
+    usage: Arc<std::sync::Mutex<Vec<UsageRow>>>,
 }
 
 impl ModelClient {
@@ -130,7 +149,49 @@ impl ModelClient {
             http,
             gate,
             rec: None,
+            usage: Default::default(),
         })
+    }
+
+    /// 取走攒下的用量记录（落库用）。
+    pub fn drain_usage(&self) -> Vec<UsageRow> {
+        self.usage
+            .lock()
+            .map(|mut v| std::mem::take(&mut *v))
+            .unwrap_or_default()
+    }
+
+    fn note_usage(&self, purpose: &str, r: &Result<ModelOutput>, t0: Instant) {
+        let row = match r {
+            Ok(o) => UsageRow {
+                purpose: purpose.to_string(),
+                model: o.model.clone(),
+                input_tokens: o.input_tokens,
+                output_tokens: o.output_tokens,
+                latency_ms: o.latency_ms,
+                attempts: o.attempts,
+                status: if o.attempts > 1 { "retried" } else { "ok" },
+                error: String::new(),
+                at: jiff::Timestamp::now().to_string(),
+            },
+            Err(e) => UsageRow {
+                purpose: purpose.to_string(),
+                model: self.cfg.model.clone(),
+                input_tokens: 0,
+                output_tokens: 0,
+                latency_ms: t0.elapsed().as_millis() as u64,
+                attempts: 0,
+                status: "failed",
+                error: format!("{e:#}").chars().take(300).collect(),
+                at: jiff::Timestamp::now().to_string(),
+            },
+        };
+        if let Ok(mut v) = self.usage.lock() {
+            // 主循环没来得及落库时不让它无限长
+            if v.len() < 20_000 {
+                v.push(row);
+            }
+        }
     }
 
     /// 挂上录制回放层。回放模式下**不出网**，未命中即失败。
@@ -162,7 +223,10 @@ impl ModelClient {
             // 不让网关留存：判断材料里有第三方贴文正文
             "store": false,
         });
-        self.send_with_fallback(body).await
+        let t0 = Instant::now();
+        let r = self.send_with_fallback(body).await;
+        self.note_usage(schema_name, &r, t0);
+        r
     }
 
     async fn send_with_fallback(&self, mut body: serde_json::Value) -> Result<ModelOutput> {
@@ -459,6 +523,13 @@ mod tests {
         let v: serde_json::Value = out.parse().unwrap();
         assert_eq!(v["tier"], "recommend");
         assert_eq!(out.model, "gpt-6-astra");
+        // 用量攒在客户端里，取走一次就清空（10-24：model_calls 从来没写过）
+        let u = c.clone().drain_usage();
+        assert_eq!(u.len(), 1);
+        assert_eq!(u[0].purpose, "j");
+        assert_eq!(u[0].input_tokens, 7292);
+        assert_eq!(u[0].status, "ok");
+        assert!(c.drain_usage().is_empty());
     }
 
     #[tokio::test]

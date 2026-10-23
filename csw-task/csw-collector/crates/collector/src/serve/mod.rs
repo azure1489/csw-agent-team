@@ -155,6 +155,13 @@ pub async fn run(cfg: &Config, secrets: &Secrets) -> Result<()> {
         if let Err(e) = tick(&conn, &engine, cfg, &svc, &mut beats).await {
             tracing::warn!(原因 = %format!("{e:#}"), "这一轮轮询没跑完");
         }
+        // 生成模型用量落库（每日 token 统计与熔断复核靠它）
+        let usage = svc.model.drain_usage();
+        if !usage.is_empty()
+            && let Err(e) = csw_collector_core::ledger::save_model_usage(&conn, &usage)
+        {
+            tracing::warn!(条数 = usage.len(), 原因 = %format!("{e:#}"), "模型用量落库失败");
+        }
         let now_min = schedule::now_minute();
         for name in schedule::due(&jobs, prev_min, now_min) {
             run_job(name, cfg, &conn, &svc, &engine, now_min).await;

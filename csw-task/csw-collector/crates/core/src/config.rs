@@ -155,8 +155,8 @@ pub struct Codex {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Schedule {
-    /// 预取轮的时刻（UTC）。实测一轮从零跑约 95–100 分钟，
-    /// 05:30 接单再从头跑必然超时，所以预取是必需的不是优化。
+    /// 预取轮的时刻（UTC）。空串 = 不跑（10-24 起默认）。
+    /// 原设计：一轮从零跑约 95–100 分钟，凌晨先跑一遍缓存起来；实测复用脆弱，已取消。
     pub prefetch_at_utc: String,
     /// 知识库同步（UTC）
     pub kb_sync_at_utc: Vec<String>,
@@ -424,7 +424,10 @@ impl Default for Config {
                 budget_secs: 600,
             },
             schedule: Schedule {
-                prefetch_at_utc: "19:30".into(), // 北京时间次日 03:30：10-09 起 06:00 开期，离开工越近，开工时要补判的越少；一轮从零跑约 100 分钟，05:10 前跑完
+                // 10-24 起取消预取轮（空串 = 不触发）：两周里 41% 的预取判断因指纹对不上白算、
+                // 积压时可能跑过 06:00 与派单轮抢网关。见 docs/取消预取轮_方案_20261024.md。
+                // 回退：设回 "19:30"（北京 03:30）
+                prefetch_at_utc: String::new(),
                 // 北京 21:00（接住当天发的）与 11:00（接住早上刚发的）。
                 // **不能排在 05:30 那一轮前后**：实测紧跟 kb sync 的那次 csw 取数
                 // 用了 1044 秒，前三次都是 7 秒。原先第二次排在 21:00 UTC
