@@ -860,7 +860,7 @@ pub fn build_deliverable(
         }
     }
     if !image_index.is_empty() {
-        body.push_str("\n## 随包图片（按条目，`_N` 是原帖第 N 张）\n\n`images/` 是预览（向图床请求缩放转码后的字节），`source_images/` 是来源库原文件（导出时按原地址原样取回、未重编码）。每张图两份的地址、像素、字节、SHA-256、转换参数与原帖图序见 `trace/images_manifest.jsonl`；取图失败的也逐条记在那里。\n\n");
+        body.push_str("\n## 随包图片（按条目，`_N` 是原帖第 N 张）\n\n`images/` 是预览（向图床请求缩放转码后的字节），`source_images/` 是来源库原文件（导出时按原地址原样取回、未重编码；包大小有上限，选题单卡片的优先随包，其余只在清单里列地址、字节与 SHA-256）。每张图两份的地址、像素、字节、SHA-256、转换参数与原帖图序见 `trace/images_manifest.jsonl`；取图失败的也逐条记在那里。\n\n");
         for (k, files) in &image_index {
             body.push_str(&format!("- `{k}`：{}\n", files.join("、")));
         }
@@ -1102,8 +1102,19 @@ pub fn build_deliverable(
 
     // 图片来源对应清单（10-15 r74、10-16 r75 退回第 4 项：缺「原帖图序 → 来源地址 → 像素 / 字节 / SHA
     // → 包内文件」）。逐张对包内实际字节算，来源字段取本地 media 表；取图失败的也逐条写出
-    let (manifest, originals) =
-        images_manifest(conn, cfg.csw.thumb_width, &entries, &fetch_originals);
+    // 原文件按预算随包（10-23 r86：上游恢复后来源库改存原尺寸大图，单张约 1MB、最大 4.7MB，
+    // 601 张原文件把包撑到 446MB，超过 48MB 上限，工作台整轮重跑了 9 个小时）。
+    // 选题单卡片的帖子优先；放不下的不进包，清单里照样有地址、字节、SHA-256
+    let used: u64 = entries.iter().map(|e| e.bytes.len() as u64).sum();
+    let budget = (pack::MAX_ZIP_BYTES * 85 / 100).saturating_sub(used);
+    let (manifest, originals) = images_manifest(
+        conn,
+        cfg.csw.thumb_width,
+        &entries,
+        &fetch_originals,
+        &card_keys,
+        budget,
+    );
     entries.extend(originals);
     if !manifest.is_empty() {
         entries.push(pack::Entry::text("trace/images_manifest.jsonl", manifest));
@@ -1884,6 +1895,8 @@ fn images_manifest(
     thumb_width: u32,
     entries: &[pack::Entry],
     fetch: FetchOriginals<'_>,
+    priority: &[String],
+    budget: u64,
 ) -> (String, Vec<pack::Entry>) {
     const VERSION_NOTE: &str = "csw 来源库存档版本（来源库只存这一档，01 不另取原帖最高档；原图在 05 配图时经 hires-service 取）";
     struct Row {
@@ -1954,6 +1967,22 @@ fn images_manifest(
             .map(|i| (i.width(), i.height()))
             .unwrap_or((0, 0))
     };
+    // 哪些原文件随包：优先帖（选题单卡片）在前，其余按包内顺序，累计不超过预算
+    let rank = |k: &str| priority.iter().position(|p| p == k).unwrap_or(usize::MAX);
+    let mut order: Vec<&Row> = rows.iter().collect();
+    order.sort_by_key(|r| rank(&r.key));
+    let mut packed_urls: std::collections::HashSet<String> = Default::default();
+    let mut spent: u64 = 0;
+    for r in order {
+        if let Some((url, _)) = &r.src
+            && let Some(Ok(raw)) = originals.get(url)
+            && !packed_urls.contains(url)
+            && spent + raw.len() as u64 <= budget
+        {
+            spent += raw.len() as u64;
+            packed_urls.insert(url.clone());
+        }
+    }
     let mut extra = Vec::new();
     let mut placed: HashMap<String, String> = HashMap::new();
     let mut lines = Vec::new();
@@ -1989,6 +2018,20 @@ fn images_manifest(
                     format!("图床按请求参数处理后的响应：resize 宽 {thumb_width}（不足不放大）、转 JPEG q80；用 fetched_url 重取可得同样字节").into()
                 };
                 match originals.get(url) {
+                    Some(Ok(raw)) if !packed_urls.contains(url) => {
+                        let (sw, sh) = dims(raw);
+                        line["source"] = serde_json::json!({
+                            "file": null,
+                            "url": url,
+                            "bytes": raw.len(),
+                            "sha256": super::slots::sha256_hex(raw),
+                            "width": sw,
+                            "height": sh,
+                            "fetched_at": fetched_at,
+                            "note": "原文件未随包：包大小有上限，选题单卡片的原文件优先；按 url 原样取回即可，字节与 SHA-256 见本行",
+                        });
+                        line["status"] = "ok_not_packed".into();
+                    }
                     Some(Ok(raw)) => {
                         let (sw, sh) = dims(raw);
                         let source_file = placed.entry(url.clone()).or_insert_with(|| {
@@ -2609,7 +2652,18 @@ mod tests {
                 })
                 .collect()
         };
-        let (m, extra) = images_manifest(&conn, 768, &entries, &fetch);
+        let (m, extra) = images_manifest(&conn, 768, &entries, &fetch, &[], u64::MAX);
+        // 预算不够时原文件不随包，清单照样记字节与 SHA（10-23 r86：446MB 超限）
+        let (m0, extra0) = images_manifest(&conn, 768, &entries, &fetch, &[], 3);
+        assert!(extra0.is_empty());
+        let r0: serde_json::Value = serde_json::from_str(m0.lines().next().unwrap()).unwrap();
+        assert_eq!(r0["status"], "ok_not_packed");
+        assert!(r0["source"]["file"].is_null());
+        assert_eq!(r0["source"]["bytes"], 4);
+        assert_eq!(
+            r0["source"]["sha256"],
+            super::super::slots::sha256_hex(&[9, 9, 9, 9])
+        );
         let rows: Vec<serde_json::Value> = m
             .lines()
             .map(|l| serde_json::from_str(l).unwrap())

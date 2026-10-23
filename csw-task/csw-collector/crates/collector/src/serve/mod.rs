@@ -769,7 +769,23 @@ async fn drive(
     // 一个任务出错不该让别的任务也不跑
     let res = start_round(conn, engine, cfg, svc, t, action).await;
     if let Err(e) = &res {
-        tracing::error!(任务 = t.task.id, 原因 = %format!("{e:#}"), "这一轮没跑起来");
+        let why = format!("{e:#}");
+        tracing::error!(任务 = t.task.id, 原因 = %why, "这一轮没跑起来");
+        // 打包超限重跑也一样超限：报失败让主编和维护方知道，不悄悄整轮重跑
+        //（10-23 r86：446MB 的包连续失败 9 个小时，引擎里只看到心跳）
+        if why.contains("超过上限") {
+            let reason = format!(
+                "工作台打包失败：{why}。重跑结果相同，需维护方处理（检查来源库图片尺寸与随包原文件预算），不必重派"
+            );
+            let idem = format!(
+                "fail-{}-oversize-{}",
+                t.task.id,
+                t.task.dispatched_at.replace([':', '-', '.'], "")
+            );
+            if let Err(e) = engine.fail(t.task.id, &reason, &idem).await {
+                tracing::error!(任务 = t.task.id, 原因 = %format!("{e:#}"), "打包超限，连失败都没报出去");
+            }
+        }
     }
     let opened = rounds::latest_for_task(conn, t.task.id)
         .ok()
@@ -1561,7 +1577,7 @@ const SUBMITTED: &str = "已交状态:";
 const UNCHANGED: &str = "内容与上一版相同，未重交";
 /// 交付物 / 登记导出格式的修订号。**改了导出（字段、登记口径、包内文件）就改它**，
 /// 否则返工后内容指纹一样，修好的导出不会重交
-const EXPORT_REV: &str = "2026-10-19b"; // 选题一览按登记口径列待核；trace/items.jsonl 改为引擎登记快照，逐帖摘要改名 candidates.jsonl（此前：v11 选题单表格与附录、不推荐并长尾；窗口口径说明改现行；图片清单：原文件入 source_images/、预览与原文件两份对应）
+const EXPORT_REV: &str = "2026-10-23a"; // 原文件按包大小预算随包，超出的只记清单；选题一览按登记口径列待核；trace/items.jsonl 改为引擎登记快照，逐帖摘要改名 candidates.jsonl（此前：v11 选题单表格与附录、不推荐并长尾；窗口口径说明改现行；图片清单：原文件入 source_images/、预览与原文件两份对应）
 
 /// 引擎派的窗口止点是否已经过了。读不出来的当已过：不能因为格式问题永远不开工。
 fn window_closed(to: &str, now: jiff::Timestamp) -> bool {
