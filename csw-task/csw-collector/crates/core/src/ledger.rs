@@ -36,7 +36,8 @@ pub fn upsert_candidate(conn: &Connection, c: &Candidate) -> Result<()> {
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?18)
          ON CONFLICT(candidate_key) DO UPDATE SET
            account=excluded.account, url=excluded.url, text=excluded.text,
-           translated=excluded.translated,
+           -- 来源库这次没给译文就留着库里已有的（工作台补译、维护方补译），不清空
+           translated=CASE WHEN excluded.translated = '' THEN candidates.translated ELSE excluded.translated END,
            posted_at=COALESCE(excluded.posted_at, candidates.posted_at),
            ingested_at=COALESCE(excluded.ingested_at, candidates.ingested_at), likes=excluded.likes, comments=excluded.comments,
            followers=excluded.followers, heat_ratio=excluded.heat_ratio,
@@ -472,6 +473,15 @@ pub fn photo_count(c: &Candidate) -> usize {
         .count()
 }
 
+/// 写回一条候选的译文（补译）。
+pub fn set_translation(conn: &Connection, key: &str, translated: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE candidates SET translated = ?2 WHERE candidate_key = ?1",
+        rusqlite::params![key, translated],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -506,6 +516,26 @@ mod tests {
         .unwrap()
         .0
         .id
+    }
+
+    // 10-23 r86：来源库没给译文，补的译文（工作台或维护方）不能被下一次入库的空值冲掉
+    #[test]
+    fn 重新入库不清空已有译文() {
+        let (c, _) = setup(1);
+        let mut x = cand("gm-1", 0);
+        upsert_candidate(&c, &x).unwrap();
+        set_translation(&c, "gm-1", "补的译文").unwrap();
+        upsert_candidate(&c, &x).unwrap();
+        assert_eq!(
+            get_candidate(&c, "gm-1").unwrap().unwrap().translated,
+            "补的译文"
+        );
+        x.translated = "来源库的新译文".into();
+        upsert_candidate(&c, &x).unwrap();
+        assert_eq!(
+            get_candidate(&c, "gm-1").unwrap().unwrap().translated,
+            "来源库的新译文"
+        );
     }
 
     fn cand(key: &str, imgs: usize) -> Candidate {

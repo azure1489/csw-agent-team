@@ -20,5 +20,6 @@ pub mod pipeline;
 pub mod rubric;
 pub mod rules;
 pub mod topic;
+pub mod translate;
 pub mod triage;
 pub mod verdict;

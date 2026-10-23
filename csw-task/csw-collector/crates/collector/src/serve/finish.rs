@@ -393,7 +393,11 @@ fn source_doc(c: &Candidate) -> String {
             c.text.trim()
         },
         if c.translated.trim().is_empty() {
-            "（没有译文：原文是中文，或来源未给出可翻译的正文）"
+            if csw_collector_judge::translate::needs_translation(&c.text) {
+                "（没有译文：来源库没给，工作台补译也失败了，需人工补译）"
+            } else {
+                "（原文是中文，不需译文）"
+            }
         } else {
             c.translated.trim()
         }
@@ -2738,7 +2742,13 @@ mod tests {
         );
         assert!(d.contains("https://www.instagram.com/p/X/"));
         let d = source_doc(&c("中文正文", ""));
-        assert!(d.contains("没有译文"), "{d}");
+        assert!(d.contains("原文是中文，不需译文"), "{d}");
+        // 外文没有译文（来源库没给、补译也失败）要写明需人工补译，不能说成原文是中文（10-23 r86）
+        let d = source_doc(&c(
+            "ルーフコンテナボックス 車中泊やバンライフの積載ストレスを解消",
+            "",
+        ));
+        assert!(d.contains("需人工补译") && !d.contains("原文是中文"), "{d}");
     }
 
     #[test]

@@ -1146,7 +1146,7 @@ async fn start_round(
         round::run_intake(conn, &r, &detail, cfg, svc).await
     };
     match ran {
-        Ok((counts, fin)) => {
+        Ok((counts, mut fin)) => {
             tracing::info!(轮次 = r.id, ?counts, "这一轮的账");
             // 登记要先发出去，自查才查得到真东西
             let (sent, conflicts) = outbox_sender::drain(conn, engine).await.unwrap_or((0, 0));
@@ -1303,6 +1303,8 @@ async fn start_round(
                 .collect();
             // 返工补采可能改了窗口止点：页头时间、台账窗口按库里的最新值（09-30 r58 v2 还写着 06:00:12）
             let r = rounds::get(conn, r.id)?.unwrap_or(r);
+            // 来源库没给译文的非中文正文，导出前补译并写回库（10-23 r86：两条日文主选缺译文被连退两次）
+            fill_translations(conn, svc, &judgements, &mut fin.by_key).await;
             let five = five_columns(engine, t.task.run_id, &judgements, &fin.topics, &calib).await;
             // 登记已发完：按引擎里的最终登记导出 trace/items.jsonl
             let engine_items = match engine.run_items_raw(t.task.run_id).await {
@@ -1543,6 +1545,48 @@ async fn five_columns(
         f.van_approved = f.van_keys.len();
     }
     f
+}
+
+/// 本包要带的候选里，非中文且没有译文的，交生成模型补译、写回库。失败只记日志，导出时如实写缺。
+async fn fill_translations(
+    conn: &rusqlite::Connection,
+    svc: &services::Services,
+    judgements: &[csw_collector_core::types::Judgement],
+    by_key: &mut HashMap<String, csw_collector_core::types::Candidate>,
+) {
+    use csw_collector_judge::translate;
+    // 一轮最多补这么多条：模型约 8–10 秒一条，别让补译拖住交付
+    const MAX: usize = 40;
+    let need: Vec<(String, String)> = judgements
+        .iter()
+        .filter_map(|j| by_key.get(&j.candidate_key))
+        .filter(|c| c.translated.trim().is_empty() && translate::needs_translation(&c.text))
+        .map(|c| (c.candidate_key.clone(), c.text.clone()))
+        .take(MAX)
+        .collect();
+    if need.is_empty() {
+        return;
+    }
+    let jobs = need
+        .iter()
+        .map(|(k, text)| async move { (k.clone(), translate::translate(&svc.model, text).await) });
+    let results = futures::future::join_all(jobs).await;
+    let mut ok = 0usize;
+    for (k, r) in results {
+        match r {
+            Ok(tr) => match csw_collector_core::ledger::set_translation(conn, &k, &tr) {
+                Ok(()) => {
+                    if let Some(c) = by_key.get_mut(&k) {
+                        c.translated = tr;
+                    }
+                    ok += 1;
+                }
+                Err(e) => tracing::warn!(条目 = %k, 原因 = %format!("{e:#}"), "补译写库失败"),
+            },
+            Err(e) => tracing::warn!(条目 = %k, 原因 = %format!("{e:#}"), "补译失败，导出时写缺"),
+        }
+    }
+    tracing::info!(要补 = need.len(), 补上 = ok, "来源库缺译文，导出前补译");
 }
 
 fn window_for(
