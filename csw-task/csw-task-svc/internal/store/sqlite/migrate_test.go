@@ -608,3 +608,53 @@ func TestDailyNewsV11Draft(t *testing.T) {
 		t.Fatal("v11 的 04 / 07 还引用短名单或选题方案")
 	}
 }
+
+// TestDailyNewsV12Draft v12 只把 01 时限 40 → 75（取消工作台预取轮，2026-10-24），其余与 v11 相同。
+func TestDailyNewsV12Draft(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	if err := Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	var v11, v12 int64
+	var status string
+	if err := db.QueryRow(`SELECT id FROM workflows WHERE wf_key='daily_news' AND version=11`).Scan(&v11); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT id, status FROM workflows WHERE wf_key='daily_news' AND version=12`).Scan(&v12, &status); err != nil {
+		t.Fatalf("v12: %v", err)
+	}
+	if status != "draft" {
+		t.Fatalf("v12 必须停在 draft，got %s", status)
+	}
+	var sla int
+	if err := db.QueryRow(`SELECT sla_minutes FROM workflow_stages WHERE workflow_id=? AND code='intake'`, v12).Scan(&sla); err != nil || sla != 75 {
+		t.Fatalf("v12 01 时限应为 75：%d err=%v", sla, err)
+	}
+	count := func(q string, id int64) int {
+		var n int
+		if err := db.QueryRow(q, id).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for _, q := range []string{
+		`SELECT count(*) FROM workflow_stages WHERE workflow_id=?`,
+		`SELECT count(*) FROM workflow_stage_deps WHERE workflow_id=?`,
+		`SELECT count(*) FROM workflow_gates WHERE workflow_id=?`,
+		`SELECT count(*) FROM workflow_stages WHERE workflow_id=? AND code!='intake' AND sla_minutes IS NOT NULL`,
+	} {
+		if a, b := count(q, v11), count(q, v12); a != b {
+			t.Fatalf("v12 与 v11 不同：%s v11=%d v12=%d", q, a, b)
+		}
+	}
+	var diff int
+	if err := db.QueryRow(`SELECT count(*) FROM workflow_stages a JOIN workflow_stages b ON b.code=a.code
+		WHERE a.workflow_id=? AND b.workflow_id=? AND (a.instructions IS NOT b.instructions OR a.acceptance IS NOT b.acceptance
+		OR (a.code!='intake' AND a.sla_minutes IS NOT b.sla_minutes))`, v11, v12).Scan(&diff); err != nil || diff != 0 {
+		t.Fatalf("v12 除 01 时限外应与 v11 一致：差 %d 段 err=%v", diff, err)
+	}
+}
