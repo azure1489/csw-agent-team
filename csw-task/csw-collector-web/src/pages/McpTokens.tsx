@@ -80,7 +80,7 @@ export function McpTokens() {
           打开看看
         </a>
         <span className="w-full text-[12.5px] text-muted">
-          把这段话发给对方的 codex / Claude Code，它会照说明装好，再向对方要令牌。令牌另外私下给，不放进这段话里。
+          把这段话发给对方的 codex / Claude Code：它会照说明装好、向对方要令牌、验证，并学会以图搜图（含本机图片上传）。令牌另外私下给，不放进这段话里。
         </span>
       </div>
 
@@ -262,7 +262,37 @@ export function McpTokens() {
 
 const SETUP_URL = 'https://collector.aworld.ltd/mcp-setup.md'
 
-const SETUP_PROMPT = `请读取 ${SETUP_URL} ，按里面的说明在本机给你自己接上 csw-kb 知识库 MCP。装好后向我要令牌（CSW_KB_TOKEN），设好后按第 6 步验证并告诉我结果。不要在输出里回显令牌。`
+// 发给对方智能体的整段话：装、要令牌、验证、以图搜图（本机图片走上传）。**不含令牌**
+const SETUP_PROMPT = `请帮我在本机给你自己接上「营事编集室知识库」MCP（服务名 csw-kb，只读）。
+
+1. 先读取接入说明：${SETUP_URL}
+   用 curl 或你的网页读取工具都可以。之后按说明执行，说明和这里有出入时以说明为准。
+2. 先判断你自己是哪种客户端（codex / Claude Code / 其他 MCP 客户端），按说明里对应的那一节配置：
+   - 改配置文件前先读一遍。已有 csw-kb 就更新，不要重复追加。
+   - codex 要把说明里列的 4 个工具配成免确认（approval_mode = "approve"）。
+3. 配好后向我要令牌（形如 cswkb_ 开头）。我给你之前不要猜，也不要自己造。
+4. 拿到令牌后：
+   - 只把它写进环境变量 CSW_KB_TOKEN（按说明第 5 步，写进我的 shell 配置）。
+   - 不要写进 config.toml、.mcp.json 或任何项目文件。
+   - 不要在输出里回显令牌，只说「已配置」。
+   - shell 里的 CSW_KB_TOKEN 和 MCP 连接用的必须是同一枚令牌，否则上传的图片会对不上。
+5. 按说明第 6 步验证：
+   - 用 curl 调一次 tools/list，确认能列出工具；
+   - 再用 csw-kb 的 kb_magazine_search 查一次「snow peak 焚き火台」。
+6. 记住以图搜图的用法（说明第 8 节），以后我给你图片时照这个做：
+   - 图片有公网 https 地址：直接调 kb_image_search，参数 image_url。
+   - 图片是本机文件：先用 shell 执行
+       curl -sS -X POST https://collector.aworld.ltd/mcp/upload -H "Authorization: Bearer $CSW_KB_TOKEN" --data-binary @图片路径
+     拿到返回的 upload_id（10 分钟内有效），再调 kb_image_search，参数 {"upload_id": "..."}。
+   - 不要把图片转成 base64 填进工具参数。
+   - 只收 jpg / png / webp，最大 10MB。
+   如果当前目录或我指定的位置有图片，请用本机图片的方式实际搜一次，作为验证。
+7. 最后告诉我：
+   - 用的是哪种客户端，改了哪些文件；
+   - 列出了哪几个工具，以及文字检索的前 3 条结果；
+   - 如果做了以图搜图，报告前 3 条的刊期、页码和相似度；
+   - 如果需要我重开终端或重启客户端，明确说出来。
+   出错就对照说明第 7 节的出错对照处理，处理不了把原始报错告诉我。`
 
 const CLIENT_TOML = `# ~/.codex/config.toml
 [mcp_servers.csw-kb]
