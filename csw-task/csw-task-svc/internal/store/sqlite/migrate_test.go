@@ -658,3 +658,93 @@ func TestDailyNewsV12Draft(t *testing.T) {
 		t.Fatalf("v12 除 01 时限外应与 v11 一致：差 %d 段 err=%v", diff, err)
 	}
 }
+
+// TestDailyNewsV13Draft v13 只在文字里加「图片加工一律交设计师」（2026-10-25），结构、时限与 v12 相同。
+func TestDailyNewsV13Draft(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	if err := Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	var v12, v13 int64
+	var status string
+	if err := db.QueryRow(`SELECT id FROM workflows WHERE wf_key='daily_news' AND version=12`).Scan(&v12); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT id, status FROM workflows WHERE wf_key='daily_news' AND version=13`).Scan(&v13, &status); err != nil {
+		t.Fatalf("v13: %v", err)
+	}
+	if status != "draft" {
+		t.Fatalf("v13 必须停在 draft，got %s", status)
+	}
+	count := func(q string, id int64) int {
+		var n int
+		if err := db.QueryRow(q, id).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for _, q := range []string{
+		`SELECT count(*) FROM workflow_stages WHERE workflow_id=?`,
+		`SELECT count(*) FROM workflow_stage_deps WHERE workflow_id=?`,
+		`SELECT count(*) FROM workflow_gates WHERE workflow_id=?`,
+	} {
+		if a, b := count(q, v12), count(q, v13); a != b {
+			t.Fatalf("v13 与 v12 结构不同：%s v12=%d v13=%d", q, a, b)
+		}
+	}
+	var diff int
+	if err := db.QueryRow(`SELECT count(*) FROM workflow_stages a JOIN workflow_stages b ON b.code=a.code
+		WHERE a.workflow_id=? AND b.workflow_id=? AND (a.seq IS NOT b.seq OR a.role_code IS NOT b.role_code
+		OR a.sla_minutes IS NOT b.sla_minutes OR a.action_class IS NOT b.action_class OR a.dispatch_mode IS NOT b.dispatch_mode)`, v12, v13).Scan(&diff); err != nil || diff != 0 {
+		t.Fatalf("v13 的阶段属性应与 v12 一致：差 %d 段 err=%v", diff, err)
+	}
+	field := func(code, col string) string {
+		var s string
+		if err := db.QueryRow(`SELECT `+col+` FROM workflow_stages WHERE workflow_id=? AND code=?`, v13, code).Scan(&s); err != nil {
+			t.Fatalf("%s.%s: %v", code, col, err)
+		}
+		return s
+	}
+	// 每处新增恰好出现一次；作业内容里新段落插在「交付物：」前，交付物仍只有一处
+	want := map[[2]string]string{
+		{"material", "instructions"}:           "只交原图：不裁切、不改尺寸、不加字",
+		{"material", "self_check_criteria"}:    "交的都是原图",
+		{"material", "acceptance"}:             "没有自行加工图片",
+		{"design_prep", "instructions"}:        "图片加工都归你（2026-10-25 用户定）",
+		{"design_prep", "self_check_criteria"}: "封面候选是可直接上传的成品文件",
+		{"design_prep", "acceptance"}:          "封面候选为成品文件",
+		{"fulltext", "instructions"}:           "封面以 06 设计师的成品文件为准",
+		{"fulltext", "acceptance"}:             "封面：采用 06 设计师的成品文件",
+		{"wx_layout", "instructions"}:          "图片只用成品",
+		{"wx_layout", "self_check_criteria"}:   "封面是设计师交的成品文件",
+		{"wx_layout", "acceptance"}:            "封面成品：",
+		{"wx_save", "instructions"}:            "不加工图片：封面就是 08 字段清单里的成品文件",
+		{"wx_save", "self_check_criteria"}:     "没有自行加工图片",
+		{"xhs_pick", "instructions"}:           "只交原图：不裁切、不改尺寸；",
+		{"xhs_package", "instructions"}:        "图片原样使用",
+	}
+	for k, s := range want {
+		got := field(k[0], k[1])
+		if n := strings.Count(got, s); n != 1 {
+			t.Fatalf("v13 %s.%s 应恰好含一次 %q，实际 %d 次", k[0], k[1], s, n)
+		}
+		if k[1] == "instructions" {
+			if n := strings.Count(got, "交付物："); n != 1 {
+				t.Fatalf("v13 %s 的「交付物：」应只有一处，实际 %d", k[0], n)
+			}
+			if strings.Index(got, s) > strings.Index(got, "交付物：") {
+				t.Fatalf("v13 %s 新段落应在「交付物：」之前", k[0])
+			}
+		}
+	}
+	// 没碰的阶段与 v12 逐字相同
+	if err := db.QueryRow(`SELECT count(*) FROM workflow_stages a JOIN workflow_stages b ON b.code=a.code
+		WHERE a.workflow_id=? AND b.workflow_id=? AND a.code NOT IN ('material','design_prep','fulltext','wx_layout','wx_save','xhs_pick','xhs_package')
+		AND (a.instructions IS NOT b.instructions OR a.self_check_criteria IS NOT b.self_check_criteria OR a.acceptance IS NOT b.acceptance)`, v12, v13).Scan(&diff); err != nil || diff != 0 {
+		t.Fatalf("没改的阶段应与 v12 逐字相同：差 %d 段 err=%v", diff, err)
+	}
+}
