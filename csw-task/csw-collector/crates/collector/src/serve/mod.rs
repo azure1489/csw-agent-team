@@ -22,6 +22,7 @@ pub mod item;
 pub mod kb_magazine;
 pub mod mcp_http;
 pub mod mcp_tokens_api;
+pub mod official;
 pub mod outbox_sender;
 pub mod register;
 pub mod round;

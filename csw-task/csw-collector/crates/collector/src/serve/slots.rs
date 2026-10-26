@@ -245,7 +245,8 @@ pub fn page_images(
     product_json: Option<&serde_json::Value>,
 ) -> Vec<String> {
     let re = regex::Regex::new(
-        r#"(?:src|data-src|content)="((?:https?:)?//[^"]+\.(?:jpe?g|png|webp)[^"]*)""#,
+        // 站内相对路径也要（10-26 r89 鹿牌：captainstag.net 的商品图全是 `/item_img/l/...`）
+        r#"(?:src|data-src|content)="((?:https?:)?[^"\s]*\.(?:jpe?g|png|webp)[^"]*)""#,
     )
     .expect("静态正则");
     let size = regex::Regex::new(r"_(?:\d+x\d*|\d*x\d+|pico|icon|thumb|small|compact|medium|large|grande)(\.(?:jpe?g|png|webp))$")
@@ -399,6 +400,19 @@ mod tests {
                 &"https://cdn.shopify.com/s/files/1/x/files/20241009_Palante_049_1400px.jpg"
                     .to_string()
             )
+        );
+    }
+
+    #[test]
+    fn 站内相对路径的图也取() {
+        let html = r#"<img src="/item_img/l/UK-4088_2.jpg"><img src="../img/a.png?x=1"><meta name="description" content="UK-4088 ランタン">"#;
+        let v = page_images("https://www.captainstag.net/products/UK-4088.html", html, None);
+        assert_eq!(
+            v,
+            vec![
+                "https://www.captainstag.net/item_img/l/UK-4088_2.jpg".to_string(),
+                "https://www.captainstag.net/img/a.png".to_string(),
+            ]
         );
     }
 

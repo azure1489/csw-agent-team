@@ -109,11 +109,51 @@ pub async fn run_material(
         Some(p) => Some(apply_write_plan(&mut item, p).await?),
         None => None,
     };
+    // 原帖能当配图的不够图位：去品牌官网补采同型号的图（10-26 r89 鹿牌、10-19 r82 KingCamp）。
+    // 首次派工就补，不等主编退回来再派一轮
+    let usable = material::pick_figures(&item.shots, material::FIGURE_SLOTS).len();
+    let official = if planned.is_none() && usable < material::FIGURE_SLOTS && cfg.official.enabled {
+        let text = ledger::get_candidate(conn, item_key)?
+            .map(|c| c.text)
+            .unwrap_or_default();
+        Some(super::official::supplement(conn, cfg, svc, &mut item, &text, &note).await)
+    } else {
+        None
+    };
     if redo && planned.is_none() {
+        let after = material::pick_figures(&item.shots, material::FIGURE_SLOTS).len();
+        // 修订派工要补图，官网也没补到一张新的：报失败写明查了什么，不交同图的新版本
+        //（10-26 r89 #1849、#1863：两次交回原帖那一张，主编要的是「做不到就 fail」）
+        if after < material::FIGURE_SLOTS && official.as_ref().is_none_or(|r| r.added == 0) {
+            rounds::end_step(
+                conn,
+                step.id,
+                StepStatus::Failed,
+                &serde_json::json!({"图": item.shots.len(), "能当配图": after}),
+                "修订要补图，官网补采没有新图",
+            )?;
+            anyhow::bail!(
+                "修订派工要补图，工作台补不到：原帖能当配图的只有 {after} 张；官网补采{}。\
+                 不交同图的新版本，需人工补采，或由主编定单图例外／替题",
+                official
+                    .as_ref()
+                    .map(|r| format!("——{}", r.summary()))
+                    .unwrap_or_else(|| "没开".into())
+            );
+        }
         item.gaps.push(format!(
-            "本次派工的修订要求工作台没有自动核对：只在原帖已有的 {} 张图里重排图位，没有新增图源。\
-             要求里的功能图若不在下面「素材核对」的逐张说明里，就是原帖没有，需人工补采或换图源（不重绘、不拼图）",
-            item.shots.len()
+            "本次派工的修订要求工作台没有逐条核对：原帖 {} 张图{}。要求里点名的画面若不在下面「素材核对」的逐张说明里，\
+             就是原帖和官网都没有，需人工补采或换图源（不重绘、不拼图）",
+            item.shots.iter().filter(|s| s.external.is_none()).count(),
+            official
+                .as_ref()
+                .map(|r| format!("，官网补采：{}", r.summary()))
+                .unwrap_or_default()
+        ));
+    } else if let Some(r) = official.as_ref().filter(|r| r.added == 0) {
+        item.gaps.push(format!(
+            "原帖能当配图的只有 {usable} 张，官网补采没补上：{}。需人工补采或主编定单图例外",
+            r.summary()
         ));
     }
     let picked: Vec<&Shot> = match planned.as_ref() {
@@ -176,6 +216,46 @@ pub async fn run_material(
         ),
         &entries,
     )
+}
+
+/// `official-probe`：一条的原帖图 + 官网补采，打印结果，不打包、不写引擎。
+pub async fn probe_official(
+    cfg: &Config,
+    secrets: &csw_collector_core::Secrets,
+    item_key: &str,
+    note: &str,
+) -> Result<()> {
+    let conn = csw_collector_core::store::open(&cfg.db_path())
+        .with_context(|| format!("打开本地库 {}", cfg.db_path().display()))?;
+    let svc = super::services::Services::build(cfg, secrets, &conn).await?;
+    let mut item = shots_for(&conn, cfg, &svc, item_key, "").await?;
+    let text = ledger::get_candidate(&conn, item_key)?
+        .map(|c| c.text)
+        .unwrap_or_default();
+    let usable = material::pick_figures(&item.shots, material::FIGURE_SLOTS).len();
+    println!("原帖 {} 张，能当配图 {usable} 张", item.shots.len());
+    let rep = super::official::supplement(&conn, cfg, &svc, &mut item, &text, note).await;
+    println!("官网补采：{}", rep.summary());
+    let picked: Vec<u16> = material::pick_figures(&item.shots, material::FIGURE_SLOTS)
+        .iter()
+        .map(|s| s.ordinal)
+        .collect();
+    for s in &item.shots {
+        let d = s.desc.as_ref();
+        println!(
+            "{} 序 {:>3} {} | {:?} 可作配图={} | {}",
+            if picked.contains(&s.ordinal) { "★" } else { " " },
+            s.ordinal,
+            s.external.as_ref().map(|x| x.original_url.as_str()).unwrap_or("原帖"),
+            d.map(|d| d.kind),
+            d.is_some_and(|d| d.usable_as_figure),
+            d.map(|d| d.content.chars().take(80).collect::<String>()).unwrap_or_default()
+        );
+    }
+    for g in &item.gaps {
+        println!("缺口：{g}");
+    }
+    Ok(())
 }
 
 /// 跑一轮 11：整期一包，按资讯分组的原图。
@@ -502,6 +582,7 @@ async fn apply_write_plan(
                     bytes: o.data.len() as u64,
                     sha256: super::slots::sha256_hex(&o.data),
                     verified: true,
+                    origin: String::new(),
                     note: if o.data == slot.bytes {
                         "与 04 附件逐字节相同".into()
                     } else {
@@ -895,7 +976,7 @@ fn file_part(key: &str) -> String {
         .collect()
 }
 
-fn ext_of(url: &str) -> String {
+pub(crate) fn ext_of(url: &str) -> String {
     url.split(['?', '#'])
         .next()
         .and_then(|s| s.rsplit('.').next())

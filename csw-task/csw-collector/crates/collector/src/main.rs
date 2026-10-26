@@ -196,6 +196,16 @@ enum Command {
         #[arg(long, value_delimiter = ',')]
         keys: Vec<String>,
     },
+    /// 05 官网补采试跑：取这一条原帖的图，再按派工单链接 / 深核依据 / codex 搜索去官网补采，
+    /// 打印找到的页面与每张图。**要花模型钱**（识图、codex）。不打包、不写引擎、不提交
+    OfficialProbe {
+        /// 条目键
+        #[arg(long)]
+        key: String,
+        /// 当作派工单的文字（里面的官网链接会先用）。不给 = 走深核依据或 codex 搜索
+        #[arg(long, default_value = "")]
+        note: String,
+    },
     /// 补宽取留痕：老轮次按同一窗口重新取贴文列表（只取元数据）、同一规则复算每条去向。不写引擎、不提交
     WindowTrace {
         /// 哪一轮
@@ -627,6 +637,12 @@ async fn main() -> anyhow::Result<()> {
                 },
             )
             .await
+        }
+        Command::OfficialProbe { key, note } => {
+            let cfg =
+                csw_collector_core::Config::load(cli.config.as_deref().map(std::path::Path::new))?;
+            let secrets = csw_collector_core::Secrets::from_env();
+            serve::item::probe_official(&cfg, &secrets, &key, &note).await
         }
         Command::Evidence { round, keys } => {
             let cfg =

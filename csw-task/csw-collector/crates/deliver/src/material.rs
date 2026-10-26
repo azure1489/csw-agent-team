@@ -72,6 +72,8 @@ pub struct ExternalShot {
     /// 原图是否在页面上核到（核到才用页面原图；没核到用 04 附件原字节）
     pub verified: bool,
     pub note: String,
+    /// 图从哪来。空 = 04 指定（原帖里没有、取自 04 附件）；官网补采写「品牌官网补采」
+    pub origin: String,
 }
 
 /// 一张高清原图的来历，**逐项可核**：原帖序号 → Instagram 文件名 → 取得地址 →
@@ -165,7 +167,14 @@ pub fn pick_figures(shots: &[Shot], n: usize) -> Vec<&Shot> {
             )
         })
         .collect();
-    usable.sort_by_key(|s| (kind_rank(s.desc.as_ref().map(|d| d.kind)), s.ordinal));
+    // 原帖的图在前，官网补采的只补空位：原帖是这条资讯本身，官网白底图排前面会把它挤掉
+    usable.sort_by_key(|s| {
+        (
+            s.external.is_some(),
+            kind_rank(s.desc.as_ref().map(|d| d.kind)),
+            s.ordinal,
+        )
+    });
     // 同一张图在一条轮播里出现两次是真有的事。三个图位放两张一样的，
     // 文案那边会以为是两个角度
     let mut seen = std::collections::HashSet::new();
@@ -232,7 +241,8 @@ pub fn material_body(item: &ItemShots, picked: &[&Shot]) -> String {
             if x.verified {
                 let _ = writeln!(
                     s,
-                    "- 原图（04 指定，原帖里没有）：{}（{}×{}，{} B，sha256 {}；页面 {}）",
+                    "- 原图（{}，原帖里没有）：{}（{}×{}，{} B，sha256 {}；页面 {}）",
+                    if x.origin.is_empty() { "04 指定" } else { x.origin.as_str() },
                     x.original_url,
                     x.width,
                     x.height,
@@ -590,6 +600,33 @@ mod tests {
             gaps: vec![],
             hires: None,
         }
+    }
+
+    /// 10-26 r89 鹿牌：原帖 1 张场景图，官网补采 2 张白底产品图。原帖那张必须留在图位 1，
+    /// 官网图只补空位，并在图位里标明来源
+    #[test]
+    fn 官网补采只补空位并标来源() {
+        let post = shot(0, Some(desc(ImageKind::Scene, true)));
+        let mut off = |n: u16| {
+            let mut s = shot(800 + n, Some(desc(ImageKind::Product, true)));
+            s.external = Some(ExternalShot {
+                page_url: "https://www.captainstag.net/products/UK-4088.html".into(),
+                original_url: format!("https://www.captainstag.net/item_img/l/UK-4088_{n}.jpg"),
+                width: 1200,
+                height: 1200,
+                bytes: 83057,
+                sha256: "787da4d1fee5cb39".into(),
+                verified: true,
+                origin: "品牌官网补采".into(),
+                ..Default::default()
+            });
+            s
+        };
+        let it = item(vec![off(2), post, off(4)]);
+        let picked = pick_figures(&it.shots, FIGURE_SLOTS);
+        assert_eq!(picked.iter().map(|s| s.ordinal).collect::<Vec<_>>(), vec![0, 802, 804]);
+        let body = material_body(&it, &picked);
+        assert!(body.contains("- 原图（品牌官网补采，原帖里没有）：https://www.captainstag.net/item_img/l/UK-4088_2.jpg"));
     }
 
     /// 10-02 r60：Van 要原帖高清图。换进包的每张都要能从原帖序号追到包内文件

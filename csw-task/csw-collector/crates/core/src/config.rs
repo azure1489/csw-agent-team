@@ -29,6 +29,7 @@ pub struct Config {
     pub model: Model,
     pub jev: Jev,
     pub codex: Codex,
+    pub official: Official,
     pub schedule: Schedule,
     pub limits: Limits,
     pub features: Features,
@@ -150,6 +151,20 @@ pub struct Codex {
     /// r53 深核前 25 条待核，15 的上限留下 10 条没核；周一 72 小时窗口（09-28）62 条，40 也不够
     pub pending_cap: usize,
     pub budget_secs: u64,
+}
+
+/// 05 原帖图不够图位时去品牌官网补采（10-26 r89 鹿牌：原帖 1 张，主编要同型号官网图，
+/// 工作台只会原帖重导，交了同图 v2；10-19 r82 KingCamp 同样）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Official {
+    pub enabled: bool,
+    /// 一个页面最多下几张候选图
+    pub max_images: usize,
+    /// 短边低于这个像素的不要（缩略图、按钮、横幅）
+    pub min_short_side: u32,
+    /// 用 codex 找官网商品页的时间盒
+    pub search_budget_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -356,7 +371,7 @@ macro_rules! default_from_config {
 }
 default_from_config!(
     Engine => engine, Csw => csw, Hires => hires, Vector => vector, Model => model, Jev => jev,
-    Codex => codex, Schedule => schedule, Limits => limits, Features => features, Web => web,
+    Codex => codex, Official => official, Schedule => schedule, Limits => limits, Features => features, Web => web,
 );
 
 impl Default for Config {
@@ -422,6 +437,12 @@ impl Default for Config {
                 first_batch: 6,
                 pending_cap: 80,
                 budget_secs: 600,
+            },
+            official: Official {
+                enabled: true,
+                max_images: 12,
+                min_short_side: 600,
+                search_budget_secs: 240,
             },
             schedule: Schedule {
                 // 10-24 起取消预取轮（空串 = 不触发）：两周里 41% 的预取判断因指纹对不上白算、
