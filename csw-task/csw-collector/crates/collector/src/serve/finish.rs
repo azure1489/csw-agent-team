@@ -710,6 +710,7 @@ pub fn build_deliverable(
     calib_labels: &HashMap<String, String>,
     five: Option<FiveColumns>,
     engine_items: Option<&serde_json::Value>,
+    upload: Option<UploadAttachment<'_>>,
 ) -> Result<pack::Built> {
     let step = rounds::begin_step(conn, round.id, StepCode::Build, &round.instructions_hash)?;
     let lookup = |k: &str| by_key.get(k).cloned();
@@ -864,7 +865,7 @@ pub fn build_deliverable(
         }
     }
     if !image_index.is_empty() {
-        body.push_str("\n## 随包图片（按条目，`_N` 是原帖第 N 张）\n\n`images/` 是预览（向图床请求缩放转码后的字节），`source_images/` 是来源库原文件（导出时按原地址原样取回、未重编码；包大小有上限，选题单卡片的优先随包，其余只在清单里列地址、字节与 SHA-256）。每张图两份的地址、像素、字节、SHA-256、转换参数与原帖图序见 `trace/images_manifest.jsonl`；取图失败的也逐条记在那里。\n\n");
+        body.push_str("\n## 随包图片（按条目，`_N` 是原帖第 N 张）\n\n`images/` 是预览（向图床请求缩放转码后的字节），`source_images/` 是来源库原文件（导出时按原地址原样取回、未重编码；包大小有上限，选题单卡片的优先随包；主包放不下的卡片原文件进独立的原图附件，链接见文末「原图附件」；其余只在清单里列地址、字节与 SHA-256）。每张图两份的地址、像素、字节、SHA-256、转换参数与原帖图序见 `trace/images_manifest.jsonl`；取图失败的也逐条记在那里。\n\n");
         for (k, files) in &image_index {
             body.push_str(&format!("- `{k}`：{}\n", files.join("、")));
         }
@@ -1111,17 +1112,32 @@ pub fn build_deliverable(
     // 选题单卡片的帖子优先；放不下的不进包，清单里照样有地址、字节、SHA-256
     let used: u64 = entries.iter().map(|e| e.bytes.len() as u64).sum();
     let budget = (pack::MAX_ZIP_BYTES * 85 / 100).saturating_sub(used);
-    let (manifest, originals) = images_manifest(
+    let attach = upload.map(|upload| Attach {
+        dir: cfg.data_dir.join("deliverables"),
+        prefix: format!(
+            "情报逐条_情报收集员_r{}_原图附件",
+            round.run_id.unwrap_or(0)
+        ),
+        upload,
+    });
+    let im = images_manifest(
         conn,
         cfg.csw.thumb_width,
         &entries,
         &fetch_originals,
         &card_keys,
         budget,
+        attach.as_ref(),
     );
-    entries.extend(originals);
-    if !manifest.is_empty() {
-        entries.push(pack::Entry::text("trace/images_manifest.jsonl", manifest));
+    entries.extend(im.entries);
+    if !im.jsonl.is_empty() {
+        entries.push(pack::Entry::text("trace/images_manifest.jsonl", im.jsonl));
+    }
+    let section = attachments_section(&im.attachments);
+    if !section.is_empty()
+        && let Some(e) = entries.iter_mut().find(|e| e.path == "index.md")
+    {
+        e.bytes.extend_from_slice(section.as_bytes());
     }
 
     let name = format!(
@@ -1133,7 +1149,14 @@ pub fn build_deliverable(
         .join("deliverables")
         .join(format!("{name}.zip"));
     let mut built = pack::build(&name, &entries, &out)?;
-    built.summary = review_summary(round, cfg, judgements, &card_keys, extra_gaps);
+    built.summary = review_summary(round, cfg, judgements, &card_keys, extra_gaps).replacen(
+        "\n交付物：",
+        &match attachments_summary(&im.attachments) {
+            l if l.is_empty() => "\n交付物：".to_string(),
+            l => format!("\n{l}\n交付物："),
+        },
+        1,
+    );
 
     conn.execute(
         "INSERT INTO deliverables_local(round_id, deliv_kind, item_key, zip_path, zip_sha256,
@@ -1828,6 +1851,104 @@ fn first_cards(
 /// 取来源库原文件：按地址批量取，返回 地址 → 字节或失败原因。线上走 [`fetch_originals`]，测试注入假的。
 pub type FetchOriginals<'a> = &'a dyn Fn(&[String]) -> HashMap<String, Result<Vec<u8>, String>>;
 
+/// 把一个原图附件包传给引擎，返回下载链接。线上走引擎 `POST /files`，测试注入假的。
+pub type UploadAttachment<'a> = &'a dyn Fn(&pack::Built) -> Result<String, String>;
+
+/// 原图附件：主包放不下的选题单卡片原文件，按条目凑成独立 zip 另传，index 逐包链接。
+/// 10-31 r94：174 帖 543 张预览就占满 48MB 主包，原文件预算为 0，主编两次退回第 4 项
+///（「推荐 / 备选须附来源库原文件；超上限就放独立可下载附件，不能只写源 URL」）。
+pub struct Attach<'a> {
+    pub dir: PathBuf,
+    /// 附件 zip 名前缀，后接两位序号
+    pub prefix: String,
+    pub upload: UploadAttachment<'a>,
+}
+
+/// 一个附件包的实际结果。index 与自检摘要**只按它写**：传失败的如实列缺口，不说「已附」。
+pub struct AttachOut {
+    pub name: String,
+    pub sha256: String,
+    pub bytes: u64,
+    pub files: usize,
+    pub keys: Vec<String>,
+    pub url: Result<String, String>,
+}
+
+pub struct ImagesManifest {
+    pub jsonl: String,
+    /// 随主包的原文件
+    pub entries: Vec<pack::Entry>,
+    pub attachments: Vec<AttachOut>,
+}
+
+/// 单个附件包上限：与主包同一个上限，留 4MB 给 zip 目录
+const ATTACH_MAX_BYTES: u64 = pack::MAX_ZIP_BYTES - 4 * 1024 * 1024;
+
+/// 附件包打好后传上去。同名同 SHA 传过就用记下的链接，不重传——
+/// 返工重导很常见（r94 v1→v2 隔了 4 分钟），每次重传几百 MB 要好几分钟
+fn upload_cached(a: &Attach<'_>, built: &pack::Built) -> Result<String, String> {
+    let memo = built.path.with_extension("zip.url");
+    if let Ok(s) = std::fs::read_to_string(&memo)
+        && let Some((sha, url)) = s.trim().split_once('\n')
+        && sha == built.sha256
+        && !url.is_empty()
+    {
+        return Ok(url.to_string());
+    }
+    let url = (a.upload)(built)?;
+    let _ = std::fs::write(&memo, format!("{}\n{url}\n", built.sha256));
+    Ok(url)
+}
+
+/// index 里的「原图附件」一节：逐包写链接、字节、SHA、含哪些条目；传失败的写成缺口
+fn attachments_section(atts: &[AttachOut]) -> String {
+    if atts.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from(
+        "\n## 原图附件（主包放不下的选题单卡片来源库原文件）\n\n每个附件是独立 zip，解压后 `source_images/` 下的文件名与本包 `images/` 预览一一对应；逐图的原地址、字节、SHA-256、像素与所在附件见 `trace/images_manifest.jsonl`（`status = ok_in_attachment`，`source.attachment`）。\n\n",
+    );
+    for a in atts {
+        match &a.url {
+            Ok(url) => s.push_str(&format!(
+                "- [{}.zip]({url})：{} 张，{} 字节，SHA-256 `{}`；条目 {}\n",
+                a.name,
+                a.files,
+                a.bytes,
+                a.sha256,
+                a.keys.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join("、")
+            )),
+            Err(why) => s.push_str(&format!(
+                "- **缺口** {}.zip 没有交上：{why}。其中 {} 张原文件只在清单里列地址、字节与 SHA-256；条目 {}\n",
+                a.name,
+                a.files,
+                a.keys.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join("、")
+            )),
+        }
+    }
+    s
+}
+
+/// 交付摘要里的一行：附件几包、几张、多大；有没交上的单独说
+fn attachments_summary(atts: &[AttachOut]) -> String {
+    if atts.is_empty() {
+        return String::new();
+    }
+    let ok: Vec<&AttachOut> = atts.iter().filter(|a| a.url.is_ok()).collect();
+    let files: usize = ok.iter().map(|a| a.files).sum();
+    let bytes: u64 = ok.iter().map(|a| a.bytes).sum();
+    let mut s = format!(
+        "原图附件：{} 包 {files} 张 {:.1}MB（主包放不下的选题单卡片原文件，链接见 index「原图附件」）",
+        ok.len(),
+        bytes as f64 / 1_048_576.0
+    );
+    let bad = atts.len() - ok.len();
+    if bad > 0 {
+        s.push_str(&format!("；{bad} 包没交上，已在 index 列为缺口"));
+    }
+    s
+}
+
 /// 线上取原文件：在当前运行时里并发取（8 路），每张 30 秒超时。没有运行时（如单测）就一张都不取。
 pub fn fetch_originals(urls: &[String]) -> HashMap<String, Result<Vec<u8>, String>> {
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
@@ -1901,7 +2022,8 @@ fn images_manifest(
     fetch: FetchOriginals<'_>,
     priority: &[String],
     budget: u64,
-) -> (String, Vec<pack::Entry>) {
+    attach: Option<&Attach<'_>>,
+) -> ImagesManifest {
     const VERSION_NOTE: &str = "csw 来源库存档版本（来源库只存这一档，01 不另取原帖最高档；原图在 05 配图时经 hires-service 取）";
     struct Row {
         path: String,
@@ -1987,6 +2109,92 @@ fn images_manifest(
             packed_urls.insert(url.clone());
         }
     }
+    // 主包放不下的卡片原文件：按条目凑成独立附件包另传，同一条目不拆到两个包
+    let mut attached: HashMap<String, (usize, String)> = HashMap::new(); // 地址 → (第几包, 包内路径)
+    let mut attachments: Vec<AttachOut> = Vec::new();
+    if let Some(a) = attach {
+        struct Group {
+            keys: Vec<String>,
+            entries: Vec<pack::Entry>,
+            bytes: u64,
+        }
+        let mut groups: Vec<Group> = Vec::new();
+        let mut cur = Group {
+            keys: vec![],
+            entries: vec![],
+            bytes: 0,
+        };
+        let mut seen: std::collections::HashSet<String> = Default::default();
+        let mut seen_keys: std::collections::HashSet<&str> = Default::default();
+        for key in priority {
+            if !seen_keys.insert(key) {
+                continue;
+            }
+            let mut files = Vec::new();
+            let mut size = 0u64;
+            for r in rows.iter().filter(|r| &r.key == key) {
+                if let Some((url, _)) = &r.src
+                    && let Some(Ok(raw)) = originals.get(url)
+                    && !packed_urls.contains(url)
+                    && seen.insert(url.clone())
+                {
+                    let name = format!("source_images/{}", r.path.trim_start_matches("images/"));
+                    size += raw.len() as u64;
+                    files.push((url.clone(), pack::Entry::binary(&name, raw.clone())));
+                }
+            }
+            if files.is_empty() {
+                continue;
+            }
+            if !cur.entries.is_empty() && cur.bytes + size > ATTACH_MAX_BYTES {
+                groups.push(std::mem::replace(
+                    &mut cur,
+                    Group {
+                        keys: vec![],
+                        entries: vec![],
+                        bytes: 0,
+                    },
+                ));
+            }
+            cur.keys.push(key.clone());
+            cur.bytes += size;
+            for (url, e) in files {
+                attached.insert(url, (groups.len(), e.path.clone()));
+                cur.entries.push(e);
+            }
+        }
+        if !cur.entries.is_empty() {
+            groups.push(cur);
+        }
+        for (i, g) in groups.into_iter().enumerate() {
+            let name = format!("{}{:02}", a.prefix, i + 1);
+            let out = match pack::build(&name, &g.entries, &a.dir.join(format!("{name}.zip"))) {
+                Ok(b) => {
+                    let url = upload_cached(a, &b);
+                    AttachOut {
+                        name,
+                        sha256: b.sha256,
+                        bytes: b.bytes,
+                        files: g.entries.len(),
+                        keys: g.keys,
+                        url,
+                    }
+                }
+                Err(e) => AttachOut {
+                    name,
+                    sha256: String::new(),
+                    bytes: 0,
+                    files: g.entries.len(),
+                    keys: g.keys,
+                    url: Err(format!("打包失败：{e:#}")),
+                },
+            };
+            if let Err(why) = &out.url {
+                tracing::warn!(附件 = %out.name, 原因 = %why, "原图附件没交上，index 列为缺口");
+            }
+            attachments.push(out);
+        }
+    }
     let mut extra = Vec::new();
     let mut placed: HashMap<String, String> = HashMap::new();
     let mut lines = Vec::new();
@@ -2021,9 +2229,43 @@ fn images_manifest(
                 } else {
                     format!("图床按请求参数处理后的响应：resize 宽 {thumb_width}（不足不放大）、转 JPEG q80；用 fetched_url 重取可得同样字节").into()
                 };
+                let in_attachment = attached
+                    .get(url)
+                    .and_then(|(i, f)| attachments.get(*i).map(|a| (a, f)));
                 match originals.get(url) {
+                    Some(Ok(raw))
+                        if let Some((a, file)) = in_attachment
+                            && let Ok(pack_url) = &a.url =>
+                    {
+                        let (sw, sh) = dims(raw);
+                        line["source"] = serde_json::json!({
+                            "file": file,
+                            "attachment": {
+                                "name": format!("{}.zip", a.name),
+                                "url": pack_url,
+                                "bytes": a.bytes,
+                                "sha256": a.sha256,
+                            },
+                            "url": url,
+                            "bytes": raw.len(),
+                            "sha256": super::slots::sha256_hex(raw),
+                            "width": sw,
+                            "height": sh,
+                            "fetched_at": fetched_at,
+                            "note": "导出时按原地址原样取回，未重编码；主包放不下，放在原图附件里，file 是附件内路径",
+                        });
+                        line["status"] = "ok_in_attachment".into();
+                    }
                     Some(Ok(raw)) if !packed_urls.contains(url) => {
                         let (sw, sh) = dims(raw);
+                        let note = match in_attachment {
+                            Some((a, _)) => format!(
+                                "原文件未随包：原图附件 {}.zip 没交上（{}）；按 url 原样取回即可，字节与 SHA-256 见本行",
+                                a.name,
+                                a.url.as_ref().err().map(String::as_str).unwrap_or("")
+                            ),
+                            None => "原文件未随包：包大小有上限，选题单卡片的原文件优先；按 url 原样取回即可，字节与 SHA-256 见本行".into(),
+                        };
                         line["source"] = serde_json::json!({
                             "file": null,
                             "url": url,
@@ -2032,7 +2274,7 @@ fn images_manifest(
                             "width": sw,
                             "height": sh,
                             "fetched_at": fetched_at,
-                            "note": "原文件未随包：包大小有上限，选题单卡片的原文件优先；按 url 原样取回即可，字节与 SHA-256 见本行",
+                            "note": note,
                         });
                         line["status"] = "ok_not_packed".into();
                     }
@@ -2089,7 +2331,11 @@ fn images_manifest(
             }));
         }
     }
-    (lines.iter().map(|l| l.to_string() + "\n").collect(), extra)
+    ImagesManifest {
+        jsonl: lines.iter().map(|l| l.to_string() + "\n").collect(),
+        entries: extra,
+        attachments,
+    }
 }
 
 /// 选题档位（选题里组内最高的档）。
@@ -2656,9 +2902,11 @@ mod tests {
                 })
                 .collect()
         };
-        let (m, extra) = images_manifest(&conn, 768, &entries, &fetch, &[], u64::MAX);
+        let im = images_manifest(&conn, 768, &entries, &fetch, &[], u64::MAX, None);
+        let (m, extra) = (im.jsonl, im.entries);
         // 预算不够时原文件不随包，清单照样记字节与 SHA（10-23 r86：446MB 超限）
-        let (m0, extra0) = images_manifest(&conn, 768, &entries, &fetch, &[], 3);
+        let im0 = images_manifest(&conn, 768, &entries, &fetch, &[], 3, None);
+        let (m0, extra0) = (im0.jsonl, im0.entries);
         assert!(extra0.is_empty());
         let r0: serde_json::Value = serde_json::from_str(m0.lines().next().unwrap()).unwrap();
         assert_eq!(r0["status"], "ok_not_packed");
@@ -2711,6 +2959,136 @@ mod tests {
         assert!(rows[2]["file"].is_null());
         assert_eq!(rows[2]["post_image_no"], 2);
         assert_eq!(rows[2]["status"], "取图或识别失败，未进包");
+    }
+
+    /// 10-31 r94：预览占满主包、原文件预算为 0。卡片原文件进独立附件包：同条目不拆包、
+    /// 清单逐图写附件与附件内路径；传失败的如实写缺口；同内容重导不重传
+    #[test]
+    fn 主包放不下的卡片原文件进原图附件() {
+        let conn = csw_collector_core::store::open_in_memory().unwrap();
+        let mut entries = vec![pack::Entry::text("index.md", "x")];
+        for (key, n) in [("aaa-000001", 2), ("bbb-000002", 1), ("ccc-000003", 1)] {
+            let cand = Candidate {
+                candidate_key: key.into(),
+                platform: csw_collector_core::types::Platform::Instagram,
+                source_id: key.into(),
+                collector: "csw_window".into(),
+                account: "acc".into(),
+                url: format!("https://www.instagram.com/p/{key}/"),
+                text: String::new(),
+                translated: String::new(),
+                posted_at: None,
+                ingested_at: None,
+                likes: None,
+                comments: None,
+                followers: None,
+                heat_ratio: None,
+                content_type: "Carousel".into(),
+                media: vec![],
+                tags: vec![],
+                hashtags: vec![],
+            };
+            csw_collector_core::ledger::upsert_candidate(&conn, &cand).unwrap();
+            for i in 0..n {
+                let preview = vec![key.as_bytes()[0], i as u8, 1];
+                conn.execute(
+                    "INSERT INTO media(blake3, candidate_key, ordinal, kind, url, failed) VALUES (?1,?2,?3,'photo',?4,0)",
+                    params![
+                        blake3::hash(&preview).to_hex().to_string(),
+                        key,
+                        i,
+                        format!("https://cdn.example/{key}/{i}.jpg")
+                    ],
+                )
+                .unwrap();
+                entries.push(pack::Entry::binary(
+                    &format!("images/{key}_{}.jpg", i + 1),
+                    preview,
+                ));
+            }
+        }
+        let fetch = |urls: &[String]| -> HashMap<String, Result<Vec<u8>, String>> {
+            urls.iter()
+                .map(|u| (u.clone(), Ok(u.as_bytes().to_vec())))
+                .collect()
+        };
+        let dir = tempdir::TempDir::new("attach").unwrap();
+        let calls = std::cell::Cell::new(0);
+        let up = |b: &pack::Built| -> Result<String, String> {
+            calls.set(calls.get() + 1);
+            Ok(format!("https://oss.example/blobs/{}", b.sha256))
+        };
+        let a = Attach {
+            dir: dir.path().to_path_buf(),
+            prefix: "r94_原图附件".into(),
+            upload: &up,
+        };
+        // 卡片只有 aaa、bbb；预算 0 → 一个都不进主包
+        let cards = vec!["aaa-000001".to_string(), "bbb-000002".to_string()];
+        let im = images_manifest(&conn, 768, &entries, &fetch, &cards, 0, Some(&a));
+        assert!(im.entries.is_empty());
+        assert_eq!(im.attachments.len(), 1);
+        let att = &im.attachments[0];
+        assert_eq!(att.name, "r94_原图附件01");
+        assert_eq!(att.files, 3);
+        assert_eq!(att.keys, cards);
+        assert!(att.url.as_ref().unwrap().ends_with(&att.sha256));
+        let rows: Vec<serde_json::Value> = im
+            .jsonl
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let of = |f: &str| rows.iter().find(|r| r["file"] == f).unwrap().clone();
+        let r = of("images/aaa-000001_2.jpg");
+        assert_eq!(r["status"], "ok_in_attachment");
+        assert_eq!(r["source"]["file"], "source_images/aaa-000001_2.jpg");
+        assert_eq!(r["source"]["attachment"]["name"], "r94_原图附件01.zip");
+        assert_eq!(r["source"]["attachment"]["sha256"], att.sha256);
+        // 附件里真有这个文件，字节就是原文件
+        let z = std::fs::File::open(dir.path().join("r94_原图附件01.zip")).unwrap();
+        let mut z = zip::ZipArchive::new(z).unwrap();
+        let mut b = Vec::new();
+        std::io::Read::read_to_end(
+            &mut z
+                .by_name("r94_原图附件01/source_images/aaa-000001_2.jpg")
+                .unwrap(),
+            &mut b,
+        )
+        .unwrap();
+        assert_eq!(b, b"https://cdn.example/aaa-000001/1.jpg");
+        // 不是卡片的照旧只记清单
+        assert_eq!(of("images/ccc-000003_1.jpg")["status"], "ok_not_packed");
+        // index 一节逐包写链接
+        let sec = attachments_section(&im.attachments);
+        assert!(
+            sec.contains("[r94_原图附件01.zip](https://oss.example/blobs/"),
+            "{sec}"
+        );
+        // 同内容重导：用记下的链接，不重传
+        let again = images_manifest(&conn, 768, &entries, &fetch, &cards, 0, Some(&a));
+        assert_eq!(calls.get(), 1);
+        assert_eq!(again.attachments[0].url, im.attachments[0].url);
+
+        // 传失败：清单不冒称已附，index 列缺口
+        let bad = |_: &pack::Built| -> Result<String, String> { Err("HTTP 413".into()) };
+        let dir2 = tempdir::TempDir::new("attach2").unwrap();
+        let a2 = Attach {
+            dir: dir2.path().to_path_buf(),
+            prefix: "r94_原图附件".into(),
+            upload: &bad,
+        };
+        let im2 = images_manifest(&conn, 768, &entries, &fetch, &cards, 0, Some(&a2));
+        let r2 = im2
+            .jsonl
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .find(|r| r["file"] == "images/aaa-000001_1.jpg")
+            .unwrap();
+        assert_eq!(r2["status"], "ok_not_packed");
+        assert!(r2["source"]["file"].is_null());
+        assert!(r2["source"]["note"].as_str().unwrap().contains("HTTP 413"));
+        assert!(attachments_section(&im2.attachments).contains("**缺口**"));
+        assert!(attachments_summary(&im2.attachments).contains("1 包没交上"));
     }
 
     #[test]

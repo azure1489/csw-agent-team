@@ -351,6 +351,54 @@ impl EngineClient {
         }
     }
 
+    /// 上传一个独立附件（`POST /files`，不挂任务、不建交付物），返回引擎给的下载链接。
+    ///
+    /// 01 原图附件用（10-31 r94：543 张预览就占满 48MB 主包，原文件预算为 0，主编两次退回第 4 项）。
+    /// 不给 `object_key`：引擎按内容寻址并按 SHA 去重，同一份字节重传拿回同一个链接。
+    /// 幂等键从 zip 的 sha256（调用方打包时已算好）派生，重试必然同键。
+    pub async fn upload_file(
+        &self,
+        path: &std::path::Path,
+        sha256: &str,
+    ) -> Result<String, EngineError> {
+        let bytes = std::fs::read(path)
+            .map_err(|e| EngineError::Transport(format!("读 {}：{e}", path.display())))?;
+        let idem = format!("upload-{}", &sha256[..sha256.len().min(16)]);
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "attachment.zip".into());
+        let url = format!("{}/files", self.base);
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let part = reqwest::multipart::Part::bytes(bytes.clone())
+                .file_name(name.clone())
+                .mime_str("application/zip")
+                .map_err(|e| EngineError::Transport(e.to_string()))?;
+            let req = self
+                .http
+                .post(&url)
+                .bearer_auth(&self.token)
+                .header("Idempotency-Key", &idem)
+                .timeout(upload_timeout(bytes.len()))
+                .multipart(reqwest::multipart::Form::new().part("file", part));
+            match self.send(req, Some(&idem)).await {
+                Ok(v) => {
+                    return v
+                        .get("download_url")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                        .ok_or_else(|| {
+                            EngineError::Transport(format!("上传响应没有 download_url：{v}"))
+                        });
+                }
+                Err(e) if e.retryable() && attempt < self.max_attempts => backoff(attempt).await,
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
     // ── 底层 ──────────────────────────────────────────────────────────
 
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, EngineError> {
